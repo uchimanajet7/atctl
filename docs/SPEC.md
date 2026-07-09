@@ -1,6 +1,6 @@
 # atctl Implementation Specification
 
-- Document version: 0.4.109
+- Document version: 0.4.110
 - Date: 2026-07-09
 - Source handoff: `atctl_project_docs_v0.3.md`, provided on 2026-06-17
 - Implementation language: Rust
@@ -92,6 +92,11 @@ Reference basis:
   publication and Homebrew source-build fallback as separate concerns.
 - GitHub CLI `gh release create` documentation is the basis for using
   `--verify-tag` and `--notes-file` in the source repository release workflow.
+- GitHub Actions `workflow_dispatch` documentation is the basis for exposing a
+  Web UI release operation that accepts a release tag input.
+- GitHub Actions `GITHUB_TOKEN` triggering documentation is the basis for
+  creating a manual-dispatch release tag and completing the release in the same
+  workflow run instead of depending on a second tag-push-triggered run.
 - GitHub Dependabot version-update documentation and supported-ecosystem
   documentation are the basis for keeping Cargo dependencies and GitHub Actions
   references under automated update detection.
@@ -4029,9 +4034,11 @@ installation behavior as separate concerns.
 REQ-PKG-014: GitHub Actions release workflows and GitHub Releases assets belong
 to the source repository `uchimanajet7/atctl`.
 
-REQ-PKG-015: Tag releases in the source repository MUST use GitHub Actions to
-build and publish a prebuilt Apple Silicon macOS binary and checksum to GitHub
-Releases. This release artifact is separate from the Homebrew bottle contract.
+REQ-PKG-015: Source repository releases MUST use GitHub Actions to build and
+publish a prebuilt Apple Silicon macOS binary and checksum to GitHub Releases.
+The release MAY be triggered by a pushed release tag or by a manually triggered
+release workflow that creates or uses the release tag. This release artifact is
+separate from the Homebrew bottle contract.
 
 REQ-PKG-016: The Apple Silicon macOS GitHub Release archive asset MUST be named
 `atctl-v{VERSION}-aarch64-apple-darwin.tar.gz`, where `{VERSION}` is the
@@ -4044,11 +4051,12 @@ REQ-PKG-018: The Apple Silicon macOS checksum asset MUST contain one
 sha256sum-compatible line:
 `<sha256 hex>  atctl-v{VERSION}-aarch64-apple-darwin.tar.gz`.
 
-REQ-PKG-019: Tag releases MUST publish one checksum file per archive and MUST
-NOT publish an aggregate checksum manifest unless separately approved.
+REQ-PKG-019: Source repository releases MUST publish one checksum file per
+archive and MUST NOT publish an aggregate checksum manifest unless separately
+approved.
 
-REQ-PKG-020: Tag releases MUST NOT publish provenance, attestation, or SBOM
-metadata unless separately approved.
+REQ-PKG-020: Source repository releases MUST NOT publish provenance,
+attestation, or SBOM metadata unless separately approved.
 
 REQ-PKG-021: Homebrew formula, tap CI, tap metadata, and bottle metadata belong
 to the tap repository `uchimanajet7/homebrew-atctl`.
@@ -4119,11 +4127,30 @@ contains exactly the same file set. Homebrew source-build fallback, GitHub
 release source archives, Homebrew bottles, and Cargo source packages are
 separate release concerns.
 
-REQ-PKG-038: The source repository tag release workflow MUST validate that the
-pushed tag version without the leading `v` matches `Cargo.toml`
+REQ-PKG-038: The source repository release workflow MUST validate that the
+release tag version without the leading `v` matches `Cargo.toml`
 `package.version` before building or publishing release assets.
 
-REQ-PKG-039: The source repository tag release workflow MUST extract the
+REQ-PKG-038A: The source repository release workflow MUST expose a manual
+`workflow_dispatch` operation with a required `release_tag` input such as
+`v0.1.0` so an operator can start the source repository release from the GitHub
+Actions Web UI without manually creating a GitHub Release page or copying
+release notes.
+
+REQ-PKG-038B: When the source repository release workflow is manually
+dispatched, it MUST create the requested release tag at the selected workflow
+commit when the tag does not exist. If the requested tag already exists, the
+workflow MUST verify that the existing tag points to the selected workflow
+commit and MUST fail without moving, overwriting, or deleting the tag when it
+does not.
+
+REQ-PKG-038C: The manual source repository release path MUST complete tag
+preparation, release verification, archive creation, checksum creation,
+changelog-backed release-note extraction, and GitHub Release creation in the
+same workflow run. It MUST NOT rely on a second tag-push-triggered workflow run
+after the tag is pushed by the manual workflow.
+
+REQ-PKG-039: The source repository release workflow MUST extract the
 matching released-version section from `CHANGELOG.md` and use that extracted
 section as the GitHub Release notes.
 
@@ -4131,7 +4158,7 @@ REQ-PKG-040: The `CHANGELOG.md` released-version section used for GitHub
 Release notes MUST include the released package version and a `YYYY-MM-DD`
 release date in the section heading.
 
-REQ-PKG-041: The source repository tag release workflow MUST fail before
+REQ-PKG-041: The source repository release workflow MUST fail before
 creating the GitHub Release when the matching `CHANGELOG.md` version section is
 missing or has no release-note content beyond the heading.
 
@@ -4139,7 +4166,7 @@ REQ-PKG-042: GitHub automatically generated release notes MUST NOT be the sole
 or primary release notes for `atctl` source repository releases unless a later
 approved packaging specification explicitly changes the release-note source.
 
-REQ-PKG-043: The source repository tag release workflow MUST NOT create or
+REQ-PKG-043: The source repository release workflow MUST NOT create or
 update Homebrew Formula pull requests automatically.
 
 REQ-PKG-044: Homebrew Formula update pull-request creation MUST be an explicit
@@ -4417,6 +4444,10 @@ Sequence product design are resolved. These decisions are tracked in
   https://www.bwplotka.dev/2025/lazygit/
 - GitHub Releases:
   https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases
+- GitHub Actions manually running a workflow:
+  https://docs.github.com/actions/managing-workflow-runs/manually-running-a-workflow
+- GitHub Actions triggering a workflow from a workflow:
+  https://docs.github.com/actions/using-workflows/triggering-a-workflow
 - GitHub automatically generated release notes:
   https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
 - GitHub CLI `gh release create`:

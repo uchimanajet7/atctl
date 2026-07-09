@@ -973,11 +973,18 @@ bottles, or tap repository layout.
 
 Decision:
 
-- Tag releases must use GitHub Actions to build a prebuilt Apple Silicon macOS
-  binary.
-- Tag releases must publish the binary and a checksum to GitHub Releases.
-- Tag releases must validate that the pushed tag version matches `Cargo.toml`
-  `package.version` before release asset publication.
+- Source repository releases must use GitHub Actions to build a prebuilt Apple
+  Silicon macOS binary.
+- Source repository releases must publish the binary and a checksum to GitHub
+  Releases.
+- Source repository releases may be triggered by a pushed `v*.*.*` tag or by a
+  manual GitHub Actions `workflow_dispatch` run with a `release_tag` input such
+  as `v0.1.0`.
+- The manual workflow run must create the requested release tag at the selected
+  workflow commit when the tag does not exist, or fail without moving the tag
+  when an existing tag points somewhere else.
+- Source repository releases must validate that the release tag version matches
+  `Cargo.toml` `package.version` before release asset publication.
 - GitHub Release notes must come from the matching released-version section in
   `CHANGELOG.md`, and that section must include a release date and non-empty
   user-facing release-note content.
@@ -990,6 +997,8 @@ References:
 
 - https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases
 - https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository
+- https://docs.github.com/actions/managing-workflow-runs/manually-running-a-workflow
+- https://docs.github.com/actions/using-workflows/triggering-a-workflow
 - https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
 - https://docs.github.com/en/rest/releases/assets
 - https://cli.github.com/manual/gh_release_create
@@ -1046,17 +1055,17 @@ System: GitHub Releases checksum file content, optional provenance metadata
 
 Decision:
 
-- Tag releases publish one checksum file per archive.
+- Source repository releases publish one checksum file per archive.
 - The checksum file must use sha256sum-compatible content:
 
   ```text
   <sha256 hex>  atctl-v{VERSION}-aarch64-apple-darwin.tar.gz
   ```
 
-- Tag releases do not publish an aggregate checksum manifest unless separately
-  approved.
-- Tag releases do not publish provenance, attestation, or SBOM metadata unless
-  separately approved.
+- Source repository releases do not publish an aggregate checksum manifest
+  unless separately approved.
+- Source repository releases do not publish provenance, attestation, or SBOM
+  metadata unless separately approved.
 - Provenance, attestation, or SBOM metadata must be decided separately before
   being promised or implemented.
 

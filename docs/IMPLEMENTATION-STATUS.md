@@ -8,7 +8,7 @@ file together with `docs/SPEC.md`.
 
 ```text
 Specification: docs/SPEC.md
-Specification version: 0.4.109
+Specification version: 0.4.110
 Open decisions: none for the currently specified Sequence design; OQ-018 is resolved as out of scope, OQ-021 raw log diagnostic export is resolved, OQ-022 TUI shortcut reduction is resolved, and OQ-023 Sequence product design is resolved
 ```
 
@@ -17,7 +17,7 @@ Open decisions: none for the currently specified Sequence design; OQ-018 is reso
 ```text
 Phase: 5 - Packaging and Documentation
 Checkpoint: 13 - final release and Homebrew workflow
-Status: source repository release workflow is version-guarded and changelog-backed after Checkpoint 12.6 application features were implemented, agent-verified, and user approved; source release and Homebrew publication are documented as separate operations; Homebrew tap workflow remains pending
+Status: source repository release workflow supports tag-push and GitHub Web UI manual dispatch, is version-guarded and changelog-backed after Checkpoint 12.6 application features were implemented, agent-verified, and user approved; source release and Homebrew publication are documented as separate operations; Homebrew tap workflow remains pending
 Next checkpoint: Checkpoint 13 Homebrew tap formula, tap-side manual Formula update PR workflow, source-build fallback, bottle automation, and tap CI
 ```
 
@@ -51,8 +51,8 @@ Rust package source-file scope decision on 2026-07-05:
 
 Source repository release workflow decision on 2026-07-05:
 
-- `.github/workflows/release.yml` was added for source repository tag releases
-  matching `v*.*.*`.
+- `.github/workflows/release.yml` was added for source repository releases
+  based on release tags matching `v*.*.*`.
 - The workflow uses the fixed `macos-26` GitHub-hosted runner label for the
   standard arm64 macOS release environment instead of the moving
   `macos-latest` label.
@@ -64,7 +64,7 @@ Source repository release workflow decision on 2026-07-05:
   `cargo clippy --all-targets --all-features --locked -- -D warnings`.
 - The workflow creates `atctl-v{VERSION}-aarch64-apple-darwin.tar.gz` with
   the `atctl` executable at the archive top level, generates the matching
-  `.sha256` file, validates that the pushed tag version matches `Cargo.toml`
+  `.sha256` file, validates that the release tag version matches `Cargo.toml`
   `package.version`, extracts the matching released-version section from
   `CHANGELOG.md`, and creates a GitHub Release with
   `gh release create --verify-tag --notes-file`.
@@ -73,9 +73,40 @@ Source repository release workflow decision on 2026-07-05:
   fails before release creation when that section is missing or empty.
 - The workflow is source-repository only. It does not update a Homebrew tap,
   create or update Homebrew Formula pull requests, trigger Homebrew
-  publication automatically, publish Homebrew bottles, create tags, add
-  SBOM/provenance/attestation output, sign or notarize artifacts, or add other
-  platform release archives.
+  publication automatically, publish Homebrew bottles, move or overwrite
+  release tags, add SBOM/provenance/attestation output, sign or notarize
+  artifacts, or add other platform release archives.
+
+Source repository release workflow manual-dispatch update on 2026-07-09:
+
+- `.github/workflows/release.yml` also exposes a manual `workflow_dispatch`
+  input named `release_tag`, for example `v0.1.0`.
+- Manual dispatch is the GitHub Web UI release path. The operator runs
+  **Actions** -> **Release** -> **Run workflow**, selects the branch or commit
+  to release, and enters the release tag.
+- When manually dispatched, the workflow creates the requested tag at the
+  selected workflow commit when the tag does not exist. If the tag exists, the
+  workflow verifies that it points to the selected workflow commit and fails
+  without moving the tag when it does not.
+- The manual path completes tag preparation, source verification, archive
+  creation, checksum creation, changelog-backed release-note extraction, and
+  GitHub Release creation in the same workflow run. It does not depend on a
+  second tag-push-triggered workflow run.
+- Operators should not create the GitHub Release page manually before running
+  the workflow because the workflow creates the release with notes extracted
+  from `CHANGELOG.md`.
+
+Latest agent verification for source repository release Web UI dispatch on
+2026-07-09:
+
+- `git diff --check` passed.
+- `actionlint -color` passed.
+- Changelog release-note extraction dry run passed for Cargo package version
+  `0.1.0`.
+- Related wording search confirmed the current release workflow, packaging
+  docs, development docs, specification, open-question record, and progress
+  state contain the manual `workflow_dispatch` / `release_tag` path and no
+  current tag-push-only release workflow requirement.
 
 Dependency and CI maintenance decision on 2026-07-09:
 
@@ -854,6 +885,8 @@ coding-agent process compliance.
 
 | Date | Command | Result | Notes |
 |---|---|---|---|
+| 2026-07-09 | Source repository release Web UI dispatch update | passed | Updated `.github/workflows/release.yml`, `docs/PACKAGING.md`, `docs/DEVELOPMENT.md`, `docs/SPEC.md` to version `0.4.110`, `docs/OPEN-QUESTIONS.md`, and this file. The source repository release workflow now keeps the pushed-tag trigger and adds `workflow_dispatch` with required `release_tag`, validates the tag against `Cargo.toml`, creates the tag at the selected workflow commit when absent, refuses to move an existing tag, extracts release notes from `CHANGELOG.md`, and creates the GitHub Release in the same workflow run. Homebrew tap updates, bottles, SBOM/provenance/attestation, signing/notarization, and additional platform artifacts remain out of scope. |
+| 2026-07-09 | Source repository release Web UI dispatch verification | passed | `git diff --check`, `actionlint -color`, changelog release-note extraction dry run for Cargo version `0.1.0`, and related wording searches passed. No source repository release job was run because that would create or publish release state on GitHub. |
 | 2026-07-05 | Release/Homebrew publication separation documentation sync | passed | Updated `docs/PACKAGING.md`, `docs/SPEC.md` to version `0.4.108`, and this file. The source repository release workflow remains limited to GitHub Release assets, checksum, and changelog-backed release notes. Homebrew Formula update pull-request creation is documented as explicit `uchimanajet7/homebrew-atctl` tap repository work, normally through a manual `workflow_dispatch` workflow for a chosen release tag. |
 | 2026-07-05 | Release/Homebrew separation wording search | passed | `rg` confirmed the current spec version, source release workflow prohibitions for Homebrew Formula pull requests and automatic Homebrew publication, tap-side `workflow_dispatch` wording, and independently executable source release/Homebrew publication wording in `docs/SPEC.md`, `docs/PACKAGING.md`, and this file. |
 | 2026-07-05 | `cargo fmt --check` | passed | Formatting is clean after the Release/Homebrew publication separation documentation sync. |
@@ -869,7 +902,7 @@ coding-agent process compliance.
 | 2026-07-05 | `cargo clippy --all-targets --all-features --locked -- -D warnings` | passed | No Clippy warnings after the Homebrew install command documentation sync. |
 | 2026-07-05 | `cargo package --list --allow-dirty` | passed | The Cargo package file list still includes `README.md`, so the updated normal install command is present in the Rust source package metadata/docs surface. Repository `docs/**` remain source-repository documentation and are not part of the Cargo source package include whitelist. |
 | 2026-07-05 | Source repository release workflow release-note update | passed | Updated `.github/workflows/release.yml`, `CHANGELOG.md`, `docs/SPEC.md` to version `0.4.106`, `docs/PACKAGING.md`, `docs/OPEN-QUESTIONS.md`, and this file. The workflow now validates that the tag version matches `Cargo.toml`, extracts the matching released-version section from `CHANGELOG.md`, requires a `YYYY-MM-DD` release date and non-empty notes, and creates the GitHub Release with `gh release create --verify-tag --notes-file`. Homebrew tap workflow, bottles, tags, release publishing by the agent, SBOM/provenance/attestation, signing/notarization, and other platform artifacts remain out of this source-repository workflow scope. |
-| 2026-07-05 | Source repository release workflow static scope check | passed | `.github/workflows/release.yml` retains the approved tag trigger, fixed `macos-26` arm64 macOS runner, release-job `contents: write`, first-party `actions/checkout`, `aarch64-apple-darwin` target, required cargo verification commands, top-level executable archive packaging, SHA-256 generation, tag/Cargo version validation, changelog-backed notes, and `gh release create --verify-tag --notes-file`. The workflow file does not contain Homebrew tap update, bottle publishing, SBOM/provenance/attestation, signing/notarization, `workflow_dispatch`, `macos-latest`, `--generate-notes`, or `--clobber` behavior. |
+| 2026-07-05 | Source repository release workflow static scope check | passed | Historical check before the 2026-07-09 manual-dispatch update. `.github/workflows/release.yml` retained the approved tag trigger, fixed `macos-26` arm64 macOS runner, release-job `contents: write`, first-party `actions/checkout`, `aarch64-apple-darwin` target, required cargo verification commands, top-level executable archive packaging, SHA-256 generation, tag/Cargo version validation, changelog-backed notes, and `gh release create --verify-tag --notes-file`. At that point, manual dispatch was not part of the release workflow scope. The current scope is recorded in the 2026-07-09 entries above. |
 | 2026-07-05 | Release workflow YAML parse | passed | Ruby YAML parsing loaded `.github/workflows/release.yml` successfully after the release-note update. |
 | 2026-07-05 | Changelog release-note extraction dry run | passed | The workflow extraction logic produced `/tmp/atctl-release-notes-test.md` from `CHANGELOG.md` for Cargo package version `0.1.0`, validated the `YYYY-MM-DD` heading date, and confirmed non-empty release-note content. |
 | 2026-07-05 | `cargo fmt --check` | passed | Formatting is clean after the source repository release-note update. |

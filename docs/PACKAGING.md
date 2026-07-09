@@ -87,8 +87,8 @@ References:
 ## Source Repository Release Artifacts
 
 The source repository must use GitHub Actions to build release artifacts and
-upload them to GitHub Releases for tag releases. That release workflow is
-independent from the Homebrew tap decision.
+upload them to GitHub Releases for source repository releases. That release
+workflow is independent from the Homebrew tap decision.
 
 Release artifacts:
 
@@ -108,10 +108,10 @@ Checksum content:
 <sha256 hex>  atctl-v{VERSION}-aarch64-apple-darwin.tar.gz
 ```
 
-Tag releases publish one checksum file per archive. They do not publish an
-aggregate checksum manifest, provenance, attestation, or SBOM metadata unless
-those metadata types are separately approved before being promised or
-implemented.
+Source repository releases publish one checksum file per archive. They do not
+publish an aggregate checksum manifest, provenance, attestation, or SBOM
+metadata unless those metadata types are separately approved before being
+promised or implemented.
 
 Release notes:
 
@@ -127,10 +127,35 @@ Release notes:
   contributors, while the project needs curated user-facing notes from
   `CHANGELOG.md`.
 
+GitHub Web UI release operation:
+
+1. Open the source repository on GitHub.
+2. Open **Actions**.
+3. Select the **Release** workflow.
+4. Select **Run workflow**.
+5. Select the branch or commit that should be released.
+6. Enter `release_tag`, for example `v0.1.0`.
+7. Run the workflow.
+
+The workflow creates the requested tag at the selected workflow commit when the
+tag does not already exist. If the tag already exists, the workflow verifies
+that it points to the selected workflow commit and fails without moving the tag
+when it does not. The same workflow run validates the Cargo version, builds the
+archive, creates the checksum, extracts release notes from `CHANGELOG.md`, and
+creates the GitHub Release. Do not create the GitHub Release page manually
+before running this workflow; the workflow owns GitHub Release creation and
+release-note population.
+
+A pushed tag matching `v*.*.*` remains a valid release trigger. Both trigger
+paths use the same release validation, artifact packaging, checksum creation,
+and changelog-backed release-note extraction.
+
 References:
 
 - https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases
 - https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository
+- https://docs.github.com/actions/managing-workflow-runs/manually-running-a-workflow
+- https://docs.github.com/actions/using-workflows/triggering-a-workflow
 - https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
 - https://docs.github.com/en/rest/releases/assets
 - https://cli.github.com/manual/gh_release_create
@@ -295,7 +320,8 @@ The source repository release workflow is:
 
 The release workflow uses:
 
-- Trigger: pushed tags matching `v*.*.*`.
+- Triggers: pushed tags matching `v*.*.*`, and manual GitHub Actions
+  `workflow_dispatch` runs with a required `release_tag` input.
 - Runner: `macos-26`, which current GitHub-hosted runner documentation and
   GitHub Changelog list as a standard arm64 macOS runner. This avoids the
   moving `macos-latest` label for release builds.
@@ -312,14 +338,20 @@ The workflow steps are:
 
 1. Check out the source repository.
 2. Validate the release version:
-   - The pushed tag must start with `v`.
+   - The release tag must start with `v`.
    - The tag version without the leading `v` must match `Cargo.toml`
      `package.version`.
-3. Install or confirm build dependencies:
+3. For manual GitHub Actions runs, prepare the release tag:
+   - Create the requested tag at the selected workflow commit when the tag does
+     not exist.
+   - Verify that an existing tag points to the selected workflow commit.
+   - Fail without moving or overwriting an existing tag that points to another
+     commit.
+4. Install or confirm build dependencies:
    - Rust toolchain with `rustfmt` and `clippy`.
    - `libusb`.
    - `pkgconf`.
-4. Run:
+5. Run:
 
    ```sh
    cargo fmt --check
@@ -329,7 +361,7 @@ The workflow steps are:
    cargo build --release --locked --target aarch64-apple-darwin
    ```
 
-5. Stage the release archive:
+6. Stage the release archive:
 
    ```text
    dist/atctl-v{VERSION}-aarch64-apple-darwin.tar.gz
@@ -337,13 +369,13 @@ The workflow steps are:
 
    The archive contains the `atctl` executable at its top level.
 
-6. Generate the checksum:
+7. Generate the checksum:
 
    ```text
    dist/atctl-v{VERSION}-aarch64-apple-darwin.tar.gz.sha256
    ```
 
-7. Extract the matching released-version section from `CHANGELOG.md` into:
+8. Extract the matching released-version section from `CHANGELOG.md` into:
 
    ```text
    dist/release-notes.md
@@ -352,7 +384,7 @@ The workflow steps are:
    The extraction must fail before release creation if the section is missing,
    has no content beyond the heading, or lacks a `YYYY-MM-DD` release date.
 
-8. Create the GitHub Release with:
+9. Create the GitHub Release with:
 
    ```sh
    gh release create "$TAG" \

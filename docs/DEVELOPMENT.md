@@ -491,6 +491,32 @@ cargo clippy --all-targets --all-features --locked -- -D warnings
 These commands are product code gates. They must not contain or depend on
 coding-agent process checks.
 
+## Source Repository Release Workflow
+
+The source repository release workflow is operated from GitHub Actions and
+publishes GitHub Release artifacts for the source repository. It does not update
+the Homebrew tap, publish bottles, or create Homebrew Formula pull requests.
+
+For the GitHub Web UI release path:
+
+1. Open `https://github.com/uchimanajet7/atctl/actions`.
+2. Select the **Release** workflow.
+3. Select **Run workflow**.
+4. Select the branch or commit that should be released.
+5. Enter `release_tag`, for example `v0.1.0`.
+6. Run the workflow.
+
+The workflow creates the requested tag at the selected workflow commit when the
+tag does not already exist. If the tag already exists, it must already point to
+that selected commit. The workflow then validates that the tag version matches
+`Cargo.toml`, extracts the matching `CHANGELOG.md` section, builds the Apple
+Silicon macOS archive, creates the `.sha256` file, and creates the GitHub
+Release with those notes and assets.
+
+Do not manually create the GitHub Release page first. The release workflow owns
+GitHub Release creation so release notes come from the curated `CHANGELOG.md`
+section and do not require manual copying.
+
 ## Dependency Maintenance
 
 Dependency updates are a source change. Direct dependency baseline changes
