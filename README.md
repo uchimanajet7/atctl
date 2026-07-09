@@ -5,6 +5,8 @@
 `atctl` is a Rust CLI/TUI for sending and managing AT commands for USB
 cellular modems from macOS on Apple Silicon.
 
+![atctl TUI showing device details, command categories, command list, response output, and saved logs](https://github.com/uchimanajet7/atctl/raw/main/docs/assets/atctl-tui-overview.png)
+
 Validated environments:
 
 - Mac: Apple Silicon Mac

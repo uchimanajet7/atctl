@@ -5,6 +5,8 @@
 `atctl` は、macOS Apple Silicon から USB セルラーモデムへ AT コマンドを
 送信し、管理するための Rust 製 CLI/TUI です。
 
+![atctl TUI の device details、command categories、command list、response output、saved logs の画面](https://github.com/uchimanajet7/atctl/raw/main/docs/assets/atctl-tui-overview.png)
+
 検証済み環境:
 
 - Mac: Apple Silicon Mac
