@@ -1,0 +1,8 @@
+# Rust build output
+/target/
+
+# Local OS/editor noise
+.DS_Store
+*.swp
+*.swo
+*~

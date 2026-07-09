@@ -1,0 +1,41 @@
+name: Dependency Maintenance
+
+on:
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/dependabot.yml"
+      - ".github/workflows/**"
+      - "scripts/maintenance/**"
+  schedule:
+    - cron: "23 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-maintenance:
+    name: Check dependency and workflow drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      ACTIONLINT_DOCKER_IMAGE: "rhysd/actionlint:1.7.12"
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Install Rust maintenance tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo install cargo-audit --locked
+          cargo install cargo-outdated --locked
+
+      - name: Check dependency and workflow state
+        shell: bash
+        run: scripts/maintenance/check-deps.sh

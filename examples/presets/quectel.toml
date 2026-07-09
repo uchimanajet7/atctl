@@ -1,0 +1,98 @@
+title = "Quectel commands"
+description = "Quectel-specific AT commands for SIM, signal, network, and diagnostics."
+
+[[presets]]
+name = "iccid"
+command = "AT+QCCID"
+risk = "sensitive"
+categories = ["sim"]
+
+[[presets]]
+name = "signal-quectel"
+command = "AT+QCSQ"
+risk = "safe"
+categories = ["signal"]
+
+[[presets]]
+name = "network-info-quectel"
+command = "AT+QNWINFO"
+risk = "safe"
+categories = ["network"]
+
+[[presets]]
+name = "serving-cell-quectel"
+command = "AT+QENG=\"servingcell\""
+risk = "safe"
+categories = ["diagnostics"]
+
+[[presets]]
+name = "neighbour-cell-quectel"
+command = "AT+QENG=\"neighbourcell\""
+risk = "safe"
+categories = ["diagnostics"]
+
+[[presets]]
+name = "qcfg-list-quectel"
+command = "AT+QCFG?"
+risk = "sensitive"
+categories = ["diagnostics"]
+
+[[presets]]
+name = "network-scan-mode-quectel"
+command = "AT+QCFG=\"nwscanmode\""
+risk = "sensitive"
+categories = ["network", "diagnostics"]
+
+[[presets]]
+name = "network-scan-auto-quectel"
+command = "AT+QCFG=\"nwscanmode\",0,1"
+risk = "persistent"
+categories = ["network", "modem"]
+
+[[presets]]
+name = "sim-init-status-quectel"
+command = "AT+QINISTAT"
+risk = "safe"
+categories = ["sim", "diagnostics"]
+
+[[presets]]
+name = "pin-retries-quectel"
+command = "AT+QPINC?"
+risk = "sensitive"
+categories = ["sim", "diagnostics"]
+
+[[presets]]
+name = "network-name-quectel"
+command = "AT+QSPN"
+risk = "safe"
+categories = ["network"]
+
+[[presets]]
+name = "network-time-quectel"
+command = "AT+QLTS"
+risk = "safe"
+categories = ["network", "diagnostics"]
+
+[[presets]]
+name = "pdp-contexts-quectel"
+command = "AT+QIACT?"
+risk = "sensitive"
+categories = ["pdp", "data", "network"]
+
+[[presets]]
+name = "socket-state-quectel"
+command = "AT+QISTATE"
+risk = "sensitive"
+categories = ["data", "network"]
+
+[[presets]]
+name = "mbn-list-quectel"
+command = "AT+QMBNCFG=\"List\""
+risk = "sensitive"
+categories = ["network", "diagnostics"]
+
+[[presets]]
+name = "power-down-quectel"
+command = "AT+QPOWD"
+risk = "dangerous"
+categories = ["modem"]

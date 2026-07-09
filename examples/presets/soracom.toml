@@ -1,0 +1,32 @@
+title = "SORACOM commands"
+description = "SORACOM APN and PDP setup commands."
+
+[[presets]]
+name = "set-soracom-apn-cid1"
+command = "AT+CGDCONT=1,\"IP\",\"soracom.io\""
+risk = "write"
+categories = ["pdp", "apn"]
+
+[[presets]]
+name = "set-soracom-du-apn-cid1"
+command = "AT+CGDCONT=1,\"IP\",\"du.soracom.io\""
+risk = "write"
+categories = ["pdp", "apn"]
+
+[[presets]]
+name = "set-soracom-mc-apn-cid1"
+command = "AT+CGDCONT=1,\"IP\",\"m-airsim.jp\""
+risk = "write"
+categories = ["pdp", "apn"]
+
+[[presets]]
+name = "set-soracom-auth-chap-cid1"
+command = "AT+CGAUTH=1,2,\"sora\",\"sora\""
+risk = "write"
+categories = ["pdp", "apn"]
+
+[[presets]]
+name = "set-soracom-auth-pap-cid1"
+command = "AT+CGAUTH=1,1,\"sora\",\"sora\""
+risk = "write"
+categories = ["pdp", "apn"]

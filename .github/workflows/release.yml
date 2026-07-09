@@ -1,0 +1,149 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build and publish Apple Silicon macOS release
+    runs-on: macos-26
+    permissions:
+      contents: write
+    env:
+      CARGO_TERM_COLOR: always
+      TARGET: aarch64-apple-darwin
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Validate release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          if [[ "${TAG}" == "${VERSION}" || -z "${VERSION}" ]]; then
+            echo "Release tag must start with v and include a version: ${TAG}" >&2
+            exit 1
+          fi
+          CARGO_VERSION="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+          if [[ -z "${CARGO_VERSION}" ]]; then
+            echo "Cargo.toml package version was not found." >&2
+            exit 1
+          fi
+          if [[ "${VERSION}" != "${CARGO_VERSION}" ]]; then
+            echo "Release tag version ${VERSION} does not match Cargo.toml version ${CARGO_VERSION}." >&2
+            exit 1
+          fi
+          {
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy --target "${TARGET}"
+          rustup default stable
+          brew update
+          brew install libusb pkgconf
+
+      - name: Verify release source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          cargo check --all-targets --all-features --locked
+          cargo test --all-features --locked
+          cargo clippy --all-targets --all-features --locked -- -D warnings
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target "${TARGET}"
+
+      - name: Package release archive
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          ASSET="atctl-v${VERSION}-${TARGET}.tar.gz"
+
+          mkdir -p dist/package
+          cp "target/${TARGET}/release/atctl" "dist/package/atctl"
+          tar -C dist/package -czf "dist/${ASSET}" atctl
+          (cd dist && shasum -a 256 "${ASSET}" > "${ASSET}.sha256")
+
+          {
+            echo "asset=${ASSET}"
+            echo "checksum=${ASSET}.sha256"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare release notes
+        id: release_notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.version }}"
+          NOTES_FILE="dist/release-notes.md"
+          awk -v version="${VERSION}" '
+            function section_version(line, value) {
+              value = line
+              sub(/^##[[:space:]]+/, "", value)
+              sub(/[[:space:]]+-[[:space:]].*$/, "", value)
+              sub(/^\[/, "", value)
+              sub(/\]$/, "", value)
+              return value
+            }
+            /^##[[:space:]]+/ && section_version($0) == version {
+              in_section = 1
+              found = 1
+              print
+              next
+            }
+            /^##[[:space:]]+/ && in_section {
+              exit
+            }
+            in_section {
+              print
+            }
+            END {
+              if (!found) {
+                exit 2
+              }
+            }
+          ' CHANGELOG.md > "${NOTES_FILE}" || {
+            echo "CHANGELOG.md must contain a release section for ${VERSION}." >&2
+            exit 1
+          }
+          if ! head -n 1 "${NOTES_FILE}" | grep -Eq '^##[[:space:]]+\[?[^]]+\]?[[:space:]]+-[[:space:]]+[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][[:space:]]*$'; then
+            echo "CHANGELOG.md release section for ${VERSION} must include a YYYY-MM-DD release date." >&2
+            exit 1
+          fi
+          if ! tail -n +2 "${NOTES_FILE}" | grep -Eq '[^[:space:]]'; then
+            echo "CHANGELOG.md release section for ${VERSION} is empty." >&2
+            exit 1
+          fi
+          echo "notes=${NOTES_FILE}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "${{ steps.version.outputs.tag }}" \
+            "dist/${{ steps.package.outputs.asset }}" \
+            "dist/${{ steps.package.outputs.checksum }}" \
+            --verify-tag \
+            --title "atctl ${{ steps.version.outputs.tag }}" \
+            --notes-file "${{ steps.release_notes.outputs.notes }}"

@@ -1,0 +1,221 @@
+title = "Quectel Sequences"
+description = "Quectel-specific TCP/IP ping and data-send checks."
+
+[[sequences]]
+name = "quectel-tcp-send-check"
+summary = "Open a Quectel TCP socket, send a payload, query send acknowledgement, read buffered data, and close the socket."
+risk = "write"
+categories = ["data", "network"]
+timeout_secs = 300
+before_running = [
+  "Uses Quectel TCP/IP AT commands.",
+  "Confirm the PDP context before sending; this Sequence can load standard AT+CGACT? and AT+CGDCONT? candidates in the TUI.",
+  "During execution, atctl checks AT+QIACT? and sends AT+QIACT=<contextID> only when the selected Quectel PDP context is not active.",
+  "Socket connect ID defaults to 0. If needed, run the Quectel socket-state add-on command and edit this value before sending."
+]
+success_notes = [
+  "SEND OK means the Quectel module accepted the payload for sending, not remote application receipt.",
+  "AT+QISEND=<connectID>,0 counters are TCP/socket acknowledgement evidence, not application processing proof.",
+  "End-to-end application proof requires non-empty QIRD response data or remote endpoint logs."
+]
+
+[[sequences.params]]
+name = "context_id"
+label = "PDP context ID"
+required = true
+sensitive = false
+default = "1"
+source = "modem"
+candidate = "pdp-context"
+hint = "Confirm the PDP context with AT+CGACT? or AT+CGDCONT? before sending."
+
+[[sequences.params]]
+name = "connect_id"
+label = "Socket connect ID"
+required = true
+sensitive = false
+default = "0"
+source = "default"
+hint = "Use a free Quectel socket connect ID. Run the Quectel socket-state add-on command when you need to inspect current sockets."
+
+[[sequences.params]]
+name = "host"
+label = "Host"
+required = true
+sensitive = false
+source = "user"
+hint = "Enter the TCP host to connect to."
+
+[[sequences.params]]
+name = "port"
+label = "Port"
+required = true
+sensitive = false
+source = "user"
+hint = "Enter the TCP port to connect to."
+
+[[sequences.params]]
+name = "payload"
+label = "Payload"
+required = true
+sensitive = true
+source = "user"
+hint = "Enter the TCP payload to send."
+
+[[sequences.params]]
+name = "read_length"
+label = "Read length"
+required = true
+sensitive = false
+default = "1500"
+source = "default"
+hint = "Edit when the expected response is larger or when a smaller read is required."
+
+[[sequences.review]]
+label = "Destination"
+value = "{{host}}:{{port}}"
+
+[[sequences.review]]
+label = "Payload"
+value = "{{payload}}"
+sensitive = true
+
+[[sequences.review]]
+label = "Read length"
+value = "{{read_length}}"
+
+[[sequences.steps]]
+id = "activate-context"
+label = "Ensure PDP context active"
+ensure_pdp_context_active = "{{context_id}}"
+timeout_secs = 150
+evidence = "AT+QIACT? checks Quectel TCP/IP PDP context state; AT+QIACT=<contextID> is only sent when the selected context is not active."
+
+[[sequences.steps]]
+id = "open-socket"
+label = "Open TCP socket"
+send = "AT+QIOPEN={{context_id}},{{connect_id}},\"TCP\",\"{{host}}\",{{port}},0,0"
+expect_urc = "+QIOPEN: {{connect_id}},0"
+timeout_secs = 150
+evidence = "+QIOPEN: {{connect_id}},0 is Quectel socket-open success evidence."
+cleanup_on_failure = "AT+QICLOSE={{connect_id}}"
+
+[[sequences.steps]]
+id = "start-payload-send"
+label = "Start payload send"
+send = "AT+QISEND={{connect_id}},{{payload_len}}"
+expect_prompt = ">"
+timeout_secs = 30
+
+[[sequences.steps]]
+id = "write-payload"
+label = "Write payload"
+payload = "{{payload}}"
+terminator = "none"
+expect = "SEND OK"
+timeout_secs = 60
+evidence = "SEND OK means the Quectel module accepted the payload for sending."
+
+[[sequences.steps]]
+id = "query-send-ack"
+label = "Query send acknowledgement"
+send = "AT+QISEND={{connect_id}},0"
+expect = "+QISEND:"
+require_tcp_ack = true
+timeout_secs = 30
+evidence = "AT+QISEND={{connect_id}},0 returns TCP/socket acknowledgement counters, not application receipt."
+
+[[sequences.steps]]
+id = "read-buffer"
+label = "Read buffered response"
+send = "AT+QIRD={{connect_id}},{{read_length}}"
+expect = "OK"
+timeout_secs = 30
+evidence = "Non-empty QIRD response data is receive evidence; +QIRD: 0 means no buffered receive data."
+
+[[sequences.steps]]
+id = "close-socket"
+label = "Close TCP socket"
+send = "AT+QICLOSE={{connect_id}}"
+expect = "OK"
+timeout_secs = 10
+
+[[sequences]]
+name = "quectel-ping-check"
+summary = "Ping a host through a Quectel PDP context and report received replies."
+risk = "write"
+categories = ["data", "network", "diagnostics"]
+timeout_secs = 120
+before_running = [
+  "Uses Quectel AT+QPING to check IP reachability.",
+  "Confirm the PDP context before sending; this Sequence can load standard AT+CGACT? and AT+CGDCONT? candidates in the TUI.",
+  "During execution, atctl checks AT+QIACT? and sends AT+QIACT=<contextID> only when the selected Quectel PDP context is not active."
+]
+success_notes = [
+  "Received ping replies are IP reachability evidence, not TCP socket or application receipt proof.",
+  "Use quectel-tcp-send-check when TCP socket opening, payload send, acknowledgement counters, and buffered response checks are required."
+]
+
+[[sequences.params]]
+name = "context_id"
+label = "PDP context ID"
+required = true
+sensitive = false
+default = "1"
+source = "modem"
+candidate = "pdp-context"
+hint = "Confirm the PDP context with AT+CGACT? or AT+CGDCONT? before sending."
+
+[[sequences.params]]
+name = "host"
+label = "Host"
+required = true
+sensitive = false
+source = "user"
+hint = "Enter the host to ping."
+
+[[sequences.params]]
+name = "ping_timeout"
+label = "Ping timeout"
+required = true
+sensitive = false
+default = "4"
+source = "default"
+hint = "Timeout in seconds for each ping request."
+
+[[sequences.params]]
+name = "count"
+label = "Ping count"
+required = true
+sensitive = false
+default = "4"
+source = "default"
+hint = "Number of ping requests to send."
+
+[[sequences.review]]
+label = "Destination"
+value = "{{host}}"
+
+[[sequences.review]]
+label = "Ping timeout"
+value = "{{ping_timeout}}s"
+
+[[sequences.review]]
+label = "Ping count"
+value = "{{count}}"
+
+[[sequences.steps]]
+id = "activate-context"
+label = "Ensure PDP context active"
+ensure_pdp_context_active = "{{context_id}}"
+timeout_secs = 150
+evidence = "AT+QIACT? checks Quectel TCP/IP PDP context state; AT+QIACT=<contextID> is only sent when the selected context is not active."
+
+[[sequences.steps]]
+id = "ping-host"
+label = "Ping host"
+send = "AT+QPING={{context_id}},\"{{host}}\",{{ping_timeout}},{{count}}"
+expect_urc = "+QPING:"
+require_ping_success = true
+timeout_secs = 90
+evidence = "AT+QPING checks IP reachability through the selected Quectel PDP context; received replies are not TCP or application receipt proof."
