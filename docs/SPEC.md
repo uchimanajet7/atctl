@@ -3991,8 +3991,9 @@ to the source repository `uchimanajet7/atctl`.
 
 REQ-PKG-015: Source repository releases MUST use GitHub Actions to build and
 publish a prebuilt Apple Silicon macOS binary and checksum to GitHub Releases.
-The release MAY be triggered by a pushed release tag or by a manually triggered
-release workflow that creates or uses the release tag. This release artifact is
+The source release MUST be started through the manually triggered GitHub Web
+workflow with an explicit release-tag input. Pushing a release tag MUST NOT
+automatically start the source release workflow. This release artifact is
 separate from the Homebrew bottle contract.
 
 REQ-PKG-016: The Apple Silicon macOS GitHub Release archive asset MUST be named
@@ -4093,17 +4094,28 @@ Actions Web UI without manually creating a GitHub Release page or copying
 release notes.
 
 REQ-PKG-038B: When the source repository release workflow is manually
-dispatched, it MUST create the requested release tag at the selected workflow
-commit when the tag does not exist. If the requested tag already exists, the
-workflow MUST verify that the existing tag points to the selected workflow
-commit and MUST fail without moving, overwriting, or deleting the tag when it
-does not.
+dispatched, it MUST validate the version, verify the source, build and package
+the release artifact and checksum, and prepare the changelog-backed release
+notes before creating a missing tag or GitHub Release. If the requested tag
+already exists, the workflow MUST verify before the build and again immediately
+before publication that the tag points to the selected workflow commit. It MUST
+fail without moving, overwriting, or deleting a mismatched tag.
 
 REQ-PKG-038C: The manual source repository release path MUST complete tag
 preparation, release verification, archive creation, checksum creation,
 changelog-backed release-note extraction, and GitHub Release creation in the
-same workflow run. It MUST NOT rely on a second tag-push-triggered workflow run
-after the tag is pushed by the manual workflow.
+same workflow run. The final publication operation MUST create a missing tag at
+the selected workflow commit or verify an existing tag, upload the archive and
+checksum through a draft release, and publish the GitHub Release. It MUST NOT
+rely on a second tag-push-triggered workflow run.
+
+REQ-PKG-038D: A failure during version validation, source verification, release
+build, packaging, checksum creation, or release-note preparation MUST occur
+before creation of a new remote tag or GitHub Release. A failure after the
+final GitHub publication operation has started MAY leave a recoverable draft
+and associated tag. The workflow MUST NOT automatically move or delete remote
+tags or releases as failure recovery; the operator MUST inspect that remote
+state before retrying.
 
 REQ-PKG-039: The source repository release workflow MUST extract the
 matching released-version section from `CHANGELOG.md` and use that extracted
@@ -4113,9 +4125,9 @@ REQ-PKG-040: The `CHANGELOG.md` released-version section used for GitHub
 Release notes MUST include the released package version and a `YYYY-MM-DD`
 release date in the section heading.
 
-REQ-PKG-041: The source repository release workflow MUST fail before
-creating the GitHub Release when the matching `CHANGELOG.md` version section is
-missing or has no release-note content beyond the heading.
+REQ-PKG-041: The source repository release workflow MUST fail before creating a
+new remote tag or GitHub Release when the matching `CHANGELOG.md` version
+section is missing or has no release-note content beyond the heading.
 
 REQ-PKG-042: GitHub automatically generated release notes MUST NOT be the sole
 or primary release notes for `atctl` source repository releases unless a later
@@ -4161,6 +4173,30 @@ cargo check --all-targets --all-features --locked
 cargo test --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
 ```
+
+REQ-TEST-004B: The source repository MUST provide a GitHub Actions source-change
+workflow that runs the normal Rust verification gate for every pull request
+targeting `main`, every push to `main`, and an explicit manual dispatch. The
+pull-request trigger MUST NOT use path filters, so the same named status check
+is reported for documentation-only and source-code changes.
+
+REQ-TEST-004C: The source-change quality job MUST run on the GitHub-hosted
+`macos-26` Apple Silicon runner and MUST fail when `uname -m` is not `arm64`.
+It MUST install the `libusb` and `pkgconf` build prerequisites and run the exact
+REQ-TEST-004A commands with the committed `Cargo.lock`.
+
+REQ-TEST-004D: The source-change workflow MUST use read-only repository-content
+permission, MUST pin third-party Actions to immutable full commit SHAs, and MUST
+disable persisted checkout credentials when later steps do not need GitHub
+write access. Superseded runs for the same pull request or ref SHOULD be
+cancelled.
+
+REQ-TEST-004E: After the source-change workflow has produced its first
+successful **Rust quality gate** check, the GitHub repository rules for `main`
+MUST require that named check before merge. The workflow definition and the
+repository rule are separate controls: the workflow reports the result, while
+the repository rule enforces it. The release workflow MUST retain its own
+pre-publication execution of the normal Rust verification gate.
 
 REQ-TEST-005: TUI verification MUST include terminal restoration behavior and
 basic interaction state checks before TUI completion is claimed.

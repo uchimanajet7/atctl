@@ -118,9 +118,9 @@ Release notes:
   section from `CHANGELOG.md`.
 - The released-version section heading must include the package version and a
   `YYYY-MM-DD` release date, for example `## 0.1.0 - 2026-07-05`.
-- The release workflow fails before GitHub Release creation when the tag
-  version does not match `Cargo.toml` or when `CHANGELOG.md` does not contain a
-  non-empty section for that version.
+- The release workflow fails before tag or GitHub Release publication when the
+  tag version does not match `Cargo.toml` or when `CHANGELOG.md` does not
+  contain a non-empty section for that version.
 - GitHub automatically generated release notes are not the primary release-note
   source for this project because they summarize merged pull requests and
   contributors, while the project needs curated user-facing notes from
@@ -136,18 +136,30 @@ GitHub Web UI release operation:
 6. Enter `release_tag`, for example `v0.1.0`.
 7. Run the workflow.
 
-The workflow creates the requested tag at the selected workflow commit when the
-tag does not already exist. If the tag already exists, the workflow verifies
-that it points to the selected workflow commit and fails without moving the tag
-when it does not. The same workflow run validates the Cargo version, builds the
-archive, creates the checksum, extracts release notes from `CHANGELOG.md`, and
-creates the GitHub Release. Do not create the GitHub Release page manually
-before running this workflow; the workflow owns GitHub Release creation and
-release-note population.
+The workflow validates the Cargo version and any existing tag, runs the normal
+Rust verification gate, builds the archive, creates the checksum, and extracts
+release notes from `CHANGELOG.md` before starting publication. After those
+steps succeed, the final GitHub CLI operation creates a missing tag at the
+selected workflow commit, uploads the archive and checksum through a draft
+release, and publishes the GitHub Release. If the requested tag already exists,
+the workflow verifies it points to the selected workflow commit before the
+build and again immediately before publication; it fails without moving,
+overwriting, or deleting a mismatched tag.
 
-A pushed tag matching `v*.*.*` remains a valid release trigger. Both trigger
-paths use the same release validation, artifact packaging, checksum creation,
-and changelog-backed release-note extraction.
+The GitHub Web workflow is the only automatic source-release entry point.
+Pushing a tag does not start the release workflow. An existing tag at the
+selected commit may still be published by entering that tag in the Web
+workflow.
+
+A failure before the final GitHub publication operation creates neither a new
+tag nor a GitHub Release. The final operation creates a draft, uploads both
+assets, and then publishes it. If that GitHub operation itself fails, inspect
+any resulting draft and tag before retrying. The workflow does not
+automatically delete or move remote tags or releases during failure recovery.
+
+Do not create the GitHub Release page manually before running this workflow;
+the workflow owns tag creation when needed, asset upload, and release-note
+population.
 
 References:
 

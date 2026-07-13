@@ -370,6 +370,26 @@ cargo test --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
 ```
 
+## Source Change CI
+
+The GitHub Actions **CI** workflow runs the normal Rust verification gate on an
+Apple Silicon macOS runner for:
+
+- Every pull request targeting `main`
+- Every push to `main`
+- A maintainer-requested manual run from the workflow page
+
+The workflow has no path filter, so the **Rust quality gate** check reports for
+every pull request, including documentation-only changes. It installs the
+project's `libusb` and `pkgconf` build prerequisites, verifies that the runner
+architecture is `arm64`, and then runs the commands from [Format and
+Lint](#format-and-lint).
+
+After the workflow has completed successfully at least once, the repository's
+GitHub rules for `main` must require the **Rust quality gate** status check.
+The workflow file produces the check; the GitHub repository rule is what blocks
+a merge while the check is pending or failing.
+
 ## Source Repository Release Workflow
 
 The source repository release workflow is operated from GitHub Actions and
@@ -385,16 +405,25 @@ For the GitHub Web UI release path:
 5. Enter `release_tag`, for example `v0.1.0`.
 6. Run the workflow.
 
-The workflow creates the requested tag at the selected workflow commit when the
-tag does not already exist. If the tag already exists, it must already point to
-that selected commit. The workflow then validates that the tag version matches
-`Cargo.toml`, extracts the matching `CHANGELOG.md` section, builds the Apple
-Silicon macOS archive, creates the `.sha256` file, and creates the GitHub
-Release with those notes and assets.
+The workflow validates that the requested version matches `Cargo.toml`, checks
+any existing tag against the selected commit, runs the normal Rust verification
+gate, builds the Apple Silicon macOS archive, creates the `.sha256` file, and
+extracts the matching `CHANGELOG.md` section before starting publication. The
+final GitHub CLI operation creates a missing tag at the selected commit, uploads
+both assets through a draft release, and then publishes the GitHub Release. An
+existing tag is accepted only when it points to the selected commit and is not
+moved, overwritten, or deleted.
+
+The GitHub Web workflow is the only automatic source-release entry point.
+Pushing a tag does not start it. If any validation, verification, build,
+packaging, or release-note step fails, the workflow creates no new tag or
+release. If the final GitHub publication operation fails, inspect any resulting
+draft and tag before retrying; the workflow does not delete remote release state
+automatically.
 
 Do not manually create the GitHub Release page first. The release workflow owns
-GitHub Release creation so release notes come from the curated `CHANGELOG.md`
-section and do not require manual copying.
+tag creation when needed and GitHub Release creation so release notes come from
+the curated `CHANGELOG.md` section and do not require manual copying.
 
 ## Dependency Maintenance
 

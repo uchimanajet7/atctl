@@ -74,14 +74,19 @@ Normative owner: [SPEC.md](SPEC.md) direct-send and risk requirements and
 Status: accepted
 
 Decision: Source releases build and publish the Apple Silicon macOS archive and
-checksum through GitHub Actions, support tag and manual dispatch paths, validate
-tag/version consistency, and use the matching [CHANGELOG.md](../CHANGELOG.md)
-section for release notes. Homebrew publication remains separate tap-repository
-work.
+checksum through one manually dispatched GitHub Web workflow. The workflow
+validates the version and any existing tag, verifies and packages the selected
+commit, and prepares the matching [CHANGELOG.md](../CHANGELOG.md) section before
+the final operation creates a missing tag, uploads both assets through a draft,
+and publishes the GitHub Release. A pushed tag is not an automatic release
+trigger. Homebrew publication remains separate tap-repository work.
 
-Rationale and consequences: Separating source artifacts from Homebrew
-publication prevents one release action from silently changing another
-repository or distribution channel.
+Rationale and consequences: A single Web-operated entry point gives new and
+existing tags the same operator workflow and prevents validation, build,
+packaging, or release-note failures from leaving a newly published tag without
+a release. Draft-first asset upload prevents an incomplete public release.
+Separating source artifacts from Homebrew publication prevents one release
+action from silently changing another repository or distribution channel.
 
 Normative owner: the source release workflow, [CHANGELOG.md](../CHANGELOG.md),
 [PACKAGING.md](PACKAGING.md), and the [SPEC.md](SPEC.md) packaging contract.
@@ -414,3 +419,28 @@ are retained but no longer define the normal export destination.
 
 Normative owner: [SPEC.md](SPEC.md) Response-export requirements,
 [SAFETY.md](SAFETY.md), and [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+## OQ-026: Source Change CI Quality Gate
+
+Status: accepted
+
+Decision: The source repository provides one **Rust quality gate** job for every
+pull request targeting `main`, every push to `main`, and manual dispatch. The
+job runs the documented normal Rust verification gate on the GitHub-hosted
+`macos-26` Apple Silicon runner, verifies `arm64`, uses read-only repository
+permission and immutable Action revisions, and does not use pull-request path
+filters. After the job has completed successfully, the GitHub repository rules
+for `main` require that named check before merge.
+
+Rationale and consequences: Contributors and maintainers receive the same
+automatic result for source, test, workflow, and documentation changes without
+depending on a remembered local check. A target-specific runner exercises the
+supported Apple Silicon macOS build environment, and the absence of path filters
+keeps the required-check result from remaining pending on an otherwise eligible
+pull request. The release workflow retains an independent pre-publication run of
+the same gate. GitHub rule configuration remains a separate repository-owner
+operation after the workflow has produced a selectable successful check.
+
+Normative owner: [SPEC.md](SPEC.md) verification requirements,
+[DEVELOPMENT.md](DEVELOPMENT.md) maintainer procedure, and
+[CONTRIBUTING.md](../CONTRIBUTING.md) contributor verification guidance.

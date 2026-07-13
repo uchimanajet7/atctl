@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Rust quality gate
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Verify runner architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          architecture="$(uname -m)"
+          if [[ "${architecture}" != "arm64" ]]; then
+            echo "Expected an Apple Silicon runner, found ${architecture}." >&2
+            exit 1
+          fi
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install libusb pkgconf
+
+      - name: Install Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal --component rustfmt,clippy
+          rustup default stable
+
+      - name: Run Rust quality gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --check
+          cargo check --all-targets --all-features --locked
+          cargo test --all-features --locked
+          cargo clippy --all-targets --all-features --locked -- -D warnings
