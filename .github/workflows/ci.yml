@@ -49,8 +49,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy
-          rustup default stable
+          rustc -Vv
+          cargo -V
 
       - name: Run Rust quality gate
         shell: bash

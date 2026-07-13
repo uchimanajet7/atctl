@@ -268,7 +268,10 @@ Developers need:
 - `git`: source control, if cloning the repository
 
 REQ-DEP-004A: The Rust compiler baseline MUST be declared in `Cargo.toml` with
-`rust-version`. The current baseline is Rust 1.96 with Edition 2024.
+`rust-version`. The repository developer and CI toolchain MUST be pinned to the
+corresponding complete stable release in `rust-toolchain.toml`. The current
+baseline is Rust 1.97 with Edition 2024, and the pinned toolchain is Rust
+1.97.0.
 
 REQ-DEP-004B: Dependency maintenance MUST update `Cargo.toml` and `Cargo.lock`
 together when direct dependency baselines change. Lockfile-only updates MAY be
@@ -280,16 +283,20 @@ information before changing direct dependency versions and MUST run the normal
 Rust verification gate before the update is reported complete.
 
 REQ-DEP-004D: The source repository MUST carry Dependabot version-update
-configuration for both Cargo dependencies and GitHub Actions references.
+configuration for Cargo dependencies, the pinned Rust toolchain, and GitHub
+Actions references.
 
 REQ-DEP-004E: Pull requests that change Cargo dependencies or GitHub Actions
-workflow dependencies MUST run a dependency review workflow. Vulnerabilities at
-moderate severity or higher MUST fail the review.
+workflow dependencies, or the pinned Rust toolchain, MUST run a dependency
+review workflow. Vulnerabilities at moderate severity or higher MUST fail the
+review.
 
 REQ-DEP-004F: The source repository MUST carry a scheduled and manually
 triggerable dependency-maintenance workflow that checks the Cargo lockfile,
-RustSec advisories, direct dependency drift, duplicate dependency tree signal,
-and GitHub Actions workflow syntax.
+Rust stable/toolchain drift, fixed maintenance-tool drift, RustSec advisories,
+direct dependency drift, duplicate dependency tree signal, and GitHub Actions
+workflow syntax. Newer direct Cargo dependencies and newer fixed Rust or
+maintenance-tool releases MUST fail the scheduled check so drift is visible.
 
 REQ-DEP-004G: The scheduled dependency-maintenance workflow MUST use a
 non-zero minute value in its cron expression instead of scheduling exactly at
@@ -304,6 +311,12 @@ REQ-DEP-004I: Remote GitHub Actions used by source-repository workflows MUST be
 pinned by full-length commit SHA. The same line SHOULD keep the corresponding
 version tag comment so Dependabot can update the documented version reference
 when a newer action version is available.
+
+REQ-DEP-004J: Fixed versions for repository maintenance tools that are not
+covered by a supported Dependabot ecosystem MUST have one repository-owned
+version source, a local and scheduled latest-version check against the
+authoritative upstream, and a documented project script that updates the pin.
+CI and local maintenance MUST consume the same fixed version source.
 
 REQ-DEP-005: Development docs MUST list dependency install commands separately
 with comments explaining purpose.
@@ -4000,6 +4013,25 @@ REQ-PKG-016: The Apple Silicon macOS GitHub Release archive asset MUST be named
 `atctl-v{VERSION}-aarch64-apple-darwin.tar.gz`, where `{VERSION}` is the
 semantic version without the leading `v`.
 
+REQ-PKG-016A: The archive MUST contain one top-level directory named
+`atctl-v{VERSION}-aarch64-apple-darwin/`. That directory MUST contain exactly:
+
+```text
+atctl-v{VERSION}-aarch64-apple-darwin/
+  atctl
+  LICENSE
+  THIRD-PARTY-NOTICES.txt
+```
+
+REQ-PKG-016B: `atctl` MUST be a regular Apple Silicon Mach-O executable with
+mode `0755`. `LICENSE` and `THIRD-PARTY-NOTICES.txt` MUST be regular files with
+mode `0644`. The archive MUST NOT contain absolute paths, parent-directory
+traversal, symlinks, build directories, debug files, or any additional file.
+
+REQ-PKG-016C: The archive `LICENSE` MUST be byte-for-byte identical to the root
+MIT `LICENSE` for `atctl`. It MUST NOT be replaced by or combined with a
+third-party dependency license.
+
 REQ-PKG-017: The checksum asset for the Apple Silicon macOS GitHub Release
 archive MUST be named `atctl-v{VERSION}-aarch64-apple-darwin.tar.gz.sha256`.
 
@@ -4013,6 +4045,33 @@ specification is revised.
 
 REQ-PKG-020: Source repository releases MUST NOT publish provenance,
 attestation, or SBOM metadata unless this specification is revised.
+
+REQ-PKG-020A: `THIRD-PARTY-NOTICES.txt` MUST identify each transitive Rust
+crate in the locked, non-development `aarch64-apple-darwin` Cargo dependency
+graph by name and version and MUST include the applicable accepted license text
+and package-specific notices. Cargo `build-dependencies` and `dev-dependencies`
+MUST be excluded.
+
+REQ-PKG-020B: `THIRD-PARTY-NOTICES.txt` MUST separately identify the native
+`libusb` dependency by version, upstream source, and SPDX license expression
+`LGPL-2.1-or-later`. It MUST include the complete LGPL 2.1 license text and
+state that `libusb` is dynamically linked and is not included in the archive.
+
+REQ-PKG-020C: Third-party notices are human-readable license notices, not an
+SBOM, provenance statement, or attestation. Their publication does not change
+REQ-PKG-020.
+
+REQ-PKG-020D: Rust dependency notices MUST be generated from the locked,
+target-specific Cargo dependency graph with the repository license policy and
+template. Generation MUST run offline after tool and dependency installation,
+MUST fail for an unaccepted or unidentified license, and MUST produce the same
+output for repeated runs with unchanged inputs.
+
+REQ-PKG-020E: The Apple Silicon release binary MUST dynamically link to the
+Homebrew `libusb` installation used by the release build. Release packaging
+MUST fail before publication if the binary uses a vendored or statically linked
+`libusb`, is not an arm64 Mach-O executable, or links `libusb` from an
+unexpected build path.
 
 REQ-PKG-021: Homebrew formula, tap CI, tap metadata, and bottle metadata belong
 to the tap repository `uchimanajet7/homebrew-atctl`.
@@ -4089,7 +4148,7 @@ release tag version without the leading `v` matches `Cargo.toml`
 
 REQ-PKG-038A: The source repository release workflow MUST expose a manual
 `workflow_dispatch` operation with a required `release_tag` input such as
-`v0.1.0` so an operator can start the source repository release from the GitHub
+`v0.2.0` so an operator can start the source repository release from the GitHub
 Actions Web UI without manually creating a GitHub Release page or copying
 release notes.
 
@@ -4116,6 +4175,13 @@ final GitHub publication operation has started MAY leave a recoverable draft
 and associated tag. The workflow MUST NOT automatically move or delete remote
 tags or releases as failure recovery; the operator MUST inspect that remote
 state before retrying.
+
+REQ-PKG-038E: Before publication, the release workflow MUST verify the binary
+architecture and native linkage, generate and validate third-party notices,
+verify the exact archive tree and file modes, compare the packaged project
+license with the repository license, and verify the published checksum against
+the completed archive. These checks MUST use the same repository scripts that
+maintainers can run locally.
 
 REQ-PKG-039: The source repository release workflow MUST extract the
 matching released-version section from `CHANGELOG.md` and use that extracted
@@ -4352,6 +4418,16 @@ supersedes.
   https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
 - GitHub CLI `gh release create`:
   https://cli.github.com/manual/gh_release_create
+- Rust 1.97.0 release announcement:
+  https://blog.rust-lang.org/2026/07/09/Rust-1.97.0/
+- rustup toolchain-file overrides:
+  https://rust-lang.github.io/rustup/overrides.html#the-toolchain-file
+- Dependabot supported ecosystems, including Rust toolchains:
+  https://docs.github.com/en/code-security/reference/supply-chain-security/supported-ecosystems-and-repositories
+- cargo-about:
+  https://docs.rs/crate/cargo-about/latest
+- actionlint releases:
+  https://github.com/rhysd/actionlint/releases
 - Keep a Changelog:
   https://keepachangelog.com/en/1.1.0/
 - Homebrew libusb formula:

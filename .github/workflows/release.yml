@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to create or publish, for example v0.1.0"
+        description: "Release tag to create or publish, for example v0.2.0"
         required: true
         type: string
 
@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           TAG="${RELEASE_TAG_INPUT}"
           if [[ ! "${TAG}" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tag must use a v-prefixed semantic version such as v0.1.0: ${TAG}" >&2
+            echo "Release tag must use a v-prefixed semantic version such as v0.2.0: ${TAG}" >&2
             exit 1
           fi
           VERSION="${TAG#v}"
@@ -78,10 +78,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy --target "${TARGET}"
-          rustup default stable
+          rustc -Vv
+          cargo -V
           brew update
           brew install libusb pkgconf
+          source scripts/maintenance/tool-versions.env
+          cargo install --locked cargo-about --version "${CARGO_ABOUT_VERSION}" --features cli
 
       - name: Verify release source
         shell: bash
@@ -106,10 +108,11 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           ASSET="atctl-v${VERSION}-${TARGET}.tar.gz"
 
-          mkdir -p dist/package
-          cp "target/${TARGET}/release/atctl" "dist/package/atctl"
-          tar -C dist/package -czf "dist/${ASSET}" atctl
-          (cd dist && shasum -a 256 "${ASSET}" > "${ASSET}.sha256")
+          scripts/release/package-release.sh \
+            "${VERSION}" \
+            "${TARGET}" \
+            "target/${TARGET}/release/atctl" \
+            dist
 
           {
             echo "asset=${ASSET}"

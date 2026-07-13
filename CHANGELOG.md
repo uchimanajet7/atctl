@@ -6,12 +6,20 @@ All notable project changes should be recorded in this file.
 
 ### Added
 
+- Added a repository-pinned Rust toolchain plus Dependabot, scheduled CI, local
+  drift checks, and update commands for Rust and fixed maintenance tools.
 - Added `--no-log` to direct send, preset execution, Sequence execution, and
   TUI startup to suppress new masked history and session logs for one
   invocation without disabling explicit raw diagnostic export.
+- Added release archives with a versioned top-level directory containing the
+  executable, the project MIT license, and generated third-party notices for
+  target-specific Rust dependencies and the dynamically linked `libusb`
+  dependency.
 
 ### Changed
 
+- Updated the Rust compiler and Cargo baseline from 1.96 to 1.97.0 and refreshed
+  compatible locked dependencies.
 - Standardized generated history and session logs on the XDG state directory,
   including `XDG_STATE_HOME` overrides and the `$HOME/.local/state` fallback.
 - Documented the complete masked-log lifecycle, including aggregate history,
@@ -29,6 +37,9 @@ All notable project changes should be recorded in this file.
   or Sequence, with masking state, expected effects, and confirmation actions
   shown separately. Unmasked Response copy and export now require explicit
   action-specific confirmation before clipboard or file output.
+- Added pre-publication release checks for Apple Silicon architecture, archive
+  contents and permissions, checksums, dependency notices, and dynamic linkage
+  to Homebrew `libusb`.
 
 ### Removed
 

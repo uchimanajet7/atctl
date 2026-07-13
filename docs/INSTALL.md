@@ -57,6 +57,54 @@ dependencies for bottled installs.
 GitHub Releases archives are release artifacts and manual artifacts. They are
 not the normal end-user install path.
 
+## Manual GitHub Release Archive
+
+Use this path only when you need to inspect or run a source-repository release
+artifact without installing the Homebrew formula. The normal install path
+remains `brew install uchimanajet7/atctl/atctl`.
+
+From the [atctl Releases page](https://github.com/uchimanajet7/atctl/releases),
+download both files for the same version:
+
+```text
+atctl-v0.2.0-aarch64-apple-darwin.tar.gz
+atctl-v0.2.0-aarch64-apple-darwin.tar.gz.sha256
+```
+
+In the directory containing those downloads, verify the archive before
+extracting it:
+
+```sh
+shasum -a 256 -c atctl-v0.2.0-aarch64-apple-darwin.tar.gz.sha256
+tar -xzf atctl-v0.2.0-aarch64-apple-darwin.tar.gz
+```
+
+The extracted directory contains:
+
+```text
+atctl-v0.2.0-aarch64-apple-darwin/
+  atctl
+  LICENSE
+  THIRD-PARTY-NOTICES.txt
+```
+
+The executable dynamically links to Homebrew `libusb`. Install that runtime
+dependency, then verify the executable:
+
+```sh
+brew install libusb
+./atctl-v0.2.0-aarch64-apple-darwin/atctl --version
+```
+
+`LICENSE` contains the MIT license for `atctl`.
+`THIRD-PARTY-NOTICES.txt` identifies target-specific Rust dependencies and the
+dynamically linked `libusb` dependency with their applicable license texts.
+
+The direct-download binary is not Developer ID signed or Apple notarized.
+Depending on how it was downloaded and on local macOS policy, Gatekeeper or a
+quarantine warning may appear. The Homebrew formula remains the supported
+normal installation path.
+
 ## Manual libusb Fallback
 
 Use this only when troubleshooting Homebrew dependency installation or when

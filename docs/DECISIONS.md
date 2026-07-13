@@ -444,3 +444,30 @@ operation after the workflow has produced a selectable successful check.
 Normative owner: [SPEC.md](SPEC.md) verification requirements,
 [DEVELOPMENT.md](DEVELOPMENT.md) maintainer procedure, and
 [CONTRIBUTING.md](../CONTRIBUTING.md) contributor verification guidance.
+
+## OQ-027: Release Archive and Third-Party Notices
+
+Status: accepted
+
+Decision: The Apple Silicon GitHub Release archive contains one versioned
+top-level directory with exactly the `atctl` executable, the project MIT
+`LICENSE`, and `THIRD-PARTY-NOTICES.txt`. Rust dependency notices are generated
+from the locked, non-development `aarch64-apple-darwin` dependency graph by the
+pinned `cargo-about` tool. The notice also identifies the separately linked
+native `libusb` dependency and includes the LGPL 2.1 license text. Release
+packaging verifies that the arm64 Mach-O binary dynamically links to Homebrew
+`libusb` and fails before publication for an unexpected or static linkage
+result. The cargo-about pin is owned once by the repository maintenance-tool
+version file, checked against crates.io by local and scheduled maintenance, and
+updated through the repository version-update script.
+
+Rationale and consequences: A manually downloaded archive is self-contained
+for executable identity and license review without mixing the MIT project
+license with third-party terms. Target-specific, reproducible notice generation
+keeps dependency license disclosure aligned with the shipped binary. Dynamic
+link verification preserves the documented Homebrew runtime dependency and
+prevents an unnoticed vendored `libusb` fallback from changing distribution
+obligations.
+
+Normative owner: [SPEC.md](SPEC.md) release packaging requirements and
+[PACKAGING.md](PACKAGING.md) maintainer procedure.

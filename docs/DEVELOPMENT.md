@@ -26,12 +26,13 @@ brew install pkgconf
 
 If you use `rustup` instead of Homebrew Rust, that is acceptable. `libusb` must
 still be available through Homebrew for the initial Apple Silicon Mac setup.
-The active Rust baseline is the `rust-version` declared in `Cargo.toml`.
-Currently this is Rust 1.96 with Edition 2024. When using `rustup`, refresh the
-stable toolchain before dependency maintenance:
+The repository pins Rust 1.97.0 in `rust-toolchain.toml` for local and CI use,
+and declares the corresponding Rust 1.97 baseline in `Cargo.toml`. With
+`rustup`, running Rust commands from the repository selects that pinned
+toolchain and installs its declared Rustfmt and Clippy components when needed.
+Verify the selected versions with:
 
 ```sh
-rustup update stable
 rustc -Vv
 cargo -V
 ```
@@ -402,17 +403,43 @@ For the GitHub Web UI release path:
 2. Select the **Release** workflow.
 3. Select **Run workflow**.
 4. Select the branch or commit that should be released.
-5. Enter `release_tag`, for example `v0.1.0`.
+5. Enter `release_tag`, for example `v0.2.0`.
 6. Run the workflow.
 
 The workflow validates that the requested version matches `Cargo.toml`, checks
 any existing tag against the selected commit, runs the normal Rust verification
-gate, builds the Apple Silicon macOS archive, creates the `.sha256` file, and
-extracts the matching `CHANGELOG.md` section before starting publication. The
-final GitHub CLI operation creates a missing tag at the selected commit, uploads
-both assets through a draft release, and then publishes the GitHub Release. An
-existing tag is accepted only when it points to the selected commit and is not
-moved, overwritten, or deleted.
+gate, builds the Apple Silicon macOS binary against Homebrew `libusb`, generates
+target-specific third-party notices, verifies binary architecture and dynamic
+linkage, validates the exact archive tree and modes, creates and verifies the
+`.sha256` file, and extracts the matching `CHANGELOG.md` section before starting
+publication. The final GitHub CLI operation creates a missing tag at the
+selected commit, uploads both assets through a draft release, and then publishes
+the GitHub Release. An existing tag is accepted only when it points to the
+selected commit and is not moved, overwritten, or deleted.
+
+To create the same release artifacts locally, install the additional pinned
+license tool and build against Homebrew `libusb` in a new target directory:
+
+```sh
+brew install libusb pkgconf
+source scripts/maintenance/tool-versions.env
+cargo install --locked cargo-about --version "${CARGO_ABOUT_VERSION}" --features cli
+
+release_target_dir="$(mktemp -d)"
+release_output_dir="$(mktemp -d)"
+CARGO_TARGET_DIR="${release_target_dir}" \
+  cargo build --release --locked --target aarch64-apple-darwin
+scripts/release/package-release.sh \
+  0.2.0 \
+  aarch64-apple-darwin \
+  "${release_target_dir}/aarch64-apple-darwin/release/atctl" \
+  "${release_output_dir}"
+```
+
+The script verifies the arm64 Mach-O identity, dynamic Homebrew `libusb`
+linkage, generated license notices, exact archive contents and modes, project
+license identity, and checksum before moving completed assets into the output
+directory. Existing destination assets are never overwritten.
 
 The GitHub Web workflow is the only automatic source-release entry point.
 Pushing a tag does not start it. If any validation, verification, build,
@@ -434,8 +461,14 @@ may update only `Cargo.lock`.
 Install the maintenance tools separately so local checks match CI:
 
 ```sh
+# Load the repository-owned cargo-about and actionlint pins.
+source scripts/maintenance/tool-versions.env
+
 # RustSec advisory scanner.
 cargo install cargo-audit
+
+# Target-specific Rust dependency license report generator.
+cargo install --locked cargo-about --version "${CARGO_ABOUT_VERSION}" --features cli
 
 # Direct dependency drift report.
 cargo install --locked cargo-outdated
@@ -453,11 +486,42 @@ scripts/maintenance/check-deps.sh
 The check script runs:
 
 - `cargo metadata --locked --format-version 1`
+- current stable Rust, repository toolchain, cargo-about, and actionlint pin
+  comparison against their authoritative upstreams
 - `cargo audit`
 - `cargo outdated --workspace --root-deps-only`
 - `cargo tree --duplicates`
-- `actionlint`, or the pinned `rhysd/actionlint:1.7.12` Docker image when
-  `actionlint` is not installed but Docker is available
+- repository maintenance and release shell syntax checks
+- `cargo fetch --locked --target aarch64-apple-darwin` before offline notice
+  generation
+- pinned, target-specific third-party notice generation twice with an exact
+  output comparison
+- `actionlint`, or the pinned `rhysd/actionlint` Docker image defined by
+  `scripts/maintenance/tool-versions.env` when `actionlint` is not installed
+  but Docker is available
+
+Dependabot checks Cargo dependencies, `rust-toolchain.toml`, and remote GitHub
+Actions every week. `scripts/maintenance/check-version-drift.sh`, which is also
+run by the scheduled maintenance workflow, covers the exact Rust release and
+the pinned cargo-about and actionlint versions. It fails with the exact update
+command when one of those upstreams publishes a newer stable release. The
+scheduled workflow also treats a newer direct Cargo dependency as a failing
+drift signal, while a normal local run prints the direct-dependency report.
+
+Update a fixed tool version with one of these commands:
+
+```sh
+scripts/maintenance/update-tool-versions.sh rust <version>
+scripts/maintenance/update-tool-versions.sh cargo-about <version>
+scripts/maintenance/update-tool-versions.sh actionlint <version>
+```
+
+The Rust update command changes both `rust-toolchain.toml` and the matching
+`Cargo.toml` baseline. The other commands update the single version source used
+by local scripts and CI. Run `scripts/maintenance/check-deps.sh` afterward; a
+Rust baseline change may also permit newer compatible transitive packages, so
+review `cargo update --dry-run` and use the dependency update script when the
+lockfile should be refreshed.
 
 Use current Cargo and crates.io data before changing direct dependency
 versions:

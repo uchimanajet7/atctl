@@ -1,0 +1,28 @@
+RUST DEPENDENCIES
+
+The following non-development Rust crates are in the locked
+aarch64-apple-darwin Cargo dependency graph used to build atctl. Cargo
+build-dependencies and dev-dependencies are excluded.
+
+Components:
+{{#each crates}}
+{{#if package.source}}
+- {{package.name}} {{package.version}} ({{license}})
+  Source: {{#if package.repository}}{{package.repository}}{{else}}https://crates.io/crates/{{package.name}}{{/if}}
+{{/if}}
+{{/each}}
+
+Dependency license notices:
+{{#each licenses}}
+{{#each used_by}}
+{{#if crate.source}}
+------------------------------------------------------------------------
+Component: {{crate.name}} {{crate.version}}
+License: {{../name}} ({{../id}})
+Source: {{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}
+------------------------------------------------------------------------
+{{{../text}}}
+
+{{/if}}
+{{/each}}
+{{/each}}

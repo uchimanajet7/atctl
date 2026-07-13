@@ -97,6 +97,33 @@ Release artifacts:
 - Checksum asset:
   `atctl-v{VERSION}-aarch64-apple-darwin.tar.gz.sha256`
 
+Archive contents:
+
+```text
+atctl-v{VERSION}-aarch64-apple-darwin/
+  atctl
+  LICENSE
+  THIRD-PARTY-NOTICES.txt
+```
+
+The archive contains exactly these three regular files under one versioned
+top-level directory. `atctl` has mode `0755`; both notice files have mode
+`0644`. `LICENSE` is byte-for-byte identical to the root project MIT license.
+The archive contains no symlinks, build directories, or additional files.
+
+`THIRD-PARTY-NOTICES.txt` has two ownership sections:
+
+- Native runtime dependency: the Homebrew `libusb` version used by the build,
+  its upstream source, `LGPL-2.1-or-later`, dynamic-linking statement, and full
+  LGPL 2.1 text.
+- Rust dependencies: target-specific transitive components in the locked,
+  non-development Cargo graph and their package-specific license texts,
+  generated from `Cargo.lock` by `cargo-about`.
+
+These human-readable notices are not an SBOM, provenance statement, or
+attestation. The release still publishes only the archive and its corresponding
+checksum asset.
+
 `{VERSION}` is the semantic version without the leading `v`. The
 `aarch64-apple-darwin` suffix identifies the Rust/macOS Apple Silicon target.
 This naming is a common Rust CLI release-asset convention, not a formal GitHub
@@ -117,7 +144,7 @@ Release notes:
 - The source repository release workflow extracts the matching released-version
   section from `CHANGELOG.md`.
 - The released-version section heading must include the package version and a
-  `YYYY-MM-DD` release date, for example `## 0.1.0 - 2026-07-05`.
+  `YYYY-MM-DD` release date, for example `## 0.2.0 - YYYY-MM-DD`.
 - The release workflow fails before tag or GitHub Release publication when the
   tag version does not match `Cargo.toml` or when `CHANGELOG.md` does not
   contain a non-empty section for that version.
@@ -133,18 +160,20 @@ GitHub Web UI release operation:
 3. Select the **Release** workflow.
 4. Select **Run workflow**.
 5. Select the branch or commit that should be released.
-6. Enter `release_tag`, for example `v0.1.0`.
+6. Enter `release_tag`, for example `v0.2.0`.
 7. Run the workflow.
 
 The workflow validates the Cargo version and any existing tag, runs the normal
-Rust verification gate, builds the archive, creates the checksum, and extracts
-release notes from `CHANGELOG.md` before starting publication. After those
-steps succeed, the final GitHub CLI operation creates a missing tag at the
-selected workflow commit, uploads the archive and checksum through a draft
-release, and publishes the GitHub Release. If the requested tag already exists,
-the workflow verifies it points to the selected workflow commit before the
-build and again immediately before publication; it fails without moving,
-overwriting, or deleting a mismatched tag.
+Rust verification gate, builds the binary against Homebrew `libusb`, generates
+target-specific third-party notices, verifies the architecture and dynamic
+linkage, creates and validates the exact archive tree and modes, verifies the
+checksum, and extracts release notes from `CHANGELOG.md` before starting
+publication. After those steps succeed, the final GitHub CLI operation creates
+a missing tag at the selected workflow commit, uploads the archive and checksum
+through a draft release, and publishes the GitHub Release. If the requested tag
+already exists, the workflow verifies it points to the selected workflow commit
+before the build and again immediately before publication; it fails without
+moving, overwriting, or deleting a mismatched tag.
 
 The GitHub Web workflow is the only automatic source-release entry point.
 Pushing a tag does not start the release workflow. An existing tag at the
@@ -176,6 +205,58 @@ References:
 - https://github.com/BurntSushi/ripgrep/releases
 - https://github.com/rust-lang/rust-bindgen/releases
 
+## Local Release Artifact Verification
+
+Install the build and notice-generation tools:
+
+```sh
+brew install libusb pkgconf
+source scripts/maintenance/tool-versions.env
+cargo install --locked cargo-about --version "${CARGO_ABOUT_VERSION}" --features cli
+```
+
+Build into a new target directory so Cargo evaluates the installed Homebrew
+`libusb` dependency for this release build, then run the same packaging script
+used by GitHub Actions:
+
+```sh
+release_target_dir="$(mktemp -d)"
+release_output_dir="$(mktemp -d)"
+CARGO_TARGET_DIR="${release_target_dir}" \
+  cargo build --release --locked --target aarch64-apple-darwin
+scripts/release/package-release.sh \
+  0.2.0 \
+  aarch64-apple-darwin \
+  "${release_target_dir}/aarch64-apple-darwin/release/atctl" \
+  "${release_output_dir}"
+```
+
+The packaging command refuses to overwrite an existing archive or checksum and
+fails if any of these checks does not match the release contract:
+
+- arm64 Mach-O executable identity
+- dynamic linkage to Homebrew `libusb`
+- accepted, target-specific Rust dependency licenses
+- deterministic third-party notice output
+- exact archive names, tree, regular-file types, and modes
+- project-license identity and archive checksum
+
+Generate the notice file by itself when reviewing dependency-license changes:
+
+```sh
+scripts/maintenance/generate-third-party-notices.sh \
+  /tmp/THIRD-PARTY-NOTICES.txt \
+  "$(pkg-config --modversion libusb-1.0)"
+```
+
+References:
+
+- https://embarkstudios.github.io/cargo-about/
+- https://embarkstudios.github.io/cargo-about/cli/generate/config.html
+- https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
+- https://github.com/libusb/libusb
+- https://formulae.brew.sh/formula/libusb
+
 ## Homebrew Formula and Bottle Contract
 
 The normal Homebrew distribution uses the tap formula. The preferred normal
@@ -196,7 +277,7 @@ repository release archive. The formula should follow this contract:
 class Atctl < Formula
   desc "CLI/TUI AT command controller for USB cellular modems"
   homepage "https://github.com/uchimanajet7/atctl"
-  url "https://github.com/uchimanajet7/atctl/archive/refs/tags/v0.1.0.tar.gz"
+  url "https://github.com/uchimanajet7/atctl/archive/refs/tags/v0.2.0.tar.gz"
   sha256 "<source archive sha256>"
   license "MIT"
 

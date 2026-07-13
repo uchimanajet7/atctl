@@ -10,6 +10,15 @@ updates:
       timezone: "Etc/UTC"
     open-pull-requests-limit: 5
 
+  - package-ecosystem: "rust-toolchain"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "07:33"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
