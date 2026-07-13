@@ -4,6 +4,41 @@ All notable project changes should be recorded in this file.
 
 ## Unreleased
 
+### Added
+
+- Added `--no-log` to direct send, preset execution, Sequence execution, and
+  TUI startup to suppress new masked history and session logs for one
+  invocation without disabling explicit raw diagnostic export.
+
+### Changed
+
+- Standardized generated history and session logs on the XDG state directory,
+  including `XDG_STATE_HOME` overrides and the `$HOME/.local/state` fallback.
+- Documented the complete masked-log lifecycle, including aggregate history,
+  per-execution session logs, manual retention and deletion, and separate raw
+  diagnostic exports.
+- Added state-aware TUI file actions: selected history and session logs can be
+  opened in Response or revealed directly in Finder, and opened logs keep copy,
+  reveal, and close actions.
+- Replaced fixed-directory Response snapshots with explicit Response export.
+  The TUI asks for a destination folder on every export, and `send`,
+  `preset run`, and `sequence run` accept `--export-response <PATH>` without
+  changing normal stdout. Exports follow foreground masking and never overwrite
+  an existing file.
+- Unified TUI risk presentation on one exact classification label per command
+  or Sequence, with masking state, expected effects, and confirmation actions
+  shown separately. Unmasked Response copy and export now require explicit
+  action-specific confirmation before clipboard or file output.
+
+### Removed
+
+- Removed the per-user `config.toml` contract and persistent USB/log defaults;
+  USB overrides are explicit runtime options and log relocation uses
+  `XDG_STATE_HOME`.
+- Removed the ineffective `preset run --continue-on-error` option. Preset
+  execution accepts one preset name and runs one AT command; named multi-step
+  workflows use `sequence run`.
+
 ## 0.1.0 - 2026-07-05
 
 Initial release of `atctl`.

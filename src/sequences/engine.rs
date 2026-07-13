@@ -1688,10 +1688,9 @@ fn render_sequence_modem_response_for_display(text: &str) -> String {
 fn mask_sms_header_sender(line: &str) -> Option<String> {
     let (prefix, sender_index, rest) = if let Some(rest) = line.trim().strip_prefix("+CMGL:") {
         ("+CMGL:", 2, rest)
-    } else if let Some(rest) = line.trim().strip_prefix("+CMGR:") {
-        ("+CMGR:", 1, rest)
     } else {
-        return None;
+        let rest = line.trim().strip_prefix("+CMGR:")?;
+        ("+CMGR:", 1, rest)
     };
     let mut fields = split_csv_fields(rest);
     if let Some(field) = fields.get_mut(sender_index)

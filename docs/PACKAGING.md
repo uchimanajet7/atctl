@@ -22,8 +22,8 @@ validated:
 ## Product Distribution Classification
 
 `atctl` is a CLI/TUI executable. It is not a macOS GUI application, app
-bundle, or Homebrew Cask distribution target unless a later approved product
-specification adds a GUI application.
+bundle, or Homebrew Cask distribution target. A GUI distribution would require
+a separate product specification and packaging contract.
 
 End users install the command through Homebrew. GitHub Releases
 artifacts are release outputs and manual artifacts; they are not the normal
@@ -108,10 +108,9 @@ Checksum content:
 <sha256 hex>  atctl-v{VERSION}-aarch64-apple-darwin.tar.gz
 ```
 
-Source repository releases publish one checksum file per archive. They do not
-publish an aggregate checksum manifest, provenance, attestation, or SBOM
-metadata unless those metadata types are separately approved before being
-promised or implemented.
+Source repository releases publish one checksum file per archive. The current
+artifact contract does not include an aggregate checksum manifest, provenance,
+attestation, or SBOM metadata.
 
 Release notes:
 
@@ -189,9 +188,11 @@ class Atctl < Formula
   sha256 "<source archive sha256>"
   license "MIT"
 
-  depends_on "rust" => :build
   depends_on "pkgconf" => :build
+  depends_on "rust" => :build
+  depends_on arch: :arm64
   depends_on "libusb"
+  depends_on :macos
 
   def install
     system "cargo", "install", *std_cargo_args
@@ -204,9 +205,9 @@ end
 ```
 
 Bottles are owned by the Homebrew tap repository. The source repository release
-workflow must not silently publish or update tap bottles. If cross-repository
-automation is later introduced, the exact token storage, write permissions, and
-update behavior must be explicitly approved first.
+workflow does not publish or update tap Formulae or bottles. Formula updates and
+bottle publication are explicit tap-repository operations performed after the
+source release is available.
 
 For bottled installs:
 
@@ -225,9 +226,9 @@ output. It is not the normal end-user install path. End users install
 through Homebrew, and the Homebrew formula source-build fallback remains a
 separate packaging concern.
 
-`Cargo.toml` uses an explicit `include` whitelist so project-local agent files,
-backups, local history, build outputs, and release-workflow drafts cannot be
-accidentally included in Cargo package output. The whitelist is limited to:
+`Cargo.toml` uses an explicit `include` whitelist so the Cargo source package
+contains only the source, maintained examples, and public package files needed
+by consumers. The whitelist is limited to:
 
 - `src/**`
 - `examples/presets/**`
@@ -295,248 +296,56 @@ References:
 - `pkgconf` provides the `pkg-config` command used during source builds.
 - Rust is needed for source builds only.
 
-## Final-Phase Release and Homebrew Workflow Plan
+## Release Operator Workflow
 
-This section records the final-phase packaging guidance and current release
-workflow boundary. It applies after the application features have been
-implemented and approved. Source repository release artifact automation is now
-present; Homebrew tap formula and bottle automation remain separate pending
-tap-repository work.
+Complete the Rust source repository release before updating Homebrew. The
+prepared tap repository is a separate release surface; preparing the repository
+does not publish a Formula or bottle for a source release.
 
-Before final packaging approval, the implementation was not allowed to create:
+### Source Repository
 
-- `.github/workflows/release.yml` in the source repository.
-- `Formula/atctl.rb` in the Homebrew tap repository.
-- Tap repository CI workflows.
-- GitHub Releases, release assets, tags, bottles, or cross-repository writes.
+Use the GitHub Web UI release operation in **Source Repository Release
+Artifacts**. A successful source release provides:
 
-### Source Repository Release Workflow
+- A version tag that matches `Cargo.toml`.
+- A GitHub Release populated from the matching `CHANGELOG.md` section.
+- The Apple Silicon macOS archive and its checksum file.
 
-The source repository release workflow is:
+The source release workflow does not update the Homebrew tap.
 
-```text
-.github/workflows/release.yml
-```
+### Homebrew Tap Repository
 
-The release workflow uses:
+After the source release is available, continue in
+`https://github.com/uchimanajet7/homebrew-atctl`:
 
-- Triggers: pushed tags matching `v*.*.*`, and manual GitHub Actions
-  `workflow_dispatch` runs with a required `release_tag` input.
-- Runner: `macos-26`, which current GitHub-hosted runner documentation and
-  GitHub Changelog list as a standard arm64 macOS runner. This avoids the
-  moving `macos-latest` label for release builds.
-- Token permissions: `contents: write` for the release job because GitHub
-  Actions documents that this permission allows creating a release. Other
-  permissions should remain unset or read-only unless a later approved workflow
-  step requires them.
-- Actions: first-party `actions/checkout` only. Release creation should use the
-  GitHub CLI already available on the runner instead of a third-party release
-  action.
-- Rust target: `aarch64-apple-darwin`.
+1. Open **Actions** and run **Update Formula PR** with the released source tag.
+2. Review the generated `Formula/atctl.rb` change, including the source archive
+   URL, SHA-256, platform restrictions, dependencies, and tap CI result.
+3. When bottle publication is required, run **Publish Bottles** with the
+   reviewed pull-request number and its expected head SHA.
+4. Merge only the reviewed Formula and bottle metadata produced by the tap
+   workflow.
 
-The workflow steps are:
-
-1. Check out the source repository.
-2. Validate the release version:
-   - The release tag must start with `v`.
-   - The tag version without the leading `v` must match `Cargo.toml`
-     `package.version`.
-3. For manual GitHub Actions runs, prepare the release tag:
-   - Create the requested tag at the selected workflow commit when the tag does
-     not exist.
-   - Verify that an existing tag points to the selected workflow commit.
-   - Fail without moving or overwriting an existing tag that points to another
-     commit.
-4. Install or confirm build dependencies:
-   - Rust toolchain with `rustfmt` and `clippy`.
-   - `libusb`.
-   - `pkgconf`.
-5. Run:
-
-   ```sh
-   cargo fmt --check
-   cargo check --all-targets --all-features --locked
-   cargo test --all-features --locked
-   cargo clippy --all-targets --all-features --locked -- -D warnings
-   cargo build --release --locked --target aarch64-apple-darwin
-   ```
-
-6. Stage the release archive:
-
-   ```text
-   dist/atctl-v{VERSION}-aarch64-apple-darwin.tar.gz
-   ```
-
-   The archive contains the `atctl` executable at its top level.
-
-7. Generate the checksum:
-
-   ```text
-   dist/atctl-v{VERSION}-aarch64-apple-darwin.tar.gz.sha256
-   ```
-
-8. Extract the matching released-version section from `CHANGELOG.md` into:
-
-   ```text
-   dist/release-notes.md
-   ```
-
-   The extraction must fail before release creation if the section is missing,
-   has no content beyond the heading, or lacks a `YYYY-MM-DD` release date.
-
-9. Create the GitHub Release with:
-
-   ```sh
-   gh release create "$TAG" \
-     "dist/atctl-v{VERSION}-aarch64-apple-darwin.tar.gz" \
-     "dist/atctl-v{VERSION}-aarch64-apple-darwin.tar.gz.sha256" \
-     --verify-tag \
-     --title "atctl $TAG" \
-     --notes-file "dist/release-notes.md"
-   ```
-
-If a release already exists and assets need to be added manually, use
-`gh release upload <tag> <files>...`. Do not use `gh release upload --clobber`
-unless replacement of already-published assets has been separately approved,
-because GitHub CLI documents that `--clobber` deletes existing assets before
-re-uploading them.
-
-The source repository workflow must not:
-
-- Update the Homebrew tap repository.
-- Create or update Homebrew Formula pull requests.
-- Trigger Homebrew publication automatically.
-- Publish Homebrew bottles.
-- Publish provenance, attestation, or SBOM files.
-- Sign or notarize the `.tar.gz` artifact.
-- Add Linux, Intel Mac, Windows, or universal binary release artifacts.
-
-### Homebrew Tap Repository Workflow
-
-After final packaging approval, Homebrew material must be implemented in:
-
-```text
-https://github.com/uchimanajet7/homebrew-atctl
-```
-
-User-facing install command:
-
-```sh
-brew install uchimanajet7/atctl/atctl
-```
-
-The tap repository implementation should add:
-
-```text
-Formula/atctl.rb
-```
-
-The tap formula must build from the tagged source archive in
-`uchimanajet7/atctl` when source-build fallback is used. It must not install the
-prebuilt GitHub Releases `.tar.gz` artifact as the normal Homebrew path.
-
-The tap formula should follow this source-build fallback contract:
-
-```ruby
-class Atctl < Formula
-  desc "CLI/TUI AT command controller for USB cellular modems"
-  homepage "https://github.com/uchimanajet7/atctl"
-  url "https://github.com/uchimanajet7/atctl/archive/refs/tags/v0.1.0.tar.gz"
-  sha256 "<source archive sha256>"
-  license "MIT"
-
-  depends_on "rust" => :build
-  depends_on "pkgconf" => :build
-  depends_on "libusb"
-
-  def install
-    system "cargo", "install", *std_cargo_args
-  end
-
-  test do
-    system "#{bin}/atctl", "--version"
-  end
-end
-```
-
-If `brew tap-new` is used to initialize the tap repository, generated default
-workflow files must be reviewed before commit. Homebrew documentation states
-that leaving the default workflow files in place can build and upload bottles.
-Because bottles are part of the intended normal Homebrew distribution, those
-workflows must be reviewed as product release automation rather than accepted
-as incidental generated files.
-
-Formula update automation must be implemented as tap repository work, not as a
-hidden side effect of the source repository release workflow. The intended
-operator path is a manually triggered tap workflow in
-`uchimanajet7/homebrew-atctl`, for example
-`.github/workflows/update-formula-pr.yml`, using `workflow_dispatch` with the
-approved source release tag as input.
-
-That tap workflow should:
-
-1. Read the requested source release tag, such as `v0.1.0`.
-2. Resolve the `uchimanajet7/atctl` source archive URL and SHA-256.
-3. Update `Formula/atctl.rb`.
-4. Create or update a pull request in `uchimanajet7/homebrew-atctl`.
-
-The source repository release workflow must not trigger this automatically.
-This keeps release builds and Homebrew publication independently executable, so
-an `atctl` GitHub Release can be produced without publishing that version to
-Homebrew.
-
-The tap repository work must:
-
-- Publish bottles only through reviewed tap repository automation.
-- Keep `libusb` as a runtime dependency.
-- Keep Rust and `pkgconf` as source-build dependencies, not runtime
-  dependencies.
-- Avoid presenting Cargo or Rust installation as normal end-user prerequisites
-  when a bottle is available.
-- Avoid installing the GitHub Releases prebuilt `.tar.gz` artifact as the
-  normal Homebrew path.
-- Avoid adding a tap README or extra tap metadata unless separately approved.
-- Avoid adding cross-repository automation secrets unless separately approved.
-
-### Implementation Order
-
-The implementation order after final packaging approval should be:
-
-1. Add source repository release workflow.
-2. Verify the workflow file locally as far as possible without publishing a
-   release.
-3. Request approval before creating or pushing any release tag.
-4. Implement tap repository formula material separately in
-   `uchimanajet7/homebrew-atctl`.
-5. Implement a tap-side manual Formula update workflow, such as
-   `.github/workflows/update-formula-pr.yml`, that creates or updates a
-   Formula pull request only when an operator runs it for a chosen release tag.
-6. Implement and review tap repository bottle automation as release automation,
-   not as incidental generated workflow output.
-7. Verify the formula with Homebrew source-build checks and bottle-path checks
-   before claiming the Homebrew installation path is ready.
+The Formula update must keep the contract defined above: macOS on Apple
+Silicon, `libusb` as a runtime dependency, Rust and `pkgconf` as source-build
+dependencies, and a source-build fallback using the tagged source archive.
+Bottle publication remains an explicit tap-repository action and is not a side
+effect of the Rust source release.
 
 References:
 
-- https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
-- https://docs.github.com/en/actions/reference/runners/github-hosted-runners
-- https://github.blog/changelog/2026-02-26-macos-26-is-now-generally-available-for-github-hosted-runners/
-- https://cli.github.com/manual/gh_release_create
-- https://cli.github.com/manual/gh_release_upload
-- https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
-- https://keepachangelog.com/en/1.1.0/
-- https://docs.brew.sh/Taps
+- https://github.com/uchimanajet7/homebrew-atctl
+- https://docs.github.com/actions/managing-workflow-runs/manually-running-a-workflow
 - https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap
 - https://docs.brew.sh/Formula-Cookbook
 - https://docs.brew.sh/Bottles
-- https://doc.rust-lang.org/rustc/platform-support/apple-darwin.html
 
-## Release Blocking Decisions
+## Release Decisions
 
-Packaging readiness requires the source repository release artifact plan and
-the Homebrew tap formula/bottle plan to be reviewed as separate release
-surfaces. Direct-download promotion remains out of scope unless separately
-approved with signing, notarization, Gatekeeper, quarantine, and credential
-handling decisions.
+Packaging readiness requires the source repository release artifact contract
+and the Homebrew tap Formula/bottle contract to be reviewed as separate release
+surfaces. Direct-download promotion is outside the current distribution
+contract and would require signing, notarization, Gatekeeper, quarantine, and
+credential-handling decisions.
 
-See [OPEN-QUESTIONS.md](OPEN-QUESTIONS.md).
+See [DECISIONS.md](DECISIONS.md) for the accepted distribution decisions.

@@ -33,13 +33,15 @@ use crate::cli::{
     SequenceFileLocationOptions, TuiDeviceSelection, TuiThemeChoice, execute_tui_preset,
     execute_tui_sequence, load_presets, load_sequences, logging_paths, tui_device_filter,
 };
-use crate::config::paths::default_state_dir;
 use crate::log::history::{LogListingKind, list_logs};
 use crate::log::raw::{
     RAW_LOG_ACK, RawLogConfig, RawLogExchange, RawLogSink, RawLogTransportError,
 };
-use crate::log::session::{create_private_dir_all, now_timestamp, write_private_file};
+use crate::log::session::now_timestamp;
+#[cfg(test)]
+use crate::paths::default_state_dir;
 use crate::presets::model::{Preset, PresetOrigin};
+use crate::response_export::{response_export_path, write_response_export};
 use crate::sequences::engine::{
     SequenceExecution, SequenceParamValue, SequenceValueCandidate, SequenceValueCandidateSet,
     format_missing_sequence_param, render_sequence_review, required_param_summary,
@@ -59,6 +61,8 @@ type CrosstermTerminal = Terminal<CrosstermBackend<Stdout>>;
 
 const COPY_REQUEST_SENT_FEEDBACK: &str = "Copy request sent.";
 const OUTPUT_UNMASK_ACK: &str = "unmask";
+const RESPONSE_COPY_ACK: &str = "copy";
+const RESPONSE_EXPORT_ACK: &str = "export";
 const EXTERNAL_DEFINITION_REVIEW_NOTICE: &str = "Review this external definition before running it; atctl validates format, duplicate names, masking, and effective risk, but does not certify that it is appropriate for your device, SIM, network, or endpoint.";
 const EXTERNAL_DEFINITION_CONFIRMATION_NOTICE: &str = "Review external definition before running.";
 
@@ -96,7 +100,9 @@ struct TuiState {
     sequence_input: Option<SequenceInputState>,
     sequence_candidate_sets: Vec<TuiSequenceCandidateSet>,
     output_masking_enabled: bool,
+    normal_logging_enabled: bool,
     output_masking_ack_input: Option<String>,
+    response_action_confirmation: Option<ResponseActionConfirmationState>,
     raw_log_path_input: Option<RawLogPathInputState>,
     raw_log_ack_input: Option<RawLogAckInputState>,
     raw_capture: Option<RawLogSink>,
@@ -112,6 +118,7 @@ struct TuiState {
     running_execution: Option<RunningExecution>,
     active_command: Option<CommandStatus>,
     viewed_log: Option<ViewedLog>,
+    exported_response: Option<ExportedResponse>,
     theme: TuiTheme,
 }
 
@@ -161,7 +168,8 @@ enum TuiAction {
     Continue,
     Quit,
     CopyToClipboard(String),
-    OpenPath(PathBuf),
+    ChooseResponseExportDirectory(ResponseExportRequest),
+    RevealPath(PathBuf),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -173,11 +181,10 @@ enum ActionMenuKind {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum ActionMenuAction {
     CopyResponse,
-    SaveResponse,
-    OpenResponseDirectory,
+    ExportResponse,
     ClearResponse,
     CopyDisplayedLog,
-    OpenLogsDirectory,
+    RevealInFinder,
     CloseLogView,
     OpenLog,
 }
@@ -189,6 +196,7 @@ struct ActionMenuState {
     feedback: Option<ControlsFeedback>,
     feedback_scope: ActionMenuFeedbackScope,
     log_target: Option<LogEntry>,
+    response_export: Option<ResponseExportRequest>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -300,6 +308,14 @@ struct PendingExecution {
     timeout_secs: u64,
     device_selection: Option<TuiDeviceSelection>,
     sequence_params: Vec<SequenceParamValue>,
+    normal_logging_enabled: bool,
+}
+
+#[derive(Debug, Clone)]
+struct TuiSessionOptions {
+    theme: TuiTheme,
+    output_masking_enabled: bool,
+    normal_logging_enabled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -326,7 +342,44 @@ struct LogEntry {
 #[derive(Debug, Clone)]
 struct ViewedLog {
     kind: LogListingKind,
+    path: PathBuf,
     label: String,
+}
+
+#[derive(Debug, Clone)]
+struct ExportedResponse {
+    path: PathBuf,
+    response_label: String,
+    finished_at: Option<String>,
+    masked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResponseExportRequest {
+    file_name: String,
+    contents: String,
+    response_label: String,
+    finished_at: Option<String>,
+    masked: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ResponseActionConfirmationState {
+    action: ResponseActionConfirmation,
+    input: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum ResponseActionConfirmation {
+    Copy {
+        contents: String,
+        response_label: String,
+    },
+    Export {
+        request: ResponseExportRequest,
+        path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -590,11 +643,7 @@ impl CommandStatus {
 trait TuiCommandExecutor {
     fn execute_item(
         &mut self,
-        item: &ExecutableItem,
-        confirmed: bool,
-        timeout_secs: u64,
-        device_selection: Option<TuiDeviceSelection>,
-        sequence_params: &[SequenceParamValue],
+        pending: &PendingExecution,
         raw_log: Option<&mut RawLogSink>,
     ) -> Result<ExecutionOutput>;
 }
@@ -604,28 +653,33 @@ struct UsbTuiCommandExecutor;
 impl TuiCommandExecutor for UsbTuiCommandExecutor {
     fn execute_item(
         &mut self,
-        item: &ExecutableItem,
-        confirmed: bool,
-        timeout_secs: u64,
-        device_selection: Option<TuiDeviceSelection>,
-        sequence_params: &[SequenceParamValue],
+        pending: &PendingExecution,
         raw_log: Option<&mut RawLogSink>,
     ) -> Result<ExecutionOutput> {
-        match item {
-            ExecutableItem::Preset(preset) => {
-                execute_tui_preset(preset, confirmed, timeout_secs, device_selection)
-                    .map(ExecutionOutput::Command)
-            }
-            ExecutableItem::CandidateAction { preset, .. } => {
-                execute_tui_preset(preset, confirmed, timeout_secs, device_selection)
-                    .map(ExecutionOutput::Command)
-            }
+        match &pending.item {
+            ExecutableItem::Preset(preset) => execute_tui_preset(
+                preset,
+                pending.confirmed,
+                pending.timeout_secs,
+                pending.device_selection,
+                pending.normal_logging_enabled,
+            )
+            .map(ExecutionOutput::Command),
+            ExecutableItem::CandidateAction { preset, .. } => execute_tui_preset(
+                preset,
+                pending.confirmed,
+                pending.timeout_secs,
+                pending.device_selection,
+                pending.normal_logging_enabled,
+            )
+            .map(ExecutionOutput::Command),
             ExecutableItem::Sequence(sequence) => execute_tui_sequence(
                 sequence,
-                sequence_params,
-                confirmed,
-                timeout_secs,
-                device_selection,
+                &pending.sequence_params,
+                pending.confirmed,
+                pending.timeout_secs,
+                pending.device_selection,
+                pending.normal_logging_enabled,
                 raw_log,
             )
             .map(ExecutionOutput::Sequence),
@@ -636,6 +690,7 @@ impl TuiCommandExecutor for UsbTuiCommandExecutor {
 pub fn run(
     theme_choice: Option<TuiThemeChoice>,
     no_mask: bool,
+    no_log: bool,
     preset_locations: PresetFileLocationOptions,
     sequence_locations: SequenceFileLocationOptions,
 ) -> Result<()> {
@@ -650,8 +705,11 @@ pub fn run(
         devices.all_usb,
         logs,
         log_paths,
-        TuiTheme::from_choice(theme_choice),
-        !no_mask,
+        TuiSessionOptions {
+            theme: TuiTheme::from_choice(theme_choice),
+            output_masking_enabled: !no_mask,
+            normal_logging_enabled: !no_log,
+        },
     );
     let (execution_tx, execution_rx) = mpsc::channel();
     let mut terminal = TerminalSession::enter()?;
@@ -672,9 +730,13 @@ pub fn run(
                 TuiAction::CopyToClipboard(text) => {
                     finish_clipboard_copy(&mut state, terminal.copy_to_clipboard(&text));
                 }
-                TuiAction::OpenPath(path) => {
-                    let result = terminal.open_path(&path);
-                    finish_path_open(&mut state, &path, result);
+                TuiAction::ChooseResponseExportDirectory(request) => {
+                    let result = terminal.choose_response_export_directory();
+                    finish_response_export(&mut state, request, result);
+                }
+                TuiAction::RevealPath(path) => {
+                    let result = terminal.reveal_path(&path);
+                    finish_path_reveal(&mut state, &path, result);
                 }
             }
             if state.pending_execution.is_some() {
@@ -808,25 +870,65 @@ impl TerminalSession {
         self.terminal.backend_mut().flush().map_err(terminal_error)
     }
 
-    fn open_path(&mut self, path: &Path) -> Result<()> {
-        Command::new(platform_open_command())
+    fn choose_response_export_directory(&mut self) -> Result<Option<PathBuf>> {
+        choose_response_export_directory()
+    }
+
+    fn reveal_path(&mut self, path: &Path) -> Result<()> {
+        Command::new("open")
+            .arg("-R")
             .arg(path)
             .spawn()
             .map(|_| ())
             .map_err(|error| {
-                AtctlError::Transport(format!("failed to open {}: {error}", path.display()))
+                AtctlError::Transport(format!(
+                    "failed to reveal {} in Finder: {error}",
+                    path.display()
+                ))
             })
     }
 }
 
-fn platform_open_command() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(target_os = "windows") {
-        "explorer"
-    } else {
-        "xdg-open"
+#[cfg(target_os = "macos")]
+fn choose_response_export_directory() -> Result<Option<PathBuf>> {
+    let output = Command::new("osascript")
+        .args([
+            "-e",
+            "set selectedFolder to choose folder with prompt \"Choose a folder for the exported Response\"",
+            "-e",
+            "return POSIX path of selectedFolder",
+        ])
+        .output()
+        .map_err(|error| {
+            AtctlError::Transport(format!("failed to open Response export folder chooser: {error}"))
+        })?;
+
+    if output.status.success() {
+        let directory = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if directory.is_empty() {
+            return Err(AtctlError::Transport(
+                "Response export folder chooser returned no folder".to_owned(),
+            ));
+        }
+        return Ok(Some(PathBuf::from(directory)));
     }
+
+    let error = String::from_utf8_lossy(&output.stderr);
+    if error.contains("-128") || error.contains("User canceled") {
+        Ok(None)
+    } else {
+        Err(AtctlError::Transport(format!(
+            "Response export folder chooser failed: {}",
+            error.trim()
+        )))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn choose_response_export_directory() -> Result<Option<PathBuf>> {
+    Err(AtctlError::NotImplemented(
+        "Response export folder chooser is currently available on macOS",
+    ))
 }
 
 impl Drop for TerminalSession {
@@ -874,7 +976,7 @@ impl TuiState {
         theme: TuiTheme,
         output_masking_enabled: bool,
     ) -> Self {
-        let state_dir = default_state_dir();
+        let state_dir = default_state_dir().expect("test state directory should resolve");
         let log_paths = LoggingPaths {
             session_dir: state_dir.join("logs"),
             state_dir,
@@ -885,8 +987,11 @@ impl TuiState {
             all_usb_devices,
             logs,
             log_paths,
-            theme,
-            output_masking_enabled,
+            TuiSessionOptions {
+                theme,
+                output_masking_enabled,
+                normal_logging_enabled: true,
+            },
         )
     }
 
@@ -896,8 +1001,7 @@ impl TuiState {
         all_usb_devices: Vec<UsbDeviceInfo>,
         logs: Vec<LogEntry>,
         log_paths: LoggingPaths,
-        theme: TuiTheme,
-        output_masking_enabled: bool,
+        options: TuiSessionOptions,
     ) -> Self {
         let commands = order_tui_commands(commands);
         let categories = categories_from_commands(&commands);
@@ -945,8 +1049,10 @@ impl TuiState {
             confirmation: None,
             sequence_input: None,
             sequence_candidate_sets: Vec::new(),
-            output_masking_enabled,
+            output_masking_enabled: options.output_masking_enabled,
+            normal_logging_enabled: options.normal_logging_enabled,
             output_masking_ack_input: None,
+            response_action_confirmation: None,
             raw_log_path_input: None,
             raw_log_ack_input: None,
             raw_capture: None,
@@ -962,7 +1068,8 @@ impl TuiState {
             running_execution: None,
             active_command: None,
             viewed_log: None,
-            theme,
+            exported_response: None,
+            theme: options.theme,
         }
     }
 
@@ -1273,6 +1380,10 @@ fn handle_key_code(state: &mut TuiState, key: KeyCode) -> TuiAction {
         return handle_output_masking_confirmation_key(state, key);
     }
 
+    if state.response_action_confirmation.is_some() {
+        return handle_response_action_confirmation_key(state, key);
+    }
+
     if state.raw_log_path_input.is_some() {
         return handle_raw_log_path_input_key(state, key);
     }
@@ -1463,29 +1574,19 @@ fn set_action_menu_feedback(state: &mut TuiState, role: TuiStyleRole, message: i
     }
 }
 
-fn set_focused_action_feedback(
-    state: &mut TuiState,
-    role: TuiStyleRole,
-    message: impl Into<String>,
-) {
-    if state.action_menu.is_some() {
-        set_action_menu_feedback(state, role, message);
-    } else {
-        set_controls_feedback(state, role, message);
-    }
-}
-
 fn clear_controls_feedback(state: &mut TuiState) {
     state.controls_feedback = None;
 }
 
 fn open_response_action_menu(state: &mut TuiState) {
+    let response_export = response_export_request(state);
     state.action_menu = Some(ActionMenuState {
         kind: ActionMenuKind::Response,
         selected: 0,
         feedback: None,
         feedback_scope: ActionMenuFeedbackScope::Action,
         log_target: None,
+        response_export,
     });
     state.status = "Response actions.".to_owned();
     state.status_role = TuiStyleRole::Status;
@@ -1516,6 +1617,12 @@ fn open_log_action_menu(state: &mut TuiState) {
         log_target = state.selected_log().cloned();
     }
 
+    if log_target.is_none() && feedback.is_none() {
+        state.status = "No logs are available.".to_owned();
+        state.status_role = TuiStyleRole::Status;
+        return;
+    }
+
     state.action_menu = Some(ActionMenuState {
         kind: ActionMenuKind::Log,
         selected: 0,
@@ -1526,6 +1633,7 @@ fn open_log_action_menu(state: &mut TuiState) {
         },
         feedback,
         log_target,
+        response_export: None,
     });
     state.status = "Log actions.".to_owned();
     state.status_role = TuiStyleRole::Status;
@@ -1612,27 +1720,45 @@ fn execute_selected_action_menu_row(state: &mut TuiState) -> TuiAction {
     }
 
     match row.action {
-        ActionMenuAction::CopyResponse | ActionMenuAction::CopyDisplayedLog => {
+        ActionMenuAction::CopyDisplayedLog => {
             state.action_menu = None;
             copy_current_response(state)
         }
-        ActionMenuAction::SaveResponse => {
+        ActionMenuAction::CopyResponse => {
             state.action_menu = None;
-            save_current_response(state);
-            TuiAction::Continue
+            if response_has_unmasked_content(state) {
+                open_unmasked_response_copy_confirmation(state)
+            } else {
+                copy_current_response(state)
+            }
         }
-        ActionMenuAction::OpenResponseDirectory => {
+        ActionMenuAction::ExportResponse => {
+            let request = state
+                .action_menu
+                .as_ref()
+                .and_then(|menu| menu.response_export.clone());
             state.action_menu = None;
-            open_response_directory(state)
+            match request {
+                Some(request) => TuiAction::ChooseResponseExportDirectory(request),
+                None => {
+                    set_operation_status(
+                        state,
+                        TuiStyleRole::Warning,
+                        "No response is available to export.",
+                    );
+                    TuiAction::Continue
+                }
+            }
         }
         ActionMenuAction::ClearResponse => {
             state.action_menu = None;
             clear_response(state);
             TuiAction::Continue
         }
-        ActionMenuAction::OpenLogsDirectory => {
+        ActionMenuAction::RevealInFinder => {
+            let (path, missing_message) = reveal_action_target(state, kind);
             state.action_menu = None;
-            open_logs_directory(state)
+            reveal_file(state, path, missing_message)
         }
         ActionMenuAction::CloseLogView => {
             state.action_menu = None;
@@ -1749,46 +1875,33 @@ fn copy_current_response(state: &mut TuiState) -> TuiAction {
     }
 }
 
-fn open_response_directory(state: &mut TuiState) -> TuiAction {
-    open_created_directory(state, response_output_dir(), "Response folder unavailable")
-}
-
-fn open_logs_directory(state: &mut TuiState) -> TuiAction {
-    open_created_directory(state, logs_output_dir(), "Logs folder unavailable")
-}
-
-fn open_created_directory(
-    state: &mut TuiState,
-    path: PathBuf,
-    unavailable_prefix: &'static str,
-) -> TuiAction {
-    match create_private_dir_all(&path) {
-        Ok(()) => TuiAction::OpenPath(path),
-        Err(error) => {
-            set_operation_status(
-                state,
-                TuiStyleRole::Error,
-                format!("{unavailable_prefix}: {error}"),
-            );
-            TuiAction::Continue
-        }
-    }
-}
-
-fn response_output_dir() -> PathBuf {
-    default_state_dir().join("responses")
-}
-
-fn logs_output_dir() -> PathBuf {
-    logging_paths()
-        .map(|paths| paths.session_dir)
-        .unwrap_or_else(|_| default_state_dir().join("logs"))
+fn open_unmasked_response_copy_confirmation(state: &mut TuiState) -> TuiAction {
+    let Some(contents) = copyable_response_text(state) else {
+        set_operation_status(
+            state,
+            TuiStyleRole::Warning,
+            "No response is available to copy.",
+        );
+        return TuiAction::Continue;
+    };
+    state.response_action_confirmation = Some(ResponseActionConfirmationState {
+        action: ResponseActionConfirmation::Copy {
+            contents,
+            response_label: response_export_target_label(state),
+        },
+        input: String::new(),
+        error: None,
+    });
+    state.status = "Unmasked response copy confirmation required.".to_owned();
+    state.status_role = TuiStyleRole::Warning;
+    TuiAction::Continue
 }
 
 fn close_log_view(state: &mut TuiState) {
     state.response.clear();
     state.response_scroll = 0;
     state.viewed_log = None;
+    state.exported_response = None;
     state.status = "Log view closed.".to_owned();
     state.status_role = TuiStyleRole::Status;
 }
@@ -1808,20 +1921,136 @@ fn finish_clipboard_copy(state: &mut TuiState, result: Result<()>) {
     }
 }
 
-fn finish_path_open(state: &mut TuiState, path: &Path, result: Result<()>) {
-    match result {
+fn finish_response_export(
+    state: &mut TuiState,
+    request: ResponseExportRequest,
+    directory_result: Result<Option<PathBuf>>,
+) {
+    let directory = match directory_result {
+        Ok(Some(directory)) => directory,
+        Ok(None) => {
+            set_operation_status(state, TuiStyleRole::Status, "Response export cancelled.");
+            return;
+        }
+        Err(error) => {
+            set_operation_status(
+                state,
+                TuiStyleRole::Error,
+                format!("Response export folder selection failed: {error}"),
+            );
+            return;
+        }
+    };
+
+    if !directory.is_dir() {
+        set_operation_status(
+            state,
+            TuiStyleRole::Error,
+            format!(
+                "Response export failed: destination folder does not exist: {}",
+                directory.display()
+            ),
+        );
+        return;
+    }
+
+    let path = directory.join(&request.file_name);
+    if !request.masked {
+        state.response_action_confirmation = Some(ResponseActionConfirmationState {
+            action: ResponseActionConfirmation::Export { request, path },
+            input: String::new(),
+            error: None,
+        });
+        state.status = "Unmasked response export confirmation required.".to_owned();
+        state.status_role = TuiStyleRole::Warning;
+        return;
+    }
+
+    write_response_export_request(state, request, path);
+}
+
+fn write_response_export_request(
+    state: &mut TuiState,
+    request: ResponseExportRequest,
+    path: PathBuf,
+) {
+    match write_response_export(&path, &request.contents) {
         Ok(()) => {
+            state.exported_response = Some(ExportedResponse {
+                path: path.clone(),
+                response_label: request.response_label,
+                finished_at: request.finished_at,
+                masked: request.masked,
+            });
             set_operation_status(
                 state,
                 TuiStyleRole::Status,
-                format!("Open directory request sent: {}.", compact_path_label(path)),
+                format!("Exported response: {}.", compact_path_label(&path)),
             );
         }
         Err(error) => {
             set_operation_status(
                 state,
                 TuiStyleRole::Error,
-                format!("Open directory request failed: {error}"),
+                format!("Response export failed: {error}"),
+            );
+        }
+    }
+}
+
+fn reveal_action_target(state: &TuiState, kind: ActionMenuKind) -> (Option<PathBuf>, &'static str) {
+    match kind {
+        ActionMenuKind::Log => (
+            selected_action_log(state).map(|log| log.path.clone()),
+            "Saved log no longer exists.",
+        ),
+        ActionMenuKind::Response if state.viewed_log.is_some() => (
+            state.viewed_log.as_ref().map(|log| log.path.clone()),
+            "Saved log no longer exists.",
+        ),
+        ActionMenuKind::Response => (
+            state
+                .exported_response
+                .as_ref()
+                .map(|response| response.path.clone()),
+            "Exported response no longer exists.",
+        ),
+    }
+}
+
+fn reveal_file(
+    state: &mut TuiState,
+    path: Option<PathBuf>,
+    missing_message: &'static str,
+) -> TuiAction {
+    let Some(path) = path else {
+        set_operation_status(state, TuiStyleRole::Warning, missing_message);
+        return TuiAction::Continue;
+    };
+    if !path.is_file() {
+        set_operation_status(state, TuiStyleRole::Warning, missing_message);
+        return TuiAction::Continue;
+    }
+    TuiAction::RevealPath(path)
+}
+
+fn finish_path_reveal(state: &mut TuiState, path: &Path, result: Result<()>) {
+    match result {
+        Ok(()) => {
+            set_operation_status(
+                state,
+                TuiStyleRole::Status,
+                format!(
+                    "Reveal in Finder request sent: {}.",
+                    compact_path_label(path)
+                ),
+            );
+        }
+        Err(error) => {
+            set_operation_status(
+                state,
+                TuiStyleRole::Error,
+                format!("Reveal in Finder request failed: {error}"),
             );
         }
     }
@@ -1841,6 +2070,7 @@ fn set_response(state: &mut TuiState, response: ResponseState) {
     state.response = response;
     state.response_cleared_at = None;
     state.response_scroll = 0;
+    state.exported_response = None;
 }
 
 fn toggle_output_masking(state: &mut TuiState) -> TuiAction {
@@ -1864,6 +2094,7 @@ fn clear_response(state: &mut TuiState) {
     state.response.clear();
     state.response_cleared_at = Some(now_timestamp().display().to_owned());
     state.response_scroll = 0;
+    state.exported_response = None;
     state.status = "Response body cleared.".to_owned();
     state.status_role = TuiStyleRole::Status;
 }
@@ -1909,6 +2140,66 @@ fn handle_output_masking_confirmation_key(state: &mut TuiState, key: KeyCode) ->
     }
 
     TuiAction::Continue
+}
+
+fn handle_response_action_confirmation_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
+    match key {
+        KeyCode::Esc | KeyCode::Char('q') => {
+            let action = state.response_action_confirmation.take();
+            let message = match action.map(|confirmation| confirmation.action) {
+                Some(ResponseActionConfirmation::Copy { .. }) => "Response copy cancelled.",
+                Some(ResponseActionConfirmation::Export { .. }) => "Response export cancelled.",
+                None => "Response action cancelled.",
+            };
+            set_operation_status(state, TuiStyleRole::Status, message);
+        }
+        KeyCode::Enter => {
+            let Some(mut confirmation) = state.response_action_confirmation.take() else {
+                return TuiAction::Continue;
+            };
+            let expected = response_action_confirmation_ack(&confirmation.action);
+            if confirmation.input.trim() != expected {
+                confirmation.error = Some(format!("Type `{expected}` exactly."));
+                state.response_action_confirmation = Some(confirmation);
+                state.status = "Unmasked response confirmation rejected.".to_owned();
+                state.status_role = TuiStyleRole::Error;
+                return TuiAction::Continue;
+            }
+
+            match confirmation.action {
+                ResponseActionConfirmation::Copy { contents, .. } => {
+                    state.status = "Unmasked response copy confirmed.".to_owned();
+                    state.status_role = TuiStyleRole::Warning;
+                    return TuiAction::CopyToClipboard(contents);
+                }
+                ResponseActionConfirmation::Export { request, path } => {
+                    write_response_export_request(state, request, path);
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(confirmation) = state.response_action_confirmation.as_mut() {
+                confirmation.input.pop();
+                confirmation.error = None;
+            }
+        }
+        KeyCode::Char(value) => {
+            if let Some(confirmation) = state.response_action_confirmation.as_mut() {
+                confirmation.input.push(value);
+                confirmation.error = None;
+            }
+        }
+        _ => {}
+    }
+
+    TuiAction::Continue
+}
+
+fn response_action_confirmation_ack(action: &ResponseActionConfirmation) -> &'static str {
+    match action {
+        ResponseActionConfirmation::Copy { .. } => RESPONSE_COPY_ACK,
+        ResponseActionConfirmation::Export { .. } => RESPONSE_EXPORT_ACK,
+    }
 }
 
 fn handle_raw_log_path_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
@@ -2820,28 +3111,23 @@ fn schedule_item_execution(
         timeout_secs,
         device_selection,
         sequence_params,
+        normal_logging_enabled: state.normal_logging_enabled,
     });
 }
 
-fn save_current_response(state: &mut TuiState) {
-    if savable_response_text(state).is_none() {
-        set_focused_action_feedback(
-            state,
-            TuiStyleRole::Warning,
-            "No response is available to save.",
-        );
-        return;
-    }
-
-    match write_current_response(&default_state_dir(), state) {
-        Ok(_) => {
-            state.status = "Saved response.".to_owned();
-            state.status_role = TuiStyleRole::Status;
-        }
-        Err(error) => {
-            set_operation_status(state, TuiStyleRole::Error, format!("Save failed: {error}"));
-        }
-    }
+fn response_export_target_label(state: &TuiState) -> String {
+    state
+        .active_command
+        .as_ref()
+        .map(|command| {
+            let target = if command.kind == ExecutableKind::CandidateAction {
+                "Candidate action"
+            } else {
+                command.target_status_label()
+            };
+            format!("{target}: {}", command.name)
+        })
+        .unwrap_or_else(|| "Initial notice".to_owned())
 }
 
 fn toggle_raw_capture(state: &mut TuiState) {
@@ -2862,47 +3148,33 @@ fn toggle_raw_capture(state: &mut TuiState) {
     set_controls_feedback(state, TuiStyleRole::Warning, "Choose raw export file.");
 }
 
-fn write_current_response(state_dir: &Path, state: &TuiState) -> Result<PathBuf> {
-    let Some(text) = savable_response_text(state) else {
-        return Err(AtctlError::Transport(
-            "no Response body is available to save".to_owned(),
-        ));
-    };
+fn response_export_request(state: &TuiState) -> Option<ResponseExportRequest> {
+    if state.viewed_log.is_some() {
+        return None;
+    }
 
-    let response_dir = state_dir.join("responses");
-    create_private_dir_all(&response_dir)?;
+    let text = copyable_response_text(state)?;
     let timestamp = now_timestamp();
-    let path = response_dir.join(format!("{}.response.txt", timestamp.file_stem()));
-    let masked_text = mask_sensitive_values(&text);
-    write_private_file(&path, format!("{masked_text}\n").as_bytes())?;
-    Ok(path)
+    let response_label = response_export_target_label(state);
+    let path = response_export_path(Path::new(""), &response_label, timestamp.file_stem());
+    let file_name = path.file_name()?.to_str()?.to_owned();
+    Some(ResponseExportRequest {
+        file_name,
+        contents: format!("{}\n", text.trim_end_matches(['\r', '\n'])),
+        response_label,
+        finished_at: state
+            .active_command
+            .as_ref()
+            .and_then(|command| command.finished_at.clone()),
+        masked: !response_has_unmasked_content(state),
+    })
 }
 
-fn savable_response_text(state: &TuiState) -> Option<String> {
-    if state.response.masked_text.is_empty() {
-        return None;
-    }
-
-    let body = trim_empty_edge_lines(&state.response.masked_text);
-    if body.is_empty() {
-        return None;
-    }
-
-    if state.viewed_log.is_some() {
-        return Some(body.to_owned());
-    }
-
-    let Some(active) = &state.active_command else {
-        return Some(body.to_owned());
-    };
-    let Some(command) = active.command.as_deref() else {
-        return Some(body.to_owned());
-    };
-    if body_starts_with_command_echo(body, command) {
-        Some(body.to_owned())
-    } else {
-        Some(format!("{command}\n{body}"))
-    }
+fn response_has_unmasked_content(state: &TuiState) -> bool {
+    state.viewed_log.is_none()
+        && !state.output_masking_enabled
+        && copyable_response_text_for_masking(state, false)
+            != copyable_response_text_for_masking(state, true)
 }
 
 fn start_pending_execution(state: &mut TuiState, sender: &Sender<TuiExecutionResult>) {
@@ -2929,16 +3201,9 @@ fn start_pending_execution(state: &mut TuiState, sender: &Sender<TuiExecutionRes
     let sender = sender.clone();
     thread::spawn(move || {
         let mut executor = UsbTuiCommandExecutor;
-        let item = pending.item;
         let mut raw_capture = raw_capture;
-        let result = executor.execute_item(
-            &item,
-            pending.confirmed,
-            pending.timeout_secs,
-            pending.device_selection,
-            &pending.sequence_params,
-            raw_capture.as_mut(),
-        );
+        let result = executor.execute_item(&pending, raw_capture.as_mut());
+        let item = pending.item;
         let _ = sender.send(TuiExecutionResult {
             item,
             timeout_secs: pending.timeout_secs,
@@ -2972,6 +3237,7 @@ fn open_log_entry(state: &mut TuiState, log: Option<LogEntry>) {
             state.active_command = None;
             state.viewed_log = Some(ViewedLog {
                 kind: log.kind,
+                path: log.path,
                 label: log.label,
             });
             state.focus = Pane::Response;
@@ -3014,14 +3280,7 @@ where
         None
     };
 
-    let result = executor.execute_item(
-        &pending.item,
-        pending.confirmed,
-        pending.timeout_secs,
-        pending.device_selection,
-        &pending.sequence_params,
-        raw_capture.as_mut(),
-    );
+    let result = executor.execute_item(&pending, raw_capture.as_mut());
     if let Some(raw_capture) = raw_capture {
         state.raw_capture = Some(raw_capture);
     }
@@ -3320,21 +3579,7 @@ fn format_confirmation_summary(command: &Preset) -> String {
 }
 
 fn risk_label_text(risk: crate::at::risk::RiskLevel) -> String {
-    match risk_cue(risk) {
-        Some(cue) => format!("[{risk}] {cue}"),
-        None => format!("[{risk}]"),
-    }
-}
-
-fn risk_cue(risk: crate::at::risk::RiskLevel) -> Option<&'static str> {
-    match risk {
-        crate::at::risk::RiskLevel::Safe => None,
-        crate::at::risk::RiskLevel::Sensitive => Some("MASKED"),
-        crate::at::risk::RiskLevel::Write => Some("CONFIRM"),
-        crate::at::risk::RiskLevel::Persistent => Some("PERSISTS"),
-        crate::at::risk::RiskLevel::Dangerous => Some("DANGER"),
-        crate::at::risk::RiskLevel::Unknown => Some("REVIEW"),
-    }
+    format!("[{risk}]")
 }
 
 fn risk_expected_effect(risk: crate::at::risk::RiskLevel) -> &'static str {
@@ -3640,6 +3885,9 @@ fn render_frame(frame: &mut Frame<'_>, state: &mut TuiState) {
     if state.output_masking_ack_input.is_some() {
         render_output_masking_confirmation(frame, centered_rect(76, 64, area), state, &theme);
     }
+    if state.response_action_confirmation.is_some() {
+        render_response_action_confirmation(frame, centered_rect(76, 64, area), state, &theme);
+    }
     if state.raw_log_path_input.is_some() {
         render_raw_log_path_input(frame, centered_rect(76, 36, area), state, &theme);
     }
@@ -3662,10 +3910,10 @@ fn render_frame(frame: &mut Frame<'_>, state: &mut TuiState) {
         render_timeout_input(frame, centered_rect(64, 32, area), state, &theme);
     }
     if state.action_menu.is_some() {
-        render_action_menu(frame, centered_rect(64, 48, area), state, &theme);
+        render_action_menu(frame, centered_rect(76, 80, area), state, &theme);
     }
     if state.show_help {
-        render_help(frame, centered_rect(70, 70, area), &theme);
+        render_help(frame, centered_rect(76, 90, area), &theme);
     }
 }
 
@@ -3957,6 +4205,10 @@ fn control_row_item(selected: bool, row: &ControlRow, theme: &TuiTheme) -> ListI
     };
     let style = if selected {
         theme.style(TuiStyleRole::Selected)
+    } else if row.action == ControlAction::ToggleOutputMasking
+        && row.inline_state.as_deref() == Some("off")
+    {
+        theme.style(TuiStyleRole::Warning)
     } else if row.enabled {
         theme.style(TuiStyleRole::Text)
     } else {
@@ -4107,32 +4359,44 @@ fn response_action_rows(state: &TuiState) -> Vec<ActionMenuRow> {
     }
 
     let copy_ready = copyable_response_text(state).is_some();
-    let save_ready = savable_response_text(state).is_some();
+    let response_export = response_export_request(state);
+    let export_ready = response_export.is_some();
+    let unmasked = response_has_unmasked_content(state);
     let clear_ready = !state.response.is_empty();
     let mut rows = Vec::new();
 
     if copy_ready {
         rows.push(action_menu_row(
             ActionMenuAction::CopyResponse,
-            "Copy response",
+            if unmasked {
+                "Copy unmasked response"
+            } else {
+                "Copy response"
+            },
             true,
             "No response is available to copy.",
         ));
     }
-    if save_ready {
+    if export_ready {
         rows.push(action_menu_row(
-            ActionMenuAction::SaveResponse,
-            "Save response",
+            ActionMenuAction::ExportResponse,
+            if response_export.is_some_and(|request| !request.masked) {
+                "Export unmasked response..."
+            } else {
+                "Export response..."
+            },
             true,
-            "No response is available to save.",
+            "No response is available to export.",
         ));
     }
-    rows.push(action_menu_row(
-        ActionMenuAction::OpenResponseDirectory,
-        "Open response folder",
-        true,
-        "Response folder is unavailable.",
-    ));
+    if let Some(exported_response) = &state.exported_response {
+        rows.push(action_menu_row(
+            ActionMenuAction::RevealInFinder,
+            "Reveal in Finder",
+            exported_response.path.is_file(),
+            "Exported response no longer exists.",
+        ));
+    }
     if clear_ready {
         rows.push(action_menu_row(
             ActionMenuAction::ClearResponse,
@@ -4156,11 +4420,15 @@ fn log_view_response_action_rows(state: &TuiState) -> Vec<ActionMenuRow> {
             "No log body is available to copy.",
         ));
     }
+    let reveal_ready = state
+        .viewed_log
+        .as_ref()
+        .is_some_and(|log| log.path.is_file());
     rows.push(action_menu_row(
-        ActionMenuAction::OpenLogsDirectory,
-        "Open logs folder",
-        true,
-        "Logs folder is unavailable.",
+        ActionMenuAction::RevealInFinder,
+        "Reveal in Finder",
+        reveal_ready,
+        "Saved log no longer exists.",
     ));
     rows.push(action_menu_row(
         ActionMenuAction::CloseLogView,
@@ -4183,14 +4451,14 @@ fn log_action_rows(state: &TuiState) -> Vec<ActionMenuRow> {
             true,
             "No log is selected.",
         ));
+        let reveal_ready = selected_action_log(state).is_some_and(|log| log.path.is_file());
+        rows.push(action_menu_row(
+            ActionMenuAction::RevealInFinder,
+            "Reveal in Finder",
+            reveal_ready,
+            "Saved log no longer exists.",
+        ));
     }
-    rows.push(action_menu_row(
-        ActionMenuAction::OpenLogsDirectory,
-        "Open logs folder",
-        true,
-        "Logs folder is unavailable.",
-    ));
-
     rows
 }
 
@@ -4215,18 +4483,6 @@ fn action_menu_row(
         enabled,
         unavailable_message: unavailable_message.into(),
     }
-}
-
-fn path_display_label(path: &Path) -> String {
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from)
-        && let Ok(rest) = path.strip_prefix(home)
-    {
-        if rest.as_os_str().is_empty() {
-            return "~".to_owned();
-        }
-        return format!("~/{}", rest.display());
-    }
-    path.display().to_string()
 }
 
 fn render_commands(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &TuiTheme) {
@@ -4453,13 +4709,17 @@ fn render_action_menu(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme
         )));
     }
     lines.push(Line::from(""));
-    if let Some(context) = action_menu_context_line(state, menu.kind) {
+    for context in action_menu_context_lines(state, menu.kind) {
         lines.push(Line::from(Span::styled(
             context,
             theme.style(TuiStyleRole::Muted),
         )));
     }
-    lines.push(Line::from("Enter selects. Esc or q cancels."));
+    if rows.is_empty() {
+        lines.push(Line::from("Esc or q closes."));
+    } else {
+        lines.push(Line::from("Enter selects. Esc or q cancels."));
+    }
 
     frame.render_widget(Clear, area);
     frame.render_widget(
@@ -4477,21 +4737,60 @@ fn render_action_menu(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme
     );
 }
 
-fn action_menu_context_line(state: &TuiState, kind: ActionMenuKind) -> Option<String> {
+fn action_menu_context_lines(state: &TuiState, kind: ActionMenuKind) -> Vec<String> {
     match kind {
-        ActionMenuKind::Response if state.viewed_log.is_some() => Some(format!(
-            "Logs folder: {}",
-            path_display_label(&logs_output_dir())
-        )),
-        ActionMenuKind::Response => Some(format!(
-            "Response folder: {}",
-            path_display_label(&response_output_dir())
-        )),
-        ActionMenuKind::Log => Some(format!(
-            "Logs folder: {}",
-            path_display_label(&logs_output_dir())
-        )),
+        ActionMenuKind::Response if state.viewed_log.is_some() => state
+            .viewed_log
+            .as_ref()
+            .map(|log| vec![format!("Log: {}", log.label)])
+            .unwrap_or_default(),
+        ActionMenuKind::Response => response_action_context_lines(state),
+        ActionMenuKind::Log => selected_action_log(state)
+            .map(|log| vec![format!("Log: {}", log.label)])
+            .unwrap_or_default(),
     }
+}
+
+fn response_action_context_lines(state: &TuiState) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(request) = state
+        .action_menu
+        .as_ref()
+        .and_then(|menu| menu.response_export.as_ref())
+    {
+        lines.push(format!("Response: {}", request.response_label));
+        if let Some(finished_at) = &request.finished_at {
+            lines.push(format!("Completed: {finished_at}"));
+        }
+        lines.push("Export format: UTF-8 text".to_owned());
+        lines.push(format!(
+            "Export content: {}",
+            if request.masked { "masked" } else { "unmasked" }
+        ));
+        lines.push(format!("File name: {}", request.file_name));
+    }
+    if let Some(exported_response) = &state.exported_response {
+        lines.push(format!(
+            "Last exported response: {}",
+            exported_response.response_label
+        ));
+        if let Some(finished_at) = &exported_response.finished_at {
+            lines.push(format!("Last export completed: {finished_at}"));
+        }
+        lines.push(format!(
+            "Last export content: {}",
+            if exported_response.masked {
+                "masked"
+            } else {
+                "unmasked"
+            }
+        ));
+        lines.push(format!(
+            "Last exported file: {}",
+            compact_path_label(&exported_response.path)
+        ));
+    }
+    lines
 }
 
 fn action_menu_line(selected: bool, row: &ActionMenuRow, theme: &TuiTheme) -> Line<'static> {
@@ -4507,6 +4806,13 @@ fn action_menu_line(selected: bool, row: &ActionMenuRow, theme: &TuiTheme) -> Li
 }
 
 fn copyable_response_text(state: &TuiState) -> Option<String> {
+    copyable_response_text_for_masking(state, state.output_masking_enabled)
+}
+
+fn copyable_response_text_for_masking(
+    state: &TuiState,
+    output_masking_enabled: bool,
+) -> Option<String> {
     if state.response.is_empty() {
         return None;
     }
@@ -4514,7 +4820,7 @@ fn copyable_response_text(state: &TuiState) -> Option<String> {
     let body = trim_empty_edge_lines(
         state
             .response
-            .visible_text(state.output_masking_enabled || state.viewed_log.is_some()),
+            .visible_text(output_masking_enabled || state.viewed_log.is_some()),
     );
     if body.is_empty() {
         return None;
@@ -4530,7 +4836,12 @@ fn copyable_response_text(state: &TuiState) -> Option<String> {
     let Some(command) = active.command.as_deref() else {
         return Some(body.to_owned());
     };
-    if body_starts_with_command_echo(body, command) {
+    let command = if output_masking_enabled {
+        mask_sensitive_values(command)
+    } else {
+        command.to_owned()
+    };
+    if body_starts_with_command_echo(body, &command) {
         Some(body.to_owned())
     } else {
         Some(format!("{command}\n{body}"))
@@ -4578,11 +4889,7 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &Tu
             if let Some(command) = &active.command {
                 lines.push(Line::from(format!("AT command: {command}")));
             }
-            lines.push(Line::from(vec![
-                Span::raw("Risk: "),
-                risk_span(active.risk, theme),
-                risk_cue_span(active.risk, theme),
-            ]));
+            lines.push(risk_line("Risk: ", active.risk, theme));
         } else {
             if let (Some(finished_at), Some(label)) =
                 (active.finished_at.as_deref(), active.terminal_event_label())
@@ -4615,11 +4922,7 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &Tu
             if let Some(summary) = active.status_summary_line() {
                 lines.push(Line::from(summary));
             }
-            lines.push(Line::from(vec![
-                Span::raw("Risk: "),
-                risk_span(active.risk, theme),
-                risk_cue_span(active.risk, theme),
-            ]));
+            lines.push(risk_line("Risk: ", active.risk, theme));
         }
         if should_show_output_masking_context(state) {
             lines.push(Line::from(format!(
@@ -4643,11 +4946,7 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &Tu
         if let Some(command) = selected.command_text() {
             lines.push(Line::from(format!("AT command: {command}")));
         }
-        lines.push(Line::from(vec![
-            Span::raw("Risk: "),
-            risk_span(selected.risk(), theme),
-            risk_cue_span(selected.risk(), theme),
-        ]));
+        lines.push(risk_line("Risk: ", selected.risk(), theme));
         lines.push(Line::from(format!(
             "Timeout: {}s",
             effective_timeout_secs(state, selected)
@@ -5033,6 +5332,11 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, theme: &TuiTheme) {
         Line::from("/             Search commands"),
         Line::from("?             Open help"),
         Line::from("q             Quit"),
+        Line::from(""),
+        Line::from("Risk labels: [safe] [sensitive] [write]"),
+        Line::from("             [persistent] [dangerous] [unknown]"),
+        Line::from("Confirm: write / persistent / dangerous / unknown"),
+        Line::from("Unmasked Response: copy / export confirmation"),
     ];
     frame.render_widget(Clear, area);
     frame.render_widget(
@@ -5120,8 +5424,9 @@ fn render_output_masking_confirmation(
         Line::from(
             "This will show unmasked sensitive modem, subscriber, payload, message, credential, or TCP response values in the TUI Response display.",
         ),
-        Line::from("Response copy follows the visible Response display."),
-        Line::from("Saved responses, history, and session logs remain masked."),
+        Line::from("Response copy and explicit export follow the visible Response display."),
+        Line::from("Unmasked copy requires `copy`; unmasked export requires `export`."),
+        Line::from("Generated history and session logs remain masked."),
         Line::from("Raw diagnostic export is separate and still requires raw-log acknowledgement."),
         Line::from(""),
         Line::from(
@@ -5142,6 +5447,78 @@ fn render_output_masking_confirmation(
             .block(
                 Block::default()
                     .title("Disable output masking?")
+                    .borders(Borders::ALL)
+                    .border_style(theme.style(TuiStyleRole::Warning)),
+            )
+            .alignment(Alignment::Left)
+            .style(theme.style(TuiStyleRole::Text))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_response_action_confirmation(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &TuiState,
+    theme: &TuiTheme,
+) {
+    let Some(confirmation) = &state.response_action_confirmation else {
+        return;
+    };
+    let input = if confirmation.input.is_empty() {
+        "<empty>".to_owned()
+    } else {
+        confirmation.input.clone()
+    };
+    let (title, warning, response_label, target) = match &confirmation.action {
+        ResponseActionConfirmation::Copy { response_label, .. } => (
+            "Copy unmasked response?",
+            "The terminal clipboard request will contain the unmasked Response.",
+            response_label.as_str(),
+            None,
+        ),
+        ResponseActionConfirmation::Export { request, path } => (
+            "Export unmasked response?",
+            "The file may contain unmasked identifiers, messages, payloads, or credentials.",
+            request.response_label.as_str(),
+            Some(path.as_path()),
+        ),
+    };
+    let acknowledgement = response_action_confirmation_ack(&confirmation.action);
+    let mut text = vec![
+        Line::from(Span::styled(
+            format!("Warning: {warning}"),
+            theme.style(TuiStyleRole::Warning),
+        )),
+        Line::from(""),
+        Line::from(format!("Response: {response_label}")),
+    ];
+    if let Some(path) = target {
+        text.push(Line::from("Format: UTF-8 text"));
+        text.push(Line::from(format!("File: {}", path.display())));
+    }
+    text.extend([
+        Line::from(""),
+        Line::from(format!(
+            "Type `{acknowledgement}` to continue. Esc or q cancels."
+        )),
+        Line::from(format!("Input: {input}")),
+    ]);
+    if let Some(error) = &confirmation.error {
+        text.push(Line::from(""));
+        text.push(Line::from(Span::styled(
+            error.clone(),
+            theme.style(TuiStyleRole::Error),
+        )));
+    }
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(
+                Block::default()
+                    .title(title)
                     .borders(Borders::ALL)
                     .border_style(theme.style(TuiStyleRole::Warning)),
             )
@@ -5212,7 +5589,7 @@ fn render_raw_log_ack_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
             "This file may contain sensitive modem, subscriber, network, APN, or PDP authentication values.",
         ),
         Line::from(
-            "Normal Response, history, session logs, and saved Response files remain masked.",
+            "Generated history and session logs remain masked; Response export follows the visible masking state.",
         ),
         Line::from("Capture applies only to commands executed after it starts."),
         Line::from(""),
@@ -5955,10 +6332,7 @@ fn command_item(selected: bool, command: &ExecutableItem, theme: &TuiTheme) -> L
         name_style,
     )];
     spans.push(Span::raw(" "));
-    spans.extend([
-        risk_span(command.risk(), theme),
-        risk_cue_span(command.risk(), theme),
-    ]);
+    spans.push(risk_span(command.risk(), theme));
     if let Some(command_text) = command.command_text() {
         spans.push(Span::styled(
             format!(" {command_text}"),
@@ -5978,22 +6352,11 @@ fn risk_line(
     risk: crate::at::risk::RiskLevel,
     theme: &TuiTheme,
 ) -> Line<'static> {
-    Line::from(vec![
-        Span::raw(prefix),
-        risk_span(risk, theme),
-        risk_cue_span(risk, theme),
-    ])
+    Line::from(vec![Span::raw(prefix), risk_span(risk, theme)])
 }
 
 fn risk_span(risk: crate::at::risk::RiskLevel, theme: &TuiTheme) -> Span<'static> {
     Span::styled(format!("[{risk}]"), theme.risk_style(risk))
-}
-
-fn risk_cue_span(risk: crate::at::risk::RiskLevel, theme: &TuiTheme) -> Span<'static> {
-    match risk_cue(risk) {
-        Some(cue) => Span::styled(format!(" {cue}"), theme.risk_style(risk)),
-        None => Span::raw(""),
-    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

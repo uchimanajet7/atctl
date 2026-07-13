@@ -1,5 +1,5 @@
 use std::io::{self, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -13,11 +13,6 @@ use crate::at::risk::{
     DirectSendConfirmation, RiskClassification, RiskLevel, classify_direct_command,
     direct_send_confirmation,
 };
-use crate::config::loader::load_config_if_exists;
-use crate::config::model::DeviceConfig;
-use crate::config::paths::{
-    default_config_path, default_config_path_display, default_state_dir, expand_tilde_path,
-};
 use crate::log::history::{LogListingKind, append_command_history, list_logs};
 use crate::log::raw::{
     RAW_LOG_ACK, RawLogConfig, RawLogExchange, RawLogSink, RawLogTransportError,
@@ -26,11 +21,13 @@ use crate::log::raw::{
 use crate::log::session::{
     CommandLogRecord, LogDeviceSelection, now_timestamp, write_masked_session_log,
 };
+use crate::paths::default_state_dir;
 use crate::presets::builtin::builtins;
 use crate::presets::loader::{
     load_presets_dir_required, load_presets_file_required, validate_unique_preset_names,
 };
 use crate::presets::model::Preset;
+use crate::response_export::{validate_response_export_target, write_response_export};
 use crate::sequences::builtin::builtins as sequence_builtins;
 use crate::sequences::engine::{
     SequenceExecution, SequenceParamValue, SequenceReviewValue, SequenceStepResult,
@@ -88,8 +85,6 @@ pub enum Command {
     Tui(TuiArgs),
     #[command(about = "Expose the AT USB path as a local PTY")]
     Bridge(BridgeArgs),
-    #[command(about = "Show configuration paths")]
-    Config(ConfigArgs),
     #[command(about = "List masked history and session logs")]
     Logs(LogsArgs),
 }
@@ -163,6 +158,19 @@ pub struct SendArgs {
     pub no_mask: bool,
 
     #[arg(
+        long,
+        help = "Do not write masked history or session logs; explicit raw diagnostic export is unaffected"
+    )]
+    pub no_log: bool,
+
+    #[arg(
+        long = "export-response",
+        value_name = "PATH",
+        help = "Export the normal Response to a new file at PATH; follows --no-mask and does not replace stdout"
+    )]
+    pub export_response: Option<PathBuf>,
+
+    #[arg(
         long = "raw-log-file",
         value_name = "PATH",
         help = "Write an acknowledged raw diagnostic export to PATH"
@@ -227,6 +235,19 @@ pub struct PresetRunArgs {
     pub no_mask: bool,
 
     #[arg(
+        long,
+        help = "Do not write masked history or session logs; explicit raw diagnostic export is unaffected"
+    )]
+    pub no_log: bool,
+
+    #[arg(
+        long = "export-response",
+        value_name = "PATH",
+        help = "Export the normal Response to a new file at PATH; follows --no-mask and does not replace stdout"
+    )]
+    pub export_response: Option<PathBuf>,
+
+    #[arg(
         long = "raw-log-file",
         value_name = "PATH",
         help = "Write an acknowledged raw diagnostic export to PATH"
@@ -254,9 +275,6 @@ pub struct PresetRunArgs {
 
     #[arg(long = "risk-ack", value_parser = parse_risk_level, help = "Acknowledge the classified risk level for --yes")]
     pub risk_ack: Option<RiskLevel>,
-
-    #[arg(long, help = "Continue a preset run after an AT ERROR response")]
-    pub continue_on_error: bool,
 
     #[command(flatten)]
     pub preset_locations: PresetFileLocationOptions,
@@ -304,6 +322,19 @@ pub struct SequenceRunArgs {
     pub no_mask: bool,
 
     #[arg(
+        long,
+        help = "Do not write masked history or session logs; explicit raw diagnostic export is unaffected"
+    )]
+    pub no_log: bool,
+
+    #[arg(
+        long = "export-response",
+        value_name = "PATH",
+        help = "Export the normal Response to a new file at PATH; follows --no-mask and does not replace stdout"
+    )]
+    pub export_response: Option<PathBuf>,
+
+    #[arg(
         long = "raw-log-file",
         value_name = "PATH",
         help = "Write an acknowledged raw diagnostic export to PATH"
@@ -343,6 +374,12 @@ pub struct SequenceRunArgs {
 pub struct TuiArgs {
     #[arg(long, help = "Start the TUI session with output masking off")]
     pub no_mask: bool,
+
+    #[arg(
+        long,
+        help = "Do not write masked history or session logs during this TUI session; explicit raw diagnostic export is unaffected"
+    )]
+    pub no_log: bool,
 
     #[arg(long, value_enum, help = "Set the TUI color theme")]
     pub theme: Option<TuiThemeChoice>,
@@ -441,18 +478,6 @@ pub struct BridgeArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct ConfigArgs {
-    #[command(subcommand)]
-    pub command: ConfigCommand,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum ConfigCommand {
-    #[command(about = "Print the default atctl configuration directory")]
-    Path,
-}
-
-#[derive(Debug, Args)]
 pub struct LogsArgs {
     #[command(subcommand)]
     pub command: LogsCommand,
@@ -493,16 +518,11 @@ pub fn run_cli(cli: Cli) -> Result<()> {
         Command::Tui(args) => crate::tui::run(
             args.theme,
             args.no_mask,
+            args.no_log,
             args.preset_locations,
             args.sequence_locations,
         ),
         Command::Bridge(args) => run_bridge(args),
-        Command::Config(ConfigArgs {
-            command: ConfigCommand::Path,
-        }) => {
-            println!("{}", default_config_path_display().display());
-            Ok(())
-        }
         Command::Logs(args) => run_logs(args),
     }
 }
@@ -528,8 +548,8 @@ struct SendJsonOutput<'a> {
     lines: &'a [String],
 }
 
-fn run_send(mut args: SendArgs) -> Result<()> {
-    apply_config_defaults(&mut args.usb)?;
+fn run_send(args: SendArgs) -> Result<()> {
+    validate_optional_response_export(args.export_response.as_deref())?;
     let manual_pair = args.usb.manual_endpoint_pair()?;
     let transport = UsbAtTransport::new(UsbAtTransportConfig {
         filter: args.usb.to_usb_filter(),
@@ -542,6 +562,10 @@ fn run_send(mut args: SendArgs) -> Result<()> {
     record_command_logs("send", &args, &execution)?;
     let output = format_send_output(&execution, args.json)?;
     print!("{output}");
+    if let Some(path) = args.export_response.as_deref() {
+        let export = format_send_export(&args.command, &execution, args.json)?;
+        export_response(path, &export)?;
+    }
     send_status_result(&execution, args.ignore_at_error)
 }
 
@@ -552,8 +576,8 @@ fn run_preset(args: PresetArgs) -> Result<()> {
             print!("{}", format_preset_list(&presets));
             Ok(())
         }
-        PresetCommand::Run(mut run_args) => {
-            apply_config_defaults(&mut run_args.usb)?;
+        PresetCommand::Run(run_args) => {
+            validate_optional_response_export(run_args.export_response.as_deref())?;
             let presets = load_presets(&run_args.preset_locations)?;
             let preset = find_preset(&presets, &run_args.name)?;
             let send_args = send_args_from_preset(preset, &run_args);
@@ -577,6 +601,10 @@ fn run_preset(args: PresetArgs) -> Result<()> {
             record_command_logs(&format!("preset:{}", preset.name), &send_args, &execution)?;
             let output = format_send_output(&execution, send_args.json)?;
             print!("{output}");
+            if let Some(path) = send_args.export_response.as_deref() {
+                let export = format_send_export(&send_args.command, &execution, send_args.json)?;
+                export_response(path, &export)?;
+            }
             send_status_result(&execution, send_args.ignore_at_error)
         }
     }
@@ -589,8 +617,8 @@ fn run_sequence(args: SequenceArgs) -> Result<()> {
             print!("{}", format_sequence_list(&sequences));
             Ok(())
         }
-        SequenceCommand::Run(mut run_args) => {
-            apply_config_defaults(&mut run_args.usb)?;
+        SequenceCommand::Run(run_args) => {
+            validate_optional_response_export(run_args.export_response.as_deref())?;
             let sequences = load_sequences(&run_args.sequence_locations)?;
             let sequence = find_sequence(&sequences, &run_args.name)?;
             let review = render_sequence_review(sequence, &run_args.params)?;
@@ -633,6 +661,10 @@ fn run_sequence(args: SequenceArgs) -> Result<()> {
             record_sequence_logs(sequence, &run_args, &execution)?;
             let output = format_sequence_output(&execution, !run_args.no_mask, run_args.json)?;
             print!("{output}");
+            if let Some(path) = run_args.export_response.as_deref() {
+                let export = format_sequence_export(&execution, !run_args.no_mask, run_args.json)?;
+                export_response(path, &export)?;
+            }
             sequence_status_result(&execution, run_args.ignore_at_error)
         }
     }
@@ -648,6 +680,7 @@ pub(crate) fn execute_tui_preset(
     confirmed: bool,
     timeout_secs: u64,
     device_selection: Option<TuiDeviceSelection>,
+    normal_logging_enabled: bool,
 ) -> Result<SendExecution> {
     let mut usb = configured_tui_usb_options(timeout_secs)?;
     if let Some(selection) = device_selection {
@@ -657,28 +690,29 @@ pub(crate) fn execute_tui_preset(
         usb.address = Some(selection.address);
     }
 
-    execute_tui_preset_with_usb(preset, confirmed, usb)
+    execute_tui_preset_with_usb(preset, confirmed, usb, normal_logging_enabled)
 }
 
 fn configured_tui_usb_options(timeout_secs: u64) -> Result<UsbOptions> {
-    let mut usb = UsbOptions {
+    Ok(UsbOptions {
         timeout: timeout_secs,
         ..UsbOptions::default()
-    };
-    apply_config_defaults(&mut usb)?;
-    Ok(usb)
+    })
 }
 
 fn execute_tui_preset_with_usb(
     preset: &Preset,
     confirmed: bool,
     usb: UsbOptions,
+    normal_logging_enabled: bool,
 ) -> Result<SendExecution> {
     let requires_confirmation = preset.risk.requires_confirmation();
     let send_args = SendArgs {
         command: preset.command.clone(),
         usb,
         no_mask: false,
+        no_log: !normal_logging_enabled,
+        export_response: None,
         raw_log_file: None,
         raw_log_ack: None,
         json: false,
@@ -713,6 +747,7 @@ pub(crate) fn execute_tui_sequence(
     confirmed: bool,
     timeout_secs: u64,
     device_selection: Option<TuiDeviceSelection>,
+    normal_logging_enabled: bool,
     raw_log: Option<&mut RawLogSink>,
 ) -> Result<SequenceExecution> {
     let mut usb = configured_tui_usb_options(timeout_secs)?;
@@ -747,7 +782,7 @@ pub(crate) fn execute_tui_sequence(
         true,
         raw_log,
     )?;
-    record_tui_sequence_logs(sequence, &usb, &execution)?;
+    record_tui_sequence_logs(sequence, &usb, &execution, normal_logging_enabled)?;
     Ok(execution)
 }
 
@@ -774,8 +809,7 @@ fn run_logs(args: LogsArgs) -> Result<()> {
     }
 }
 
-fn run_bridge(mut args: BridgeArgs) -> Result<()> {
-    apply_config_defaults(&mut args.usb)?;
+fn run_bridge(args: BridgeArgs) -> Result<()> {
     let raw_log = bridge_raw_log_config(&args)?;
     let manual_pair = args.usb.manual_endpoint_pair()?;
     let config = PtyBridgeConfig {
@@ -1380,6 +1414,8 @@ fn send_args_from_preset(preset: &Preset, args: &PresetRunArgs) -> SendArgs {
         command: preset.command.clone(),
         usb,
         no_mask: args.no_mask,
+        no_log: args.no_log,
+        export_response: args.export_response.clone(),
         raw_log_file: args.raw_log_file.clone(),
         raw_log_ack: args.raw_log_ack.clone(),
         json: args.json,
@@ -1397,80 +1433,6 @@ fn preset_classification(preset: &Preset) -> RiskClassification {
     }
 }
 
-fn apply_config_defaults(usb: &mut UsbOptions) -> Result<()> {
-    let Some(config) = load_config_if_exists(&default_config_path())? else {
-        return Ok(());
-    };
-    let Some(device) = config.device else {
-        return Ok(());
-    };
-
-    apply_device_config_defaults(usb, &device)
-}
-
-fn apply_device_config_defaults(usb: &mut UsbOptions, device: &DeviceConfig) -> Result<()> {
-    if usb.vid.is_none() {
-        usb.vid =
-            parse_optional_hex_u16_config("device.default_vendor_id", &device.default_vendor_id)?;
-    }
-    if usb.pid.is_none() {
-        usb.pid =
-            parse_optional_hex_u16_config("device.default_product_id", &device.default_product_id)?;
-    }
-    if usb.interface_number.is_none() {
-        usb.interface_number = parse_optional_auto_decimal_u8_config(
-            "device.default_interface",
-            &device.default_interface,
-        )?;
-    }
-    if usb.bulk_in.is_none() {
-        usb.bulk_in =
-            parse_optional_auto_hex_u8_config("device.default_bulk_in", &device.default_bulk_in)?;
-    }
-    if usb.bulk_out.is_none() {
-        usb.bulk_out =
-            parse_optional_auto_hex_u8_config("device.default_bulk_out", &device.default_bulk_out)?;
-    }
-
-    Ok(())
-}
-
-fn parse_optional_hex_u16_config(
-    name: &'static str,
-    value: &Option<String>,
-) -> Result<Option<u16>> {
-    value
-        .as_deref()
-        .map(|value| {
-            parse_hex_u16(value).map_err(|error| AtctlError::InvalidValue { name, value: error })
-        })
-        .transpose()
-}
-
-fn parse_optional_auto_decimal_u8_config(
-    name: &'static str,
-    value: &Option<String>,
-) -> Result<Option<u8>> {
-    match value.as_deref() {
-        None | Some("auto") => Ok(None),
-        Some(value) => parse_decimal_u8(value)
-            .map(Some)
-            .map_err(|error| AtctlError::InvalidValue { name, value: error }),
-    }
-}
-
-fn parse_optional_auto_hex_u8_config(
-    name: &'static str,
-    value: &Option<String>,
-) -> Result<Option<u8>> {
-    match value.as_deref() {
-        None | Some("auto") => Ok(None),
-        Some(value) => parse_hex_u8(value)
-            .map(Some)
-            .map_err(|error| AtctlError::InvalidValue { name, value: error }),
-    }
-}
-
 #[derive(Debug, Clone)]
 pub(crate) struct LoggingPaths {
     pub(crate) state_dir: PathBuf,
@@ -1478,7 +1440,7 @@ pub(crate) struct LoggingPaths {
 }
 
 fn record_command_logs(source: &str, args: &SendArgs, execution: &SendExecution) -> Result<()> {
-    let Some(paths) = logging_paths_if_enabled()? else {
+    let Some(paths) = normal_logging_paths(args.no_log)? else {
         return Ok(());
     };
     let record = CommandLogRecord {
@@ -1510,7 +1472,7 @@ fn record_sequence_logs(
     args: &SequenceRunArgs,
     execution: &SequenceExecution,
 ) -> Result<()> {
-    let Some(paths) = logging_paths_if_enabled()? else {
+    let Some(paths) = normal_logging_paths(args.no_log)? else {
         return Ok(());
     };
     let record = CommandLogRecord {
@@ -1541,8 +1503,9 @@ fn record_tui_sequence_logs(
     sequence: &Sequence,
     usb: &UsbOptions,
     execution: &SequenceExecution,
+    normal_logging_enabled: bool,
 ) -> Result<()> {
-    let Some(paths) = logging_paths_if_enabled()? else {
+    let Some(paths) = normal_logging_paths(!normal_logging_enabled)? else {
         return Ok(());
     };
     let record = CommandLogRecord {
@@ -1569,33 +1532,17 @@ fn record_tui_sequence_logs(
     Ok(())
 }
 
-fn logging_paths_if_enabled() -> Result<Option<LoggingPaths>> {
-    let config = load_config_if_exists(&default_config_path())?;
-    if config
-        .as_ref()
-        .and_then(|config| config.log.as_ref())
-        .and_then(|log| log.enabled)
-        == Some(false)
-    {
+fn normal_logging_paths(no_log: bool) -> Result<Option<LoggingPaths>> {
+    if no_log {
         return Ok(None);
     }
 
-    logging_paths_from_loaded_config(config).map(Some)
+    logging_paths().map(Some)
 }
 
 pub(crate) fn logging_paths() -> Result<LoggingPaths> {
-    logging_paths_from_loaded_config(load_config_if_exists(&default_config_path())?)
-}
-
-fn logging_paths_from_loaded_config(
-    config: Option<crate::config::model::Config>,
-) -> Result<LoggingPaths> {
-    let state_dir = default_state_dir();
-    let session_dir = config
-        .and_then(|config| config.log)
-        .and_then(|log| log.log_dir)
-        .map(|value| expand_tilde_path(&value))
-        .unwrap_or_else(|| state_dir.join("logs"));
+    let state_dir = default_state_dir()?;
+    let session_dir = state_dir.join("logs");
 
     Ok(LoggingPaths {
         state_dir,
@@ -1636,6 +1583,46 @@ fn format_send_output(execution: &SendExecution, json: bool) -> Result<String> {
     }
 
     Ok(execution.text.clone())
+}
+
+#[derive(Debug, Serialize)]
+struct SendExportJsonOutput<'a> {
+    command: String,
+    risk: RiskLevel,
+    status: &'a AtStatus,
+    masked: bool,
+    response: &'a str,
+    lines: &'a [String],
+}
+
+fn format_send_export(command: &str, execution: &SendExecution, json: bool) -> Result<String> {
+    let command = if execution.masked {
+        mask_sensitive_values(command)
+    } else {
+        command.to_owned()
+    };
+    if json {
+        let output = SendExportJsonOutput {
+            command: command.clone(),
+            risk: execution.risk,
+            status: &execution.status,
+            masked: execution.masked,
+            response: &execution.text,
+            lines: &execution.lines,
+        };
+        return Ok(format!("{}\n", serde_json::to_string(&output)?));
+    }
+
+    let response = execution.text.trim_end_matches(['\r', '\n']);
+    let starts_with_command = response
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .is_some_and(|line| normalize_command(line) == normalize_command(&command));
+    if starts_with_command {
+        Ok(format!("{response}\n"))
+    } else {
+        Ok(format!("{command}\n{response}\n"))
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1691,6 +1678,40 @@ fn format_sequence_output(
     }
 
     Ok(format!("{transcript}\n"))
+}
+
+fn format_sequence_export(
+    execution: &SequenceExecution,
+    masked: bool,
+    json: bool,
+) -> Result<String> {
+    if json {
+        return format_sequence_output(execution, masked, true);
+    }
+
+    let transcript = if masked {
+        &execution.masked_transcript
+    } else {
+        &execution.raw_transcript
+    };
+    Ok(format!(
+        "Sequence: {}\n\n{}\n",
+        execution.name,
+        transcript.trim_end_matches(['\r', '\n'])
+    ))
+}
+
+fn validate_optional_response_export(path: Option<&Path>) -> Result<()> {
+    match path {
+        Some(path) => validate_response_export_target(path),
+        None => Ok(()),
+    }
+}
+
+fn export_response(path: &Path, contents: &str) -> Result<()> {
+    write_response_export(path, contents)?;
+    eprintln!("Exported response: {}", path.display());
+    Ok(())
 }
 
 fn sequence_step_json_output(

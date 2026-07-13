@@ -15,11 +15,10 @@ Presets represent one AT command line. Sequences represent multi-step AT
 operations such as SMS send/read/reply checks and Quectel or SORACOM TCP/IP
 socket checks. Both are selectable from the TUI executable-item surface.
 
-Product-provided definitions ship with `atctl`. File definitions are loaded only
-from files or directories explicitly provided for the current invocation. After
-loading, both origins use the same product contract for listing, selection,
-validation, risk handling, masking, logging, raw diagnostic export, and
-execution.
+Product-provided definitions ship with `atctl`. File definitions are loaded from
+files or directories provided for the current invocation. After loading, both
+origins use the same validation, risk handling, masking, logging, raw diagnostic
+export, and execution behavior.
 
 ## Preset Sources
 
@@ -27,13 +26,13 @@ execution.
 
 - Product presets: product-provided standard workflow presets shipped by the
   program.
-- File presets: TOML-defined presets loaded only from files or directories
-  explicitly provided for the current invocation.
+- File presets: TOML-defined presets loaded from files or directories provided
+  for the current invocation.
 
 Product presets are vendor-neutral where practical. Vendor-specific,
-modem-specific, carrier-specific, and project-specific commands belong in file
-presets unless the specification explicitly promotes them to product presets.
-After loading, both preset kinds use the same command execution contract and
+modem-specific, carrier-specific, and project-specific commands are provided as
+file presets.
+After loading, both preset kinds use the same command execution behavior and
 duplicate-name rules. The source distinction remains available for CLI labels,
 TUI source grouping, review responsibility, and troubleshooting context.
 
@@ -169,9 +168,9 @@ incorrectly declares a lower risk.
 
 ## Loading File Presets
 
-File presets are external executable definitions. They are not discovered
-automatically from `~/.config/atctl`; load them only through explicit
-per-invocation locations for review, local projects, and repository examples:
+File presets are external executable definitions. To use them for review, local
+projects, or repository examples, provide their locations for the current
+invocation:
 
 ```sh
 atctl preset list --preset-dir ./presets
@@ -250,7 +249,7 @@ atctl tui
 Product-provided standard Sequences are ordinary product actions. Users do not
 need to author TOML before using standard SMS send/read/reply checks. User
 Sequence TOML is an extension point for additional, project-local, or
-verification-specific operations.
+special-purpose operations.
 Repository-managed example Sequences and user-authored Sequences are loaded
 through the same Sequence definition path, but their origin remains visible and
 does not turn them into product-provided standard Sequences.
@@ -261,9 +260,9 @@ user-authored or repository-managed Sequence definitions are visible, their
 top-level TOML `title` is shown as a non-selectable source group header, such
 as `Quectel Sequences`; the TUI does not add an `Add-on:` prefix.
 
-Sequence add-ons are external executable definitions. They are not discovered
-automatically from `~/.config/atctl`; load them only through explicit
-per-invocation Sequence locations:
+Sequence add-ons are external executable definitions. To use repository-managed
+examples or project-local definitions, provide their locations for the current
+invocation:
 
 ```sh
 atctl sequence list --sequence-file ./sequences/custom.toml
@@ -337,8 +336,7 @@ Optional top-level fields:
 Required Sequence fields:
 
 - `name`: unique Sequence name across all loaded Sequences.
-- `summary`: concise purpose shown in listings, TUI executable rows, and
-  execution review surfaces. It is not compact Status text.
+- `summary`: concise purpose shown in listings, TUI rows, and execution review.
 - `risk`: declared risk, one of `safe`, `sensitive`, `write`, `persistent`,
   `dangerous`, or `unknown`.
 - at least one step.
@@ -372,39 +370,25 @@ Parameter value-resolution fields:
 - `hint`: concise instruction for how the operator confirms, selects, derives,
   or enters the value.
 
-The TUI `Run Sequence` modal and CLI missing-parameter errors use the same
-metadata. Do not require a user to know values such as PDP context ID, socket
-connect ID, or SMS storage index without a default, modem/source hint, selection
-hint, product-known candidate assistance, or external-prerequisite explanation.
+The same parameter metadata appears in TUI input and CLI missing-value errors,
+so values such as PDP context ID, socket connect ID, and SMS storage index can
+include a default, source, candidate list, or entry hint.
 
-The TUI `Run Sequence` modal is a phase-based operation surface. Values,
-candidate rows, review detail, and confirmation are not an unbounded transcript.
-During confirmation, the risk instruction and current `Input:` line must remain
-visible even when values or review items are long; lower-priority detail should
-be summarized before it hides the action needed to run or cancel.
+### Selecting Candidate Values in the TUI
 
-For `source = "select"` or a parameter with `candidate`, a hint is not the
-complete TUI behavior when the product has a candidate path. The TUI must
-present available candidates in the same `Run Sequence` modal and let the
-operator select one without leaving the modal. When candidates are not loaded
-yet, the modal shows the product action that obtains them. When candidates are
-already loaded, the same product action remains available as an explicit
-refresh/load action for that candidate source. Selecting that action runs the
-corresponding AT command or Sequence through the normal execution path; opening
-the modal itself must not run a hidden modem read, PDP check, socket check, or
-network operation. Candidate sets are scoped to the current TUI session and
-must show where they came from.
-If that candidate action is write-risk or otherwise confirmation-required, the
-risk confirmation happens inside the same `Run Sequence` modal before USB
-access. A failed candidate action is shown as an action failure and does not
-mean the selected Sequence body has already failed; the full failure belongs in
-Response, while compact Status stays to concise action state.
+For `source = "select"` or a parameter with `candidate`, the `Run Sequence`
+dialog shows available values and their source. If values have not been loaded,
+select the action shown in the dialog to obtain them. Opening the dialog alone
+does not read the modem or contact a network endpoint.
 
-Product-provided standard Sequences can use product-known candidate assistance
-directly. Repository-managed examples and user-authored add-on Sequences may
-declare the same `candidate = "<name>"` only when the product has a standard
-parser for that value. Implementing a candidate source does not make every
-vendor-specific or provider-specific Sequence a default standard Sequence.
+Candidate actions use the normal risk confirmation, timeout, masking, Response,
+and logging behavior. A failed candidate action is reported separately from the
+selected Sequence. Manual entry remains available when the candidate list is
+empty or does not contain the required value.
+
+Repository-managed and project-local Sequences can use a named `candidate`
+when `atctl` supports that candidate type. The currently supported names are
+`sms-message` and `pdp-context`.
 
 For SMS read/reply by storage index, candidates come from known `AT+CMGL` or
 `sms-receive-check` rows obtained by an explicit same-session execution and
@@ -452,8 +436,27 @@ separate blocks with one blank line between blocks.
 Pre-send review is intentionally separate from normal Response and log output.
 The review surface may show current typed values for sensitive items so the
 operator can verify the destination and content before sending. Normal Response
-output, saved Response files, history, session logs, and JSON remain masked by
-default.
+output, Response exports, history, session logs, and JSON remain masked by
+default unless the operator explicitly selects unmasked foreground output and
+Response export.
+
+## Logging
+
+Preset and Sequence executions write masked history and session logs by
+default. Use `--no-log` when the current execution must not create either
+normal log artifact:
+
+```sh
+atctl preset run modem-info --no-log
+atctl sequence run sms-receive-check --no-log
+atctl tui --no-log
+```
+
+`--no-log` applies only to the current command or TUI session. It does not hide
+existing logs and does not disable a raw diagnostic export explicitly requested
+with an output path and acknowledgement. Normal log paths follow
+`XDG_STATE_HOME`; see the [README logging section](../README.md#logs) for the
+default paths and an override example.
 
 ## Standard Sequences
 
@@ -510,13 +513,13 @@ already active Quectel PDP context instead of blindly sending
 Sequence runs the configured `AT+QICLOSE=<connectID>` cleanup command and keeps
 that cleanup visible in the transcript.
 
-Quectel data-send and ping Sequences are example Sequences because they are
-vendor-specific. They must not be treated as default vendor-neutral standard
-Sequences. The ping example uses `AT+QPING` through the selected PDP context
-and reports received replies as IP reachability evidence only; ping success is
-not TCP socket, payload delivery, or application processing proof. Ping steps
-declare `expect_urc = "+QPING:"` and `require_ping_success = true`, so the
-engine waits past the command-accepted `OK` for `+QPING:` result lines.
+Quectel data-send and ping Sequences are vendor-specific examples rather than
+default vendor-neutral standard Sequences. The ping example uses `AT+QPING`
+through the selected PDP context and reports received replies as IP reachability
+evidence only. Ping success is not TCP socket, payload delivery, or application
+processing proof. Ping steps
+declare `expect_urc = "+QPING:"` and `require_ping_success = true`, so `atctl`
+waits past the command-accepted `OK` for `+QPING:` result lines.
 Terminal `OK` without a parsed successful `+QPING:` reply or summary is not
 enough for `Result: OK`.
 `OK` after `QIOPEN` is not enough by itself when the command reports socket
@@ -529,17 +532,15 @@ report sent, acknowledged, and unacknowledged byte counts when counters are
 returned, and report `+QIRD: 0` as no buffered response data. For fixed-length
 `AT+QISEND=<connectID>,<length>` payload entry, example Sequences send the
 declared payload bytes without SMS-style Ctrl-Z. Their acknowledgement query
-steps declare `require_tcp_ack = true`, so the engine retries
+steps declare `require_tcp_ack = true`, so `atctl` retries
 `AT+QISEND=<connectID>,0` within the step timeout and fails the Sequence if the
 payload remains unacknowledged instead of reporting `Result: OK`.
 
-Quectel and SORACOM TCP add-on Sequences must not make the operator guess modem
-plumbing values. PDP context ID should declare `candidate = "pdp-context"` when
-standard `AT+CGACT?` / `AT+CGDCONT?` candidate assistance is useful. Socket
-connect ID should use an editable default plus a hint that points to an
-explicitly loaded Quectel socket-state command when the operator needs to
-inspect current sockets. Read length should have an editable default for
-routine checks.
+Quectel and SORACOM TCP examples provide editable defaults or candidate help for
+routine modem values. PDP context ID uses `candidate = "pdp-context"` with
+standard `AT+CGACT?` / `AT+CGDCONT?` results. Socket connect ID uses an editable
+default and a hint to the Quectel socket-state command. Read length also has an
+editable default.
 
 The SORACOM example file demonstrates provider-specific network reachability
 and TCP entry point checks using Quectel TCP/IP AT commands as the modem

@@ -43,6 +43,112 @@ fn parses_endpoint_overrides() {
 }
 
 #[test]
+fn parses_no_log_for_every_normal_logging_surface() {
+    let cli = Cli::try_parse_from([
+        "atctl",
+        "send",
+        "AT",
+        "--no-log",
+        "--raw-log-file",
+        "/tmp/case.rawlog",
+        "--raw-log-ack",
+        "raw-log",
+    ])
+    .unwrap();
+    let Command::Send(args) = cli.command else {
+        panic!("expected send command");
+    };
+    assert!(args.no_log);
+    assert_eq!(args.raw_log_file, Some(PathBuf::from("/tmp/case.rawlog")));
+
+    let cli = Cli::try_parse_from(["atctl", "preset", "run", "modem-info", "--no-log"]).unwrap();
+    let Command::Preset(PresetArgs {
+        command: PresetCommand::Run(args),
+    }) = cli.command
+    else {
+        panic!("expected preset run command");
+    };
+    assert!(args.no_log);
+
+    let cli =
+        Cli::try_parse_from(["atctl", "sequence", "run", "sms-receive-check", "--no-log"]).unwrap();
+    let Command::Sequence(SequenceArgs {
+        command: SequenceCommand::Run(args),
+    }) = cli.command
+    else {
+        panic!("expected sequence run command");
+    };
+    assert!(args.no_log);
+
+    let cli = Cli::try_parse_from(["atctl", "tui", "--no-log"]).unwrap();
+    let Command::Tui(args) = cli.command else {
+        panic!("expected tui command");
+    };
+    assert!(args.no_log);
+}
+
+#[test]
+fn parses_response_export_for_every_bounded_execution_surface() {
+    let target = "/tmp/atctl-response.txt";
+    let cli = Cli::try_parse_from(["atctl", "send", "AT", "--export-response", target]).unwrap();
+    let Command::Send(args) = cli.command else {
+        panic!("expected send command");
+    };
+    assert_eq!(args.export_response, Some(PathBuf::from(target)));
+
+    let cli = Cli::try_parse_from([
+        "atctl",
+        "preset",
+        "run",
+        "modem-info",
+        "--export-response",
+        target,
+    ])
+    .unwrap();
+    let Command::Preset(PresetArgs {
+        command: PresetCommand::Run(args),
+    }) = cli.command
+    else {
+        panic!("expected preset run command");
+    };
+    assert_eq!(args.export_response, Some(PathBuf::from(target)));
+
+    let cli = Cli::try_parse_from([
+        "atctl",
+        "sequence",
+        "run",
+        "sms-receive-check",
+        "--export-response",
+        target,
+    ])
+    .unwrap();
+    let Command::Sequence(SequenceArgs {
+        command: SequenceCommand::Run(args),
+    }) = cli.command
+    else {
+        panic!("expected sequence run command");
+    };
+    assert_eq!(args.export_response, Some(PathBuf::from(target)));
+
+    assert!(
+        Cli::try_parse_from([
+            "atctl",
+            "bridge",
+            "--symlink",
+            "/tmp/atctl",
+            "--export-response",
+            target,
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+fn config_subcommand_is_not_part_of_the_cli() {
+    assert!(Cli::try_parse_from(["atctl", "config", "path"]).is_err());
+}
+
+#[test]
 fn parses_bridge_options() {
     let cli = Cli::try_parse_from([
         "atctl",
@@ -101,6 +207,7 @@ fn bridge_help_describes_runtime_device_discovery() {
     assert!(help.contains("only when that pair is unique"));
     assert!(help.contains("atctl devices --all-usb"));
     assert!(help.contains("115200 is a serial-tool compatibility value"));
+    assert!(!help.contains("--export-response"));
 }
 
 #[test]
@@ -111,6 +218,7 @@ fn help_describes_primary_product_options() {
     let root_help = String::from_utf8(root_help).unwrap();
     assert!(root_help.contains("Send one AT command"));
     assert!(root_help.contains("List or run product and loaded multi-step Sequences"));
+    assert!(!root_help.contains("Show configuration paths"));
 
     let mut command = Cli::command();
     let send = command
@@ -121,7 +229,42 @@ fn help_describes_primary_product_options() {
     let send_help = String::from_utf8(send_help).unwrap();
     assert!(send_help.contains("AT command line to send"));
     assert!(send_help.contains("Print unmasked foreground output"));
+    assert!(send_help.contains("Do not write masked history or session logs"));
+    assert!(send_help.contains("--export-response <PATH>"));
+    assert!(send_help.contains("follows --no-mask"));
+    assert!(send_help.contains("does not replace stdout"));
     assert!(send_help.contains("Write an acknowledged raw diagnostic export"));
+
+    let mut command = Cli::command();
+    let preset = command
+        .find_subcommand_mut("preset")
+        .expect("preset subcommand");
+    let preset_run = preset
+        .find_subcommand_mut("run")
+        .expect("preset run subcommand");
+    let mut preset_run_help = Vec::new();
+    preset_run.write_long_help(&mut preset_run_help).unwrap();
+    let preset_run_help = String::from_utf8(preset_run_help).unwrap();
+    assert!(preset_run_help.contains("Run one loaded preset by name"));
+    assert!(preset_run_help.contains("<NAME>"));
+    assert!(preset_run_help.contains("--export-response <PATH>"));
+    assert!(preset_run_help.contains("follows --no-mask"));
+    assert!(!preset_run_help.contains("--continue-on-error"));
+
+    let mut command = Cli::command();
+    let sequence = command
+        .find_subcommand_mut("sequence")
+        .expect("sequence subcommand");
+    let sequence_run = sequence
+        .find_subcommand_mut("run")
+        .expect("sequence run subcommand");
+    let mut sequence_run_help = Vec::new();
+    sequence_run
+        .write_long_help(&mut sequence_run_help)
+        .unwrap();
+    let sequence_run_help = String::from_utf8(sequence_run_help).unwrap();
+    assert!(sequence_run_help.contains("--export-response <PATH>"));
+    assert!(sequence_run_help.contains("follows --no-mask"));
 
     let mut command = Cli::command();
     let tui = command.find_subcommand_mut("tui").expect("tui subcommand");
@@ -129,6 +272,7 @@ fn help_describes_primary_product_options() {
     tui.write_long_help(&mut tui_help).unwrap();
     let tui_help = String::from_utf8(tui_help).unwrap();
     assert!(tui_help.contains("Start the TUI session with output masking off"));
+    assert!(tui_help.contains("Do not write masked history or session logs"));
     assert!(tui_help.contains("Load Sequence definition TOML files"));
 }
 
@@ -284,6 +428,20 @@ fn parses_preset_run_transport_and_ack_options() {
     assert_eq!(args.usb.pid, Some(0x0125));
     assert!(args.yes);
     assert_eq!(args.risk_ack, Some(RiskLevel::Write));
+}
+
+#[test]
+fn rejects_removed_preset_batch_option() {
+    let error = Cli::try_parse_from([
+        "atctl",
+        "preset",
+        "run",
+        "modem-info",
+        "--continue-on-error",
+    ])
+    .unwrap_err();
+
+    assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
 }
 
 #[test]
@@ -513,6 +671,31 @@ fn sequence_json_output_includes_structured_steps_and_notes() {
 }
 
 #[test]
+fn sequence_text_export_includes_identity_and_selected_transcript() {
+    let execution = SequenceExecution {
+        name: "sms-send-check".to_owned(),
+        risk: RiskLevel::Write,
+        status: AtStatus::Ok,
+        steps: Vec::new(),
+        masked_notes: Vec::new(),
+        raw_notes: Vec::new(),
+        value_candidate_sets: Vec::new(),
+        masked_transcript: "masked transcript".to_owned(),
+        raw_transcript: "raw transcript".to_owned(),
+        duration: Duration::from_millis(1),
+    };
+
+    assert_eq!(
+        format_sequence_export(&execution, true, false).unwrap(),
+        "Sequence: sms-send-check\n\nmasked transcript\n"
+    );
+    assert_eq!(
+        format_sequence_export(&execution, false, false).unwrap(),
+        "Sequence: sms-send-check\n\nraw transcript\n"
+    );
+}
+
+#[test]
 fn default_sequence_locations_load_only_product_sequences() {
     let sequences = load_sequences(&SequenceFileLocationOptions::default()).unwrap();
     let names = sequences
@@ -719,6 +902,26 @@ fn formats_product_preset_list_label() {
 }
 
 #[test]
+fn preset_lookup_uses_exact_name_instead_of_category() {
+    let presets = vec![Preset::new(
+        "current-operator",
+        "AT+COPS?",
+        RiskLevel::Safe,
+        vec!["network".to_owned()],
+        PresetOrigin::BuiltIn,
+    )];
+
+    assert_eq!(
+        find_preset(&presets, "current-operator").unwrap().name,
+        "current-operator"
+    );
+    assert!(matches!(
+        find_preset(&presets, "network"),
+        Err(AtctlError::PresetNotFound { name }) if name == "network"
+    ));
+}
+
+#[test]
 fn preset_execution_uses_explicit_preset_risk() {
     let preset = Preset::new(
         "write-labelled-at",
@@ -854,26 +1057,20 @@ fn explicit_preset_timeout_overrides_timeout_hint() {
 }
 
 #[test]
-fn applies_device_config_defaults_without_overwriting_cli_values() {
-    let device = DeviceConfig {
-        default_vendor_id: Some("0x2c7c".to_owned()),
-        default_product_id: Some("0x0125".to_owned()),
-        default_interface: Some("2".to_owned()),
-        default_bulk_in: Some("0x85".to_owned()),
-        default_bulk_out: Some("0x04".to_owned()),
-    };
-    let mut usb = UsbOptions {
-        vid: Some(0x9999),
-        ..UsbOptions::default()
-    };
+fn preset_no_log_option_is_forwarded_to_shared_send_execution() {
+    let preset = Preset::new(
+        "modem-info",
+        "ATI",
+        RiskLevel::Safe,
+        Vec::new(),
+        PresetOrigin::BuiltIn,
+    );
+    let mut run_args = preset_run_args("modem-info");
+    run_args.no_log = true;
 
-    apply_device_config_defaults(&mut usb, &device).unwrap();
+    let send_args = send_args_from_preset(&preset, &run_args);
 
-    assert_eq!(usb.vid, Some(0x9999));
-    assert_eq!(usb.pid, Some(0x0125));
-    assert_eq!(usb.interface_number, Some(2));
-    assert_eq!(usb.bulk_in, Some(0x85));
-    assert_eq!(usb.bulk_out, Some(0x04));
+    assert!(send_args.no_log);
 }
 
 #[test]
@@ -933,6 +1130,58 @@ fn send_json_uses_masked_response_by_default() {
     assert!(output.contains("89811000*******"));
     assert!(!output.contains("898110001234567"));
     assert!(output.contains("\"masked\":true"));
+}
+
+#[test]
+fn send_export_includes_command_and_selected_masking_state() {
+    let args = send_args("AT+CIMI");
+    let transport = MockTransport::with_response(b"\r\n898110001234567\r\nOK\r\n".to_vec());
+    let execution = execute_send_with_transport(&args, transport).unwrap();
+
+    let text = format_send_export(&args.command, &execution, false).unwrap();
+    assert!(text.starts_with("AT+CIMI\n"));
+    assert!(text.contains("89811000*******"));
+    assert!(!text.contains("898110001234567"));
+
+    let json = format_send_export(&args.command, &execution, true).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value["command"], "AT+CIMI");
+    assert_eq!(value["masked"], true);
+    assert!(
+        value["response"]
+            .as_str()
+            .unwrap()
+            .contains("89811000*******")
+    );
+}
+
+#[test]
+fn send_export_masks_sensitive_command_values_by_default() {
+    let command = "AT+CGAUTH=1,1,\"user\",\"password\"";
+    let mut args = send_args(command);
+    args.yes = true;
+    args.risk_ack = Some(RiskLevel::Write);
+    let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
+    let execution = execute_send_with_transport(&args, transport).unwrap();
+
+    let text = format_send_export(command, &execution, false).unwrap();
+    let json = format_send_export(command, &execution, true).unwrap();
+
+    assert!(!text.contains("user"));
+    assert!(!text.contains("password"));
+    assert!(!json.contains("user"));
+    assert!(!json.contains("password"));
+    assert!(text.contains("AT+CGAUTH=1,1"));
+
+    let mut unmasked_args = send_args(command);
+    unmasked_args.no_mask = true;
+    unmasked_args.yes = true;
+    unmasked_args.risk_ack = Some(RiskLevel::Write);
+    let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
+    let unmasked_execution = execute_send_with_transport(&unmasked_args, transport).unwrap();
+    let unmasked = format_send_export(command, &unmasked_execution, false).unwrap();
+    assert!(unmasked.contains("user"));
+    assert!(unmasked.contains("password"));
 }
 
 #[test]
@@ -1212,6 +1461,8 @@ fn send_args(command: &str) -> SendArgs {
             ..UsbOptions::default()
         },
         no_mask: false,
+        no_log: false,
+        export_response: None,
         raw_log_file: None,
         raw_log_ack: None,
         json: false,
@@ -1229,35 +1480,39 @@ fn preset_run_args(name: &str) -> PresetRunArgs {
             ..UsbOptions::default()
         },
         no_mask: false,
+        no_log: false,
+        export_response: None,
         raw_log_file: None,
         raw_log_ack: None,
         json: false,
         ignore_at_error: false,
         yes: false,
         risk_ack: None,
-        continue_on_error: false,
         preset_locations: PresetFileLocationOptions::default(),
     }
 }
 
 #[test]
-fn logging_paths_from_loaded_config_uses_configured_session_log_dir() {
-    let dir = unique_temp_dir("logging-paths");
-    let configured_log_dir = dir.join("configured-logs");
-    let config = crate::config::model::Config {
-        device: None,
-        profile: None,
-        ui: None,
-        log: Some(crate::config::model::LogConfig {
-            enabled: Some(true),
-            raw_log_enabled: None,
-            log_dir: Some(configured_log_dir.display().to_string()),
-        }),
-    };
+fn no_log_skips_normal_logging_path_resolution() {
+    assert!(normal_logging_paths(true).unwrap().is_none());
+}
 
-    let paths = logging_paths_from_loaded_config(Some(config)).unwrap();
+#[test]
+fn response_export_target_is_rejected_before_usb_access() {
+    let directory = unique_temp_dir("response-export-before-usb");
+    let path = directory.join("existing.response.txt");
+    std::fs::write(&path, "existing").unwrap();
+    let mut args = send_args("AT");
+    args.export_response = Some(path.clone());
 
-    assert_eq!(paths.session_dir, configured_log_dir);
+    let error = run_send(args).unwrap_err();
+
+    assert!(matches!(
+        error,
+        AtctlError::ResponseExportFileExists { path: error_path }
+            if error_path == path.display().to_string()
+    ));
+    assert_eq!(std::fs::read_to_string(path).unwrap(), "existing");
 }
 
 fn unique_temp_dir(name: &str) -> PathBuf {

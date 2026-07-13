@@ -1,8 +1,7 @@
-# atctl Implementation Specification
+# atctl Product and Technical Specification
 
-- Document version: 0.4.110
-- Date: 2026-07-09
-- Source handoff: `atctl_project_docs_v0.3.md`, provided on 2026-06-17
+- Document version: 0.4.116
+- Date: 2026-07-12
 - Implementation language: Rust
 - Product name: `atctl`
 - Repository name: `atctl`
@@ -10,15 +9,14 @@
 - Homebrew formula name: `atctl`
 - Homebrew tap repository: `uchimanajet7/homebrew-atctl`
 - Homebrew user-facing tap name: `uchimanajet7/atctl`
-- Initial supported runtime: macOS on Apple Silicon
+- Supported runtime: macOS on Apple Silicon
 - Documented validation hardware: SORACOM Onyx LTE USB Dongle / Quectel EG25-G
 
 ## 1. Purpose
 
-This document is the source of truth for implementing `atctl`. It is intended
-for human developers and coding agents that need enough context to scaffold,
-implement, test, package, and document the project without relying on previous
-conversation history.
+This document defines the normative product behavior and technical requirements
+for `atctl`. It is the authoritative source for product scope, interfaces,
+safety, packaging contracts, and verification requirements.
 
 The specification covers:
 
@@ -29,9 +27,8 @@ The specification covers:
 - AT command parsing and completion behavior
 - CLI and TUI behavior
 - Presets, configuration, masking, safety, logging, and packaging
-- Implementation phases
 - Verification expectations
-- Open decisions that must not be guessed
+- Accepted product and architecture decisions
 
 Supporting operational documents live outside this specification:
 
@@ -43,224 +40,43 @@ Supporting operational documents live outside this specification:
 - `docs/PACKAGING.md`
 - `docs/TROUBLESHOOTING.md`
 - `docs/SAFETY.md`
-- `docs/OPEN-QUESTIONS.md`
-- `AGENTS.md` for repository-specific coding-agent operating rules, which are
-  not product requirements
+- `docs/DECISIONS.md`
 
-## 2. Specification Writing Basis
+## 2. Requirements Basis
 
-This document treats a specification as a controlled implementation contract:
-it states what must be built, what must not be built, what constraints apply,
-and how behavior can be verified.
+This specification states required product behavior, prohibited behavior,
+technical constraints, and verification criteria.
 
 The structure follows these current requirements-engineering principles:
 
 - Requirements must be understandable by implementers and verifiers.
-- Requirements must be clear, unambiguous, complete enough for the current
-  phase, internally consistent, and testable.
+- Requirements must be clear, unambiguous, complete for the specified scope,
+  internally consistent, and testable.
 - Assumptions and unresolved values must be explicit.
 - Requirements must not hide product decisions as implementation details.
 - Supporting documents should separate user installation, development,
   packaging, troubleshooting, and safety guidance from the normative product
   specification.
-- Coding-agent operating rules must stay outside the product specification.
-  They belong in `AGENTS.md`, project-side incident records, memory, or a
-  separately approved process check.
 
-Reference basis:
+Normative source categories:
 
-- ISO/IEC/IEEE 29148:2018 defines requirements engineering processes and
-  required information items for systems and software.
-- IEEE/ISO/IEC 29148 identifies good requirement constructs, attributes, and
-  life-cycle use of requirements.
-- NASA requirements guidance emphasizes clarity, completeness, consistency,
-  feasibility, traceability, and verifiability.
-- RFC 2119 terminology is used for requirement levels in this document.
-- W3C WCAG 2.2 Success Criteria 1.4.1, 1.4.3, and 1.4.11 are the basis for
-  TUI color, contrast, and state-indicator requirements.
-- W3C WAI contrast guidance is the basis for the rule that objective contrast
-  claims require known foreground and background color pairs.
-- Ratatui color documentation is the basis for terminal color portability
-  constraints.
-- The `NO_COLOR` convention is the basis for user opt-out behavior when color
-  is enabled by default.
-- Cargo manifest, package, and publish documentation is the basis for Cargo
-  source package file inclusion, `include` / `exclude` behavior, package-list
-  review, package verification, and README publication behavior.
-- Homebrew Formula Cookbook and Bottles documentation is the basis for keeping
-  the normal end-user install path as Homebrew while treating Cargo source package
-  publication and Homebrew source-build fallback as separate concerns.
-- GitHub CLI `gh release create` documentation is the basis for using
-  `--verify-tag` and `--notes-file` in the source repository release workflow.
-- GitHub Actions `workflow_dispatch` documentation is the basis for exposing a
-  Web UI release operation that accepts a release tag input.
-- GitHub Actions `GITHUB_TOKEN` triggering documentation is the basis for
-  creating a manual-dispatch release tag and completing the release in the same
-  workflow run instead of depending on a second tag-push-triggered run.
-- GitHub Dependabot version-update documentation and supported-ecosystem
-  documentation are the basis for keeping Cargo dependencies and GitHub Actions
-  references under automated update detection.
-- GitHub dependency review action documentation is the basis for pull-request
-  dependency-diff review and severity-threshold failure behavior.
-- GitHub Actions scheduled workflow documentation is the basis for scheduling
-  maintenance workflows away from the start of the hour.
-- GitHub Actions secure-use documentation and Dependabot's GitHub Actions
-  update caveats are the basis for pinning workflow actions by full-length
-  commit SHA while keeping same-line version comments updateable.
-- RustSec `cargo audit` documentation is the basis for Cargo lockfile advisory
-  scanning.
-- `cargo-outdated` documentation is the basis for direct dependency drift
-  reporting.
-- `actionlint` documentation is the basis for GitHub Actions workflow syntax
-  and expression linting.
-- GitHub automatically generated release-note documentation is the basis for
-  treating generated notes as an optional generated overview, not as the
-  replacement for curated project release notes.
-- Keep a Changelog guidance is the basis for keeping a human-curated
-  `CHANGELOG.md` with version sections, newest release first, and release dates
-  in `YYYY-MM-DD` format.
-- OWASP Logging Cheat Sheet guidance on excluding or sanitizing sensitive
-  values from logs is the basis for keeping normal logs, history, and saved
-  responses masked even when a foreground display is unmasked.
-- Microsoft Fluent 2 MessageBar and ProgressBar guidance is the basis for
-  treating compact Status as state and task-progress context rather than as a
-  place for explanatory prose or duplicated state wording.
-- Nielsen Norman Group label and form-organization guidance is the basis for
-  keeping compact Status labels close to the values they describe and avoiding
-  ambiguous label/value pairings.
-- SORACOM AT command documentation, Quectel AT command documentation, and 3GPP
-  / ETSI AT command specifications are the basis for using `AT command:` as the
-  compact Status label for the literal AT command line.
-- Python `argparse.BooleanOptionalAction` documentation is a reference example
-  for the common command-line convention of exposing a boolean default through
-  a negative `--no-*` flag when the positive state is already the default.
-- 3GPP TS 27.007 is the basis for standard UE AT command workflows,
-  including `+CFUN` modem functionality commands.
-- 3GPP TS 27.005 is the basis for SMS and CBS AT command workflows,
-  including prompt/body/Ctrl-Z interactions such as `+CMGS`.
-- 3GPP TS 23.038 is the basis for SMS alphabet and language-specific message
-  body interpretation.
-- 3GPP TS 23.040 is the basis for SMS submit, delivery, originating-address,
-  and reply-path terminology.
-- ITU-T V.250 is the basis for basic AT command syntax and commands such as
-  `AT` and `ATE`.
-- TOML v1.0.0 is the basis for user-editable preset and Sequence definition
-  files.
-- The XDG Base Directory Specification is the basis for user config and preset
-  file locations.
-- Docker CLI, Kubernetes `kubectl`, and Cargo configuration documentation are
-  the basis for supporting both environment-based configuration location
-  overrides and explicit command-line overrides, with explicit command-line
-  flags taking precedence over environment variables.
-- VS Code Workspace Trust, JetBrains Trusted Projects, `direnv allow`, Git
-  `safe.directory`, and pnpm supply-chain security guidance are the basis for
-  treating externally loaded executable definitions as an explicit trust
-  boundary rather than as silently trusted default-startup material.
-- Xterm OSC 52 selection controls and iTerm2 OSC 52 pasteboard documentation
-  are the basis for TUI clipboard-copy behavior.
-- Nielsen Norman Group response-time and progress-indicator guidance is the
-  basis for showing visible progress feedback for operations that may exceed
-  roughly 10 seconds.
-- Nielsen Norman Group visibility-of-system-status guidance is the basis for
-  showing the provenance and freshness of reused interactive candidate values
-  and keeping same-session saved-log lists current after the operation that
-  creates the saved log finishes.
-- Nielsen Norman Group and Carbon empty-state guidance is the basis for
-  distinguishing a never-produced Response from a user-cleared Response instead
-  of rendering both as the same blank or unavailable state.
-- RFC 3339 timestamp guidance and atctl's existing log timestamp format are the
-  basis for using full UTC timestamps such as `YYYY-MM-DDTHH:MM:SSZ` when the
-  TUI must show when an execution or clear action happened.
-- Cloudscape timestamp guidance is the basis for requiring a nearby label that
-  clearly and consistently identifies which event a timestamp describes.
-- Atlassian date/time guidance and PatternFly timestamp guidance are the basis
-  for treating abbreviated or short date/time display as a space-constrained
-  presentation choice, not as the default for diagnostic Status context.
-- Nielsen Norman Group recognition-rather-than-recall guidance is the basis for
-  showing selectable candidates instead of requiring operators to memorize and
-  retype values from another pane.
-- Apple Human Interface Guidelines progress/loading guidance is the basis for
-  using determinate progress when a time budget is known and indeterminate
-  progress only when no duration can be estimated.
-- Ratatui `Layout`, `Constraint`, and `LineGauge` documentation, including
-  custom filled/unfilled symbols, is the basis for the compact Status placement,
-  width-aware running-progress label, and timeout-budget progress bar.
-- Ratatui popup/modal examples and Nielsen Norman Group progressive-disclosure
-  guidance are the basis for showing Sequence parameters only after a Sequence
-  is selected instead of adding another permanent TUI pane.
-- Nielsen Norman Group form cognitive-load guidance is the basis for treating
-  Sequence inputs as values that need structure, transparency, clarity, and
-  support rather than as bare required fields.
-- The same recognition-rather-than-recall basis applies to Sequence candidate
-  actions: when a required value can be obtained from a product-known modem
-  check, the TUI should present the check as an explicit selectable action
-  instead of requiring the operator to leave the modal, remember an AT command,
-  run it elsewhere, and retype the result.
-- Command Line Interface Guidelines and Fuchsia CLI error-message guidance are
-  the basis for keeping CLI Sequence parameter errors actionable, consistent,
-  and explicit about where a missing value can be obtained.
-- Ratatui `List` documentation is the basis for rendering visible USB device
-  candidates as a selectable terminal list.
-- Nielsen Norman Group visual-hierarchy guidance is the basis for assigning
-  more width to command, response, and log content than to compact utility
-  panes.
-- Carbon data-table style guidance is the basis for treating column width as a
-  content-driven layout decision rather than distributing equal or percentage
-  width to short utility fields.
-- Textual `Footer` documentation, Textual binding-display guidance, Bubble Tea
-  Bubbles help/keybinding components, and observed lazygit footer/help patterns
-  are the basis for putting short keyboard hints in a footer or help surface
-  rather than in the Status pane.
-- Nielsen Norman Group visibility-of-system-status, consistency, recognition,
-  and minimalist-design guidance is the basis for keeping Controls action
-  labels stable while showing immediate results near the action that caused
-  them.
-- WAI-ARIA Switch Pattern and Fluent 2 switch usage guidance are the basis for
-  representing session output masking as a persistent two-state setting in the
-  TUI Controls surface rather than as a one-shot action label.
-- Carbon notification-pattern guidance and Visual Studio Code UX guidance for
-  separating actions, status, and notifications are the basis for treating
-  Controls as an action surface, Status as compact command context, and
-  one-shot action results as nearby temporary feedback rather than as permanent
-  status-table columns.
-- VS Code when-clause contexts, Textual command-palette and binding behavior,
-  Apple context-menu guidance, K9s hotkey/plugin scoping, and Windows Terminal
-  action/keybinding configuration are the basis for scoping secondary actions
-  to the focused pane or selected object instead of placing unrelated actions in
-  one global catch-all control list.
-- W3C WCAG 2.2 Success Criterion 2.4.3 and IBM Accessibility tab-order guidance
-  are the basis for keeping keyboard focus order logical, predictable, and
-  grouped around the user's task sequence.
-- Nielsen Norman Group help/documentation guidance and Material communication
-  guidance are the basis for keeping TUI help concise, task-focused, and free of
-  implementation-architecture explanations.
-- Crossterm event polling documentation is the basis for nonblocking TUI redraw
-  while command execution is in progress.
-- USB-IF Defined Class Codes are the basis for using USB class codes as
-  descriptor evidence: class information may appear in Device or Interface
-  Descriptors; `00h` in a Device Descriptor means class information should be
-  determined from Interface Descriptors; `02h` is Communications and CDC
-  Control; `09h` is Hub; `11h` is Billboard; `EFh` is Miscellaneous; and `FFh`
-  is Vendor Specific.
-- USB standard descriptor documentation and libusb descriptor documentation are
-  the basis for reading device, configuration, interface, and endpoint
-  descriptors at runtime and using endpoint direction plus transfer type as
-  descriptor evidence.
-- CDC ACM implementation guidance is the basis for treating paired bulk IN and
-  bulk OUT endpoints as a useful serial-like AT-transport candidate signal,
-  while not treating that descriptor shape as proof that AT commands will work.
-- SORACOM AT command reference documentation is the basis for treating
-  `AT+COPS=?` as a long-running network scan that typically takes 2 to 3
-  minutes.
-- Quectel EG25-G hardware documentation and Quectel EC2x/EG9x/EG2x-G/EM05 AT
-  command documentation are the basis for treating `AT+QPOWD` as a
-  Quectel-specific modem power-down command, not as an application-provided
-  product preset.
-- Quectel TCP/IP AT command documentation is the basis for repository-managed
-  Quectel Sequence examples that use vendor-specific commands such as `QIACT`,
-  `QIOPEN`, `QISEND`, `QIRD`, and `QICLOSE`.
-- RFC 9293 is the basis for treating TCP as a byte stream whose writes and
-  reads do not define application message boundaries.
+- Requirements engineering and normative terminology: ISO/IEC/IEEE 29148,
+  NASA requirements guidance, RFC 2119, and RFC 3339.
+- AT command and modem behavior: 3GPP TS 27.005, 3GPP TS 27.007,
+  3GPP TS 23.038, 3GPP TS 23.040, ITU-T V.250, and vendor command manuals.
+- USB transport and discovery: USB-IF class codes, USB descriptor references,
+  libusb documentation, and CDC ACM implementation guidance.
+- Executable definitions and generated state: TOML, XDG Base Directory, and
+  the explicit file and directory loading requirements in this specification.
+- TUI behavior and accessibility: WCAG 2.2, WAI guidance, terminal and Ratatui
+  documentation, and current interaction-design references.
+- Packaging, release, and dependency maintenance: Cargo, Homebrew, GitHub
+  Actions, Dependabot, RustSec, actionlint, and Keep a Changelog.
+- Sensitive-data and evidence handling: OWASP logging guidance and the
+  applicable modem, TCP, Quectel, and SORACOM technical references.
+
+Supporting references appear in section 25, in role-specific operational
+documents, and beside the requirements they support.
 
 ## 3. Normative Terms
 
@@ -324,9 +140,8 @@ Before a requirement says that the user must author, create, maintain, supply,
 or operate something, the specification MUST identify the actor that owns that
 responsibility: product-provided behavior, repository-managed example,
 user-authored extension, operator action, or implementation detail. Product
-proposals and documentation MUST NOT turn an internal mechanism into a user
-prerequisite unless the current specification or the user explicitly makes it
-one.
+documentation MUST NOT turn an internal mechanism into a user prerequisite
+unless this specification defines it as one.
 
 Product-provided standard definitions, repository-managed example definitions,
 and user-authored extension definitions MUST preserve their origin and review
@@ -343,14 +158,14 @@ checks. User-authored workflow definitions are an extension point for
 additional, special, project-local, or verification checks. Repository-managed
 vendor Sequence examples are product-maintained examples that are available
 only when loaded through the same kind of explicit definition loading as file
-presets. Product documentation and proposals MUST NOT describe ordinary SMS,
+presets. Product documentation MUST NOT describe ordinary SMS,
 data-send, or other standard multi-step checks as requiring the user to create a
 definition file first.
 
 ## 5. Decided Naming
 
-The following naming decisions are fixed and MUST NOT be changed without
-explicit user approval:
+The following product identifiers are fixed. Changing them requires a revision
+to this specification:
 
 ```text
 Product name: atctl
@@ -363,7 +178,7 @@ Homebrew formula: atctl
 
 ### 6.1 In Scope
 
-The implementation scope includes:
+The product scope includes:
 
 - Rust-based CLI and TUI
 - USB device detection through `libusb` / `rusb`
@@ -388,8 +203,8 @@ The implementation scope includes:
 
 ### 6.2 Out of Scope
 
-The implementation MUST NOT include the following unless explicitly approved in
-a later specification update:
+The product MUST NOT include the following unless a later revision to this
+specification defines them:
 
 - Complete multi-modem validation
 - Claims of broad modem compatibility without validation evidence
@@ -402,11 +217,10 @@ a later specification update:
 - Background daemon or service mode
 - GUI application
 - Intel Mac, Linux, Windows, universal binary, or cross-compilation validation
-  as an initial-release requirement
 
 ## 7. Platform Policy
 
-REQ-PLAT-001: The initial supported runtime and validation platform MUST be
+REQ-PLAT-001: The supported runtime and validation platform MUST be
 macOS on Apple Silicon.
 
 REQ-PLAT-002: Documentation MUST describe the project as Apple Silicon
@@ -578,7 +392,7 @@ AT command engine
   |
 Transport trait
   |-- UsbAtTransport    rusb / libusb
-  |-- SerialTransport    future optional, not initial priority
+  |-- SerialTransport    optional extension
   `-- PtyBridge          advanced mode over transport
 ```
 
@@ -591,8 +405,8 @@ not inside CLI rendering code.
 REQ-ARCH-003: Preset loading, risk classification, masking, and logging MUST be
 usable by both CLI and TUI code paths.
 
-REQ-ARCH-004: PTY bridge code MUST NOT be implemented before the core USB
-transport and basic CLI send workflow are stable.
+REQ-ARCH-004: PTY bridge behavior MUST build on the same core USB transport and
+AT send workflow used by the CLI.
 
 REQ-ARCH-005: PTY bridge code MUST keep a thin implementation boundary so that
 future Linux support can be investigated without rewriting unrelated command,
@@ -618,21 +432,21 @@ Definition or Draft conversion boundary before becoming shared `Preset` or
 origin metadata so product-provided, repository-managed, and user-authored
 responsibility classes remain visible where the product shows source context.
 
-REQ-ARCH-008: A feature MAY be staged on a narrower implementation surface only
-when the staging is explicitly documented as temporary. Staging MUST NOT be
-described as the intended product behavior, and the feature MUST NOT be marked
-product-complete until relevant production surfaces are implemented or the user
-explicitly approves the product difference.
+REQ-ARCH-008: A feature is product-complete only when the relevant CLI, TUI, and
+PTY bridge surfaces satisfy the requirements in this specification or this
+specification explicitly defines a surface-specific difference.
 
-## 11. Suggested Repository Structure
+## 11. Repository Structure
 
-The implementation SHOULD use this structure unless there is a concrete reason
-to adjust it:
+The implementation uses the following responsibility boundaries:
 
 ```text
 atctl/
   Cargo.toml
+  Cargo.lock
+  LICENSE
   README.md
+  README-ja.md
   CHANGELOG.md
   docs/
     SPEC.md
@@ -641,13 +455,17 @@ atctl/
     PACKAGING.md
     TROUBLESHOOTING.md
     SAFETY.md
-    OPEN-QUESTIONS.md
+    PRESETS.md
+    DECISIONS.md
   src/
     main.rs
+    lib.rs
     cli.rs
+    cli/
+      tests.rs
+    paths.rs
     app/
       mod.rs
-      context.rs
       errors.rs
     usb/
       mod.rs
@@ -660,10 +478,10 @@ atctl/
       traits.rs
       usb.rs
       pty.rs
+      test_support.rs
     at/
       mod.rs
       command.rs
-      engine.rs
       parser.rs
       response.rs
       risk.rs
@@ -671,37 +489,38 @@ atctl/
     presets/
       mod.rs
       builtin.rs
+      definition.rs
       loader.rs
       model.rs
-    config/
+    sequences/
       mod.rs
-      model.rs
+      builtin.rs
+      definition.rs
+      engine.rs
+      engine/
+        tests.rs
       loader.rs
-      paths.rs
+      model.rs
     tui/
       mod.rs
-      app.rs
-      events.rs
-      views.rs
-      keymap.rs
+      clipboard.rs
+      response_state.rs
+      theme.rs
+      tests.rs
     log/
       mod.rs
-      session.rs
       history.rs
-    util/
-      mod.rs
+      raw.rs
+      session.rs
   examples/
-    config.toml
-    presets.toml
-  packaging/
-    homebrew/
-      atctl.rb
+    presets/
+    sequences/
 ```
 
-The approved project license is MIT. The repository includes the root
-`LICENSE` file with the approved copyright holder, and `Cargo.toml` declares
+The project license is MIT. The repository includes the root `LICENSE` file
+with the recorded copyright holder, and `Cargo.toml` declares
 the standard SPDX license expression `license = "MIT"`. See
-`docs/OPEN-QUESTIONS.md` OQ-002 for the recorded license decision.
+`docs/DECISIONS.md` OQ-002 for the recorded license decision.
 
 ## 12. Transport Trait
 
@@ -812,7 +631,7 @@ probe result, and selected interface/endpoint pair.
 
 ## 14. AT Response Handling
 
-REQ-AT-001: The first implementation MUST detect these final statuses:
+REQ-AT-001: The AT response parser MUST detect these final statuses:
 
 - `OK`
 - `ERROR`
@@ -831,7 +650,7 @@ REQ-AT-005: The parser SHOULD classify known final result codes such as
 `NO CARRIER` as non-OK terminal results when encountered.
 
 REQ-AT-006: URCs and delayed intermediate lines MUST NOT cause the parser to
-drop data. If the first version cannot fully classify URCs, it MUST preserve
+drop data. If the parser cannot fully classify URCs, it MUST preserve
 them in raw output and document the limitation.
 
 REQ-AT-007: The parser MUST expose timeout as a distinct status from AT `ERROR`.
@@ -885,8 +704,8 @@ into a one-shot `send` command string.
 REQ-SEQ-ENGINE-004: The Sequence engine MUST distinguish final result status,
 prompt events, URCs, intermediate lines, timeout, and transport errors in the
 step transcript. It MUST preserve raw bytes for raw diagnostic export while
-normal display, history, session logs, and saved Response output remain masked
-by default.
+normal display, history, and session logs remain masked by default. Explicit
+Response export follows the selected foreground masking mode.
 
 REQ-SEQ-ENGINE-004A: Sequence text transcripts MUST separate output by origin
 using stable section labels. Operator-sent commands MUST be shown under
@@ -901,12 +720,10 @@ without making the user parse run-together lines. They MUST NOT use decorative
 divider lines in normal transcripts, and they MUST preserve modem response
 line breaks inside the `Modem response:` section.
 
-REQ-SEQ-ENGINE-004B: The Sequence Output Origin Gate MUST be applied before
-changing Sequence transcript or JSON output. Implementers MUST classify each
-output line or field by origin before editing and MUST verify both positive
-origin labels and negative `Evidence:` / JSON `evidence` absence. CLI JSON
-Sequence output MUST expose derived interpretation as `analysis`, not
-`evidence`.
+REQ-SEQ-ENGINE-004B: Every Sequence transcript line and JSON field MUST have a
+defined origin. Verification MUST cover the required origin labels and the
+absence of `Evidence:` text and JSON `evidence`. CLI JSON Sequence output MUST
+expose derived interpretation as `analysis`, not `evidence`.
 
 REQ-SEQ-ENGINE-005: Sequence risk MUST be computed from declared Sequence risk,
 step command classification, payload sensitivity, parameter sensitivity, and
@@ -924,10 +741,11 @@ verify what was attempted and what evidence was returned. For example,
 by the modem/network path, not proof that the destination handset displayed the
 message. SMS `+CMGL` and `+CMGR` output MUST be parsed into message status,
 sender, timestamp, raw body, decoded body when possible, and decode status.
-Normal Response, saved Response, session logs, history, and JSON output MUST
-keep sender and decoded body values masked by default. Raw reveal and raw
-diagnostic export MAY expose the raw and decoded body only through the existing
-explicit sensitive-output controls.
+Normal Response, Response export, session logs, history, and JSON output MUST
+keep sender and decoded body values masked by default. Explicit `--no-mask`
+foreground output and Response export MAY expose those values. Raw diagnostic
+export MAY expose the underlying exchange only through its separate sensitive
+output controls.
 
 REQ-SEQ-ENGINE-007A: Normal Sequence text transcripts, TUI Response, saved
 Response, history, and session logs MUST NOT render the literal `Evidence:`
@@ -938,14 +756,14 @@ or a modem response line.
 
 REQ-SEQ-ENGINE-008: SMS body decoding MUST run before normal-output masking so
 masking does not corrupt UCS2 hex or other encoded bodies before the product can
-interpret them. The first supported decode path MUST handle UCS2 hexadecimal
+interpret them. The supported decode path MUST handle UCS2 hexadecimal
 SMS text as UTF-16BE. Plain text bodies MAY be reported as text. If a body
 cannot be decoded with a supported path, the transcript MUST state that decode
 status instead of guessing a lossy body.
 
 REQ-SEQ-ENGINE-009: A Sequence MAY derive later step template values from an
 earlier AT response only when that derivation is product-specified and visible
-in the transcript. The initial required derived value is `sms_sender`, extracted
+in the transcript. The required derived value is `sms_sender`, extracted
 from `AT+CMGR` for SMS reply-by-index. Derived sensitive values MUST be masked
 under the same normal-output rules as user-entered sensitive parameters.
 
@@ -986,12 +804,11 @@ atctl devices
 atctl inspect
 atctl send <COMMAND>
 atctl preset list
-atctl preset run <PRESET_OR_CATEGORY>
+atctl preset run <NAME>
 atctl sequence list
 atctl sequence run <SEQUENCE>
 atctl tui
 atctl bridge --symlink <PATH>
-atctl config path
 atctl logs list
 ```
 
@@ -1030,7 +847,7 @@ discovery source is the set of USB devices visible through `libusb` at runtime.
 
 REQ-CLI-DEV-003: `atctl devices` output MUST prefer USB descriptor values and
 explicit selector fields. It MUST NOT present any built-in device label, profile
-label, compatibility label, or agent-defined product name as if it were a USB
+label, compatibility label, or implementation-defined product name as if it were a USB
 descriptor value or product identity.
 
 REQ-CLI-DEV-004: `atctl devices --all-usb` MUST show all matching USB devices
@@ -1039,7 +856,7 @@ targets. This is a troubleshooting view and MUST NOT be the default first-time
 selection workflow.
 
 REQ-CLI-DEV-005: The default operation-target filter MUST be descriptor-based,
-not product-name-based. The initial implementation uses a conservative
+not product-name-based. The filter uses a conservative
 descriptor candidate rule: a USB device class commonly used by communication,
 miscellaneous, or vendor-specific modem devices, plus at least one descriptor
 shape that contains both bulk IN and bulk OUT endpoints. This rule is not a
@@ -1087,6 +904,10 @@ response.
 REQ-CLI-SEND-002: Output MUST be masked by default.
 
 REQ-CLI-SEND-003: Raw unmasked output MUST require explicit `--no-mask`.
+
+REQ-CLI-SEND-003A: `--no-log` MUST prevent creation of new masked command
+history and session logs for that invocation. It MUST NOT disable an explicitly
+requested raw diagnostic export.
 
 REQ-CLI-SEND-004: Raw diagnostic export MUST require explicit
 `--raw-log-file <PATH>`. `atctl send` MUST NOT create raw logs automatically,
@@ -1161,6 +982,8 @@ Required options:
 --bulk-out <ENDPOINT>
 --timeout <SECONDS>
 --no-mask
+--no-log
+--export-response <PATH>
 --raw-log-file <PATH>
 --raw-log-ack raw-log
 --json
@@ -1176,6 +999,8 @@ loaded file presets.
 
 REQ-CLI-PRESET-002: The list MUST show preset name, command, preset set label,
 declared risk, effective risk, timeout hint when present, and categories.
+Categories MUST serve as discovery metadata in list output and as workflow
+filters in the TUI.
 
 REQ-CLI-PRESET-003: `atctl preset list` MUST distinguish standard workflow
 product presets from file presets without requiring color. The standard set
@@ -1183,17 +1008,17 @@ label shown by CLI list output MUST be `Product presets`. The CLI list output
 MUST also include a trailing `source-path` column. Product-provided rows MUST
 show `-`; file preset rows MUST show the file path that supplied the preset.
 
-REQ-CLI-PRESET-004: Default preset loading MUST load only product-provided
-presets. File presets MUST require explicit per-invocation `--preset-file` or
-`--preset-dir` locations.
+REQ-CLI-PRESET-004: Normal startup MUST load product-provided presets. File
+preset locations MUST be supplied for each invocation through `--preset-file`
+or `--preset-dir`.
 
 REQ-CLI-PRESET-005: Duplicate preset names across loaded presets MUST fail
 with an actionable error. Preset loading MUST NOT silently apply last-wins
 override behavior.
 
-REQ-CLI-PRESET-006: Repository-managed example file presets MUST be created
-and verified as part of the checkpoint that implements multi-file preset
-loading. They are not optional future reference material.
+REQ-CLI-PRESET-006: Repository-managed example file presets MUST use and be
+verified through the same multi-file loading path as other file presets. They
+are part of the maintained product and verification surface.
 
 REQ-CLI-PRESET-007: `atctl preset run <NAME>` SHOULD use the preset's
 `timeout_secs` value when the command would otherwise use the default user AT
@@ -1216,17 +1041,17 @@ overrides for temporary or project-local workflows:
 REQ-CLI-PRESET-010: When explicit file preset location flags are provided,
 those files and directories MUST be loaded only for that invocation.
 Application-provided product presets are still available. Explicit file preset
-locations MUST NOT modify config files, environment variables, or future
-invocations.
+locations MUST NOT modify environment variables or future invocations.
 
-REQ-CLI-PRESET-011: The implementation MUST NOT automatically load file
-presets from XDG/default configuration locations during normal startup. This
-keeps external executable definitions inside the operator's explicit
-per-invocation trust boundary.
+REQ-CLI-PRESET-011: File preset definitions MUST enter the loaded preset set
+through the per-invocation `--preset-file` or `--preset-dir` flags. This keeps
+external executable definitions inside the operator's per-invocation trust
+boundary.
 
 ### 15.6 `atctl preset run <NAME>`
 
-REQ-CLI-PRESET-RUN-001: Safe presets MAY run directly.
+REQ-CLI-PRESET-RUN-001: `<NAME>` MUST resolve one loaded preset by exact name
+and execute that preset's single AT command once. Safe presets MAY run directly.
 
 REQ-CLI-PRESET-RUN-002: Sensitive presets MAY run directly but output and logs
 MUST be masked by default.
@@ -1234,17 +1059,18 @@ MUST be masked by default.
 REQ-CLI-PRESET-RUN-003: Write, persistent, and dangerous presets MUST require
 confirmation.
 
-REQ-CLI-PRESET-RUN-004: Group execution MUST stop on error unless
-`--continue-on-error` is specified.
-
-REQ-CLI-PRESET-RUN-005: Group execution MUST NOT skip confirmation requirements
-for member commands.
-
 REQ-CLI-PRESET-RUN-006: `atctl preset run <NAME>` MUST support the same raw
 diagnostic export behavior as direct `atctl send`: explicit
 `--raw-log-file <PATH>`, separate `--raw-log-ack raw-log`, no default raw-log
 destination, overwrite refusal, and unchanged masked terminal/session/history
 logging behavior.
+
+REQ-CLI-PRESET-RUN-006A: `atctl preset run <NAME> --no-log` MUST prevent
+creation of new masked command history and session logs for that invocation.
+It MUST NOT disable an explicitly requested raw diagnostic export.
+
+REQ-CLI-PRESET-RUN-006B: `atctl preset run <NAME>` MUST support the common
+Response export contract in REQ-CLI-RESPONSE-EXPORT-001 through 006.
 
 REQ-CLI-PRESET-RUN-007: When a file preset is executed, CLI and TUI execution
 surfaces MUST show the file preset source label, file path, and a concise
@@ -1292,25 +1118,24 @@ extensions:
 REQ-CLI-SEQ-005: When explicit Sequence definition location flags are provided,
 those files and directories MUST be loaded only for that invocation.
 Product-provided standard Sequences are still available. Explicit Sequence
-locations MUST NOT modify config files, environment variables, or future
-invocations.
+locations MUST NOT modify environment variables or future invocations.
 
-REQ-CLI-SEQ-006: User-authored Sequence definitions are available only when
-loaded from explicit Sequence location flags. They are an extension point. They
-MUST NOT be described as a required user step for product-provided standard SMS
-Sequences.
+REQ-CLI-SEQ-006: User-authored Sequence definitions MUST enter the loaded
+Sequence set through `--sequence-file` or `--sequence-dir`. They are an
+extension point. They MUST NOT be described as a required user step for
+product-provided standard SMS Sequences.
 
-REQ-CLI-SEQ-006A: The implementation MUST NOT automatically load Sequence
-definitions from XDG/default configuration locations during normal startup.
-This keeps external executable definitions inside the operator's explicit
+REQ-CLI-SEQ-006A: Sequence add-on definitions MUST enter the loaded Sequence
+set through the per-invocation `--sequence-file` or `--sequence-dir` flags.
+This keeps external executable definitions inside the operator's
 per-invocation trust boundary.
 
 REQ-CLI-SEQ-007: Repository-managed vendor/provider Sequence examples,
-including initial Quectel TCP/IP data-send examples and SORACOM TCP endpoint
+including Quectel TCP/IP data-send examples and SORACOM TCP endpoint
 examples, MUST be loaded through the same Sequence loader path used for user
 Sequence definitions. They MUST NOT be promoted to default product-provided
-standard Sequences unless a future approved specification explicitly changes
-that behavior.
+standard Sequences unless this specification is revised to define that
+behavior.
 
 REQ-CLI-SEQ-008: `atctl sequence run <SEQUENCE>` MUST support raw diagnostic
 export with the same sensitive-export policy as direct `send` and
@@ -1346,11 +1171,53 @@ non-interactively. When an interactive risk confirmation is shown, the notice
 MUST be integrated into that existing confirmation rather than creating an
 additional per-command confirmation prompt.
 
+REQ-CLI-SEQ-008D: `atctl sequence run <SEQUENCE> --no-log` MUST prevent
+creation of new masked command history and session logs for that invocation.
+It MUST NOT disable an explicitly requested raw diagnostic export.
+
+REQ-CLI-SEQ-008E: `atctl sequence run <SEQUENCE>` MUST support the common
+Response export contract in REQ-CLI-RESPONSE-EXPORT-001 through 006.
+
 REQ-CLI-SEQ-009: `atctl send` remains a direct one-shot AT command surface.
 `atctl preset run <NAME>` remains a named one-shot preset surface. They MUST
 NOT silently accept a multi-step Sequence name as if it were a one-shot
 command. If a user supplies a Sequence name to a one-shot surface, the error
 SHOULD direct the user to `atctl sequence run <SEQUENCE>`.
+
+### 15.7A Normal Response export
+
+Normal Response export is an explicit operator-selected copy of a bounded
+`send`, `preset run`, or `sequence run` result. It is not a generated log and
+does not replace stdout, history, session logs, or raw diagnostic export.
+
+REQ-CLI-RESPONSE-EXPORT-001: `atctl send`, `atctl preset run`, and
+`atctl sequence run` MUST accept `--export-response <PATH>` with the same
+behavior. The complete target file path MUST be supplied for each invocation.
+
+REQ-CLI-RESPONSE-EXPORT-002: The target parent directory MUST already exist.
+The target MUST be validated before USB access, and an existing file MUST be
+rejected. Export MUST use exclusive file creation and MUST NOT overwrite,
+append to, or silently rename an existing file.
+
+REQ-CLI-RESPONSE-EXPORT-003: Normal stdout MUST remain unchanged when export is
+requested. A successful export MUST be reported on stderr with the exact target
+path so redirected stdout remains a stable data stream.
+
+REQ-CLI-RESPONSE-EXPORT-004: Text export MUST contain the executed command or
+Sequence identity and the complete normal Response or transcript without
+terminal UI chrome. When `--json` is selected, the export MUST be valid JSON
+containing the same logical artifact and the selected masking state.
+
+REQ-CLI-RESPONSE-EXPORT-005: Export MUST be masked by default and MUST follow
+`--no-mask` when the operator explicitly selects unmasked foreground output.
+This MUST NOT change masking of generated history or session logs and MUST NOT
+create or imply raw diagnostic export. Generated CLI help for
+`--export-response` MUST state that export follows `--no-mask`, so the
+unmasked-file consequence is visible at the option-selection point.
+
+REQ-CLI-RESPONSE-EXPORT-006: Export-file write errors MUST identify the target
+path. Export does not change AT final-status handling, including
+`--ignore-at-error`.
 
 ### 15.8 `atctl bridge --symlink <PATH>`
 
@@ -1363,22 +1230,21 @@ REQ-CLI-BRIDGE-002: PTY bridge MUST document that `screen /tmp/atctl 115200`
 uses a PTY compatibility argument and not physical UART baud rate.
 
 REQ-CLI-BRIDGE-003: Symlink overwrite, cleanup, signal handling, multiple
-client behavior, and CR/LF translation require explicit implementation design
-before coding.
+client behavior, and CR/LF translation MUST follow the bridge requirements in
+this section.
 
-REQ-CLI-BRIDGE-004: Phase 4 PTY bridge initial implementation MUST use
-`portable-pty` as the first implementation approach.
+REQ-CLI-BRIDGE-004: The PTY bridge MUST use `portable-pty`.
 
 REQ-CLI-BRIDGE-005: Platform-specific PTY implementation MUST NOT be treated as
 the default direction.
 
 REQ-CLI-BRIDGE-006: If `portable-pty` cannot satisfy required slave path,
 symlink, `screen`/`cu`, cleanup, signal handling, or terminal behavior
-requirements, the limitation MUST be documented in this specification and a
-platform-specific fallback MUST receive explicit approval before implementation.
+requirements, the limitation and any platform-specific replacement MUST be
+defined in a revision to this specification before implementation.
 
 REQ-CLI-BRIDGE-007: Use of `portable-pty` MUST NOT be documented as a promise of
-Linux support for the initial release.
+Linux support for the supported release platform.
 
 REQ-CLI-BRIDGE-008: `atctl bridge --symlink <PATH>` MUST accept the same USB
 target selection options as direct device commands: `--vid`, `--pid`, `--bus`,
@@ -1411,9 +1277,9 @@ Sensitive output MUST be masked by default. Write, persistent, dangerous, and
 unknown commands MUST require an explicit typed risk acknowledgement from the
 PTY client before sending to USB.
 
-REQ-CLI-BRIDGE-015: The initial bridge implementation supports one bridge loop.
-Multiple external clients opening the same PTY symlink at the same time are not
-a supported workflow. Documentation MUST state that concurrent PTY clients can
+REQ-CLI-BRIDGE-015: The bridge supports one external PTY client. Multiple
+external clients opening the same PTY symlink at the same time are not a
+supported workflow. Documentation MUST state that concurrent PTY clients can
 interleave input and are not guaranteed.
 
 REQ-CLI-BRIDGE-016: PTY bridge output MUST be text-oriented and masked by
@@ -1425,6 +1291,14 @@ masked text output.
 REQ-CLI-BRIDGE-016A: PTY bridge raw diagnostic export MUST NOT create a default
 raw-log path, MUST refuse to overwrite an existing file, and MUST fail before
 USB access if the raw-log acknowledgement is missing or wrong.
+
+REQ-CLI-BRIDGE-016B: PTY bridge MUST NOT expose the bounded
+`--export-response` operation because one bridge connection is a continuous
+terminal session rather than one current Response artifact. Documentation MUST
+show how the selected PTY client records the normal masked session transcript.
+For GNU Screen, this MUST include startup logging with `-L` and `-Logfile`, and
+the interactive `Ctrl-A H` logging toggle. Client transcript logging MUST remain
+separate from atctl raw diagnostic export.
 
 REQ-CLI-BRIDGE-017: PTY bridge help and review documentation MUST describe the
 first-time runtime discovery workflow. The workflow MUST start with
@@ -1449,7 +1323,7 @@ the next PTY line as payload, append the required control terminator such as
 Ctrl-Z, then read and return the final modem response. PTY output remains
 masked by default, and raw diagnostic export remains explicit.
 
-Approved Checkpoint 12 PTY bridge runtime design:
+PTY bridge runtime contract:
 
 - `atctl bridge --symlink <PATH>` creates a `portable-pty` slave and exposes it
   through the requested symlink.
@@ -1469,6 +1343,9 @@ Approved Checkpoint 12 PTY bridge runtime design:
   next PTY line as payload, append Ctrl-Z, and return the final response.
 - `screen /tmp/atctl 115200` and equivalent clients use the speed argument as a
   serial-tool compatibility value only.
+- A terminal client owns optional normal session-transcript recording. With GNU
+  Screen, `-L -Logfile <PATH>` enables it at startup and `Ctrl-A H` toggles it
+  during a session. The transcript contains the normal masked bridge output.
 - Closing the `screen` client is normal bridge shutdown and runs symlink
   cleanup.
 
@@ -1527,12 +1404,13 @@ supported, and MUST show visible capture state while active.
 
 REQ-TUI-RAWLOG-002: TUI raw diagnostic export capture MUST apply only to AT
 commands executed after capture starts. Stopping capture MUST leave existing
-masked Response, history, session log, and saved Response behavior unchanged.
+masked Response, history, session log, and explicit Response export behavior
+unchanged.
 
 REQ-TUI-005: Dangerous commands MUST NOT be presented as ordinary diagnostic or
 read-only commands. If a dangerous preset is visible in the TUI, the command row
-MUST show the dangerous risk cue and execution MUST require the exact typed risk
-confirmation before USB access.
+MUST show the `[dangerous]` risk label and execution MUST require the exact typed
+risk confirmation before USB access.
 
 REQ-TUI-006: TUI confirmation dialogs MUST show the command, risk level, and
 expected effect before execution.
@@ -1578,7 +1456,7 @@ has been explicitly abandoned and resynchronized before any subsequent command
 can be sent. Stopping only the local host-side read wait MUST NOT be described as
 successful command cancellation.
 
-REQ-TUI-008E: The initial implementation SHOULD handle long-running AT commands
+REQ-TUI-008E: The TUI SHOULD handle long-running AT commands
 with visible running state, elapsed time, timeout, remaining time, timeout-budget
 progress, timeout override, and blocking of conflicting command sends. It SHOULD
 NOT add a normal cancel key while modem-internal cancellation semantics remain
@@ -1586,8 +1464,8 @@ unverified.
 
 REQ-TUI-008F: Running-command interruption, host-side read abort, USB reconnect,
 and AT resync are out of scope for the application feature set. They MUST NOT be
-implemented or documented as a required user workflow unless a future approved
-specification reopens the topic.
+implemented or documented as a required user workflow unless a later revision
+to this specification defines that behavior.
 
 REQ-TUI-009: After command completion or failure, the TUI MUST keep enough
 command context visible for the user to identify which AT command produced the
@@ -1646,15 +1524,16 @@ Sequence transcripts, implementation details, or other text that explains how a
 different control works instead of reporting current state. Action availability
 belongs in Controls rows or the relevant pane action menu. Action results belong
 in nearby action-surface feedback. Longer explanations belong in confirmation
-dialogs, Help, documentation, or an approved detail surface. Modem output and
-derived analysis belong in Response or an approved detail surface.
+dialogs, Help, documentation, or a detail surface defined by this specification.
+Modem output and derived analysis belong in Response or a specification-defined
+detail surface.
 
 REQ-TUI-014M: Compact Status MUST NOT render arbitrary execution-error strings
 or implementation-provided free-form detail fields. In completed or failed
 states, Status may render a concise result row such as `Result: OK 7ms` or
 `Result: failed`. Full error text, Sequence expectation failures, modem output,
-and troubleshooting detail MUST be rendered in Response or another approved
-detail surface, not as a `Detail:` row in Status.
+and troubleshooting detail MUST be rendered in Response or another
+specification-defined detail surface, not as a `Detail:` row in Status.
 
 REQ-TUI-014O: Compact Status MUST keep selected-item context, active execution
 context, completed execution context, and viewed-log context visually distinct.
@@ -1680,7 +1559,7 @@ Because Status is a compact sidebar context surface, long target labels MAY be
 clipped horizontally instead of wrapped when wrapping would displace
 higher-priority state, terminal-time, result, risk, masking, or progress rows.
 Full command names, command text, response bodies, and log content remain
-available in the Commands / Sequences, Response, Logs, saved response, or
+available in the Commands / Sequences, Response, Logs, exported Response, or
 session-log surfaces as applicable.
 
 REQ-TUI-014N: When an execution has completed, failed, or been cancelled and
@@ -1711,8 +1590,8 @@ Sequences list, and persisted logs remain the detailed command surfaces.
 REQ-TUI-014J: The compact Status area MUST NOT display a Sequence `summary`
 field as normal active or selected context. Sequence summaries are explanatory
 purpose text, not command or transport state. They belong in the Commands /
-Sequences row, the `Run Sequence` modal, search matching, or a future approved
-detail/help surface. Completion or failure summary in Status means concise
+Sequences row, the `Run Sequence` modal, search matching, or a detail/help
+surface defined by this specification. Completion or failure summary in Status means concise
 execution result context such as status and duration, not the Sequence purpose
 sentence.
 
@@ -1799,7 +1678,7 @@ selection list. Device-dependent actions such as preset execution and AT
 command input sending MUST be blocked until the user explicitly selects a
 device.
 
-REQ-TUI-014D: The initial device-selection flow SHOULD use the visible Devices
+REQ-TUI-014D: The device-selection flow SHOULD use the visible Devices
 pane itself: normal focus navigation reaches Devices, `Up` and `Down` move the
 highlighted candidate, and `Enter` selects the highlighted device. The Devices
 pane MUST also provide an `Enter`-activated row for switching between operation
@@ -1808,7 +1687,7 @@ a dedicated global shortcut. Once a device is selected, the Devices pane MUST
 show a selected-device detail summary
 including USB manufacturer when readable, USB product when readable, VID, PID,
 bus, and address. Normal TUI device display MUST NOT show any built-in device
-label, profile label, compatibility label, or agent-defined product name such as
+label, profile label, compatibility label, or implementation-defined product name such as
 `Known`, `[known]`, or `Profile hint`. Command execution MUST constrain the
 selected target by VID, PID, bus, and address so a multi-device match does not
 silently select the wrong device.
@@ -1875,7 +1754,7 @@ the highlighted or selected item MUST remain visible after `Up`, `Down`,
 the focused pane's visible row capacity rather than a fixed magic number.
 Response MUST keep line-based scrolling for command output and opened masked
 logs. Status remains informational and MUST NOT become a scroll target unless
-a future approved specification gives it direct actions.
+this specification is revised to assign it direct actions.
 
 REQ-TUI-015B: The Controls pane MUST be a focusable operation pane, not a
 shortcut reference and not a catch-all menu for every convenience action. It
@@ -1885,10 +1764,10 @@ or Sequence inputs, set command timeout, start or stop raw diagnostic export
 capture, and output masking. Response-specific actions such as copy, save, open
 the Response output folder, and clear MUST belong to the Response pane action
 menu when Response is showing an execution result. Opened-log actions such as
-copy displayed log, open the logs folder, and close the opened log view MUST
-belong to the Response pane action menu when Response is showing a saved log.
-Log-list actions such as opening a selected log in Response and opening the
-logs folder MUST belong to the Logs pane action menu. Controls MUST NOT provide
+copy displayed log, reveal the opened log in Finder, and close the opened log
+view MUST belong to the Response pane action menu when Response is showing a
+saved log. Opening a selected log in Response MUST belong to the Logs pane
+action menu. Controls MUST NOT provide
 `rerun last`; repeated execution should happen from the selected
 command/Sequence itself so the visible selection and executed item remain
 aligned. Controls rows MUST use a stable list order and SHOULD remain visible
@@ -1909,22 +1788,22 @@ feedback near the Controls action list. Action-menu rows MUST keep stable
 labels and MUST NOT turn selectable rows into past-tense result labels.
 One-shot Response and Logs action-menu commands MAY close the menu after
 selection; when they close the menu, the compact Status area MAY show a concise
-operation result such as `Saved response.`, `Response body cleared.`, or a
-copy/open request result. Compact Status MUST NOT become the only place that
+operation result such as `Exported response: <file>.`,
+`Response body cleared.`, or a copy/reveal request result. Compact Status MUST
+NOT become the only place that
 explains a changed Response body state, and it MUST NOT become the place for
-long saved-file or log-folder paths. Longer path context belongs in the action
-menu detail row and in explicit folder-open actions.
+long exported-file paths. Target identity belongs in the action-menu context for
+the specific selected, opened, or exported file.
 
 REQ-TUI-015B2: The TUI Logs pane MUST represent the current saved history and
 session log list for the running TUI session. It MUST read from the same
-resolved logging paths used by log writers and `atctl logs list`, including
-`XDG_STATE_HOME` for the state directory and configured `[log].log_dir` for
-session logs. After a TUI command or Sequence execution finishes and normal
+XDG state paths used by log writers and `atctl logs list`. After a TUI command
+or Sequence execution finishes and normal
 history/session log writing has completed, the TUI MUST refresh the Logs list
 in the same session so a newly created `.session.log` can be discovered without
 restarting the TUI. It MUST also refresh the Logs list before presenting the
-Logs action menu, so external filesystem changes made through the opened logs
-folder are reflected before the user chooses a log action. If opening the
+Logs action menu, so external filesystem changes are reflected before the user
+chooses a log action. If opening the
 selected saved log fails because the file no longer exists, the TUI MUST keep
 the read failure visible in Response, MUST identify the originally selected log
 instead of substituting another row, MUST NOT enter viewed-log state, and MUST
@@ -1938,8 +1817,8 @@ the execution result with a log-refresh result.
 REQ-TUI-015C: Global letter shortcuts MUST be limited to the small primary set:
 `/` for command search, `?` for help, and `q` for quit. Secondary operations
 such as AT command input, edit, timeout, raw export, output masking, response
-save/copy/clear, Response folder opening, opened-log close/copy, log opening,
-log folder opening, device reselection, and full-USB view switching MUST be
+save/copy/clear, Response folder opening, opened-log close/copy/Finder reveal,
+log opening, device reselection, and full-USB view switching MUST be
 available through their relevant focusable panes and `Enter` activation rather
 than requiring dedicated global letter shortcuts. `Enter` MUST NOT fall back to
 command execution from Response, Logs, Status, or any other non-command pane.
@@ -1981,26 +1860,19 @@ and source set unless a stable parent hierarchy makes that distinction clear.
 
 REQ-TUI-GRAMMAR-004: If the current specification contains local display rules
 but lacks a combined grammar, or if the combined whole-surface grammar is
-contradictory, implementation MUST stop and the gap MUST be reported as a
-specification issue. Agents and implementers MUST NOT fill that gap with local
-judgment.
+contradictory, the affected UI change MUST NOT be implemented until this
+specification defines a consistent whole-surface grammar.
 
-REQ-TUI-GRAMMAR-005: The user does not need to restate required TUI and
-product-behavior gates in the current request. Any change that touches
-product-facing UI, wording, grouping, defaults, add-ons, presets, Sequences,
-source labels, or execution behavior MUST first identify which project gates
-apply and either satisfy them or stop and report the missing specification,
-evidence, or approval. Agents and implementers MUST NOT treat the
-absence of an explicit step-by-step instruction as permission to skip
-current-source research, specification alignment, whole-surface grammar
-definition, cross-surface mapping, cross-state verification, or approval
-requirements.
+REQ-TUI-GRAMMAR-005: Changes to product-facing UI, wording, grouping, defaults,
+add-ons, presets, Sequences, source labels, or execution behavior MUST remain
+aligned with this specification and MUST include whole-surface, cross-surface,
+and cross-state verification where those relationships are affected.
 
 TUI executable-item display basis:
 
 - The primary user task in the `Commands / Sequences` pane is selecting an
   executable item within the current workflow category.
-- The primary list row information is item name, effective risk cue, and the
+- The primary list row information is item name, effective risk label, and the
   AT command string or concise Sequence summary.
 - Default product-provided items are the baseline path and MUST NOT carry
   default-only source metadata in the normal list.
@@ -2008,8 +1880,7 @@ TUI executable-item display basis:
   definition title when that source distinction helps the user understand why
   carrier-, vendor-, modem-, project-, or user-authored items are visible.
 - Source metadata is a secondary distinction. It MUST NOT be represented with
-  invented prefixes such as `Add-on:` in normal TUI labels unless a future
-  approved specification explicitly adopts that vocabulary.
+  unspecified prefixes such as `Add-on:` in normal TUI labels.
 
 REQ-TUI-CMD-SET-001: When the currently visible executable-item result set contains
 one or more file presets, the Commands / Sequences pane MUST show non-default
@@ -2018,14 +1889,14 @@ rows MUST remain unheaded default rows in the normal list.
 
 REQ-TUI-CMD-SET-002: File preset source group headers MUST use the user-facing
 top-level TOML `title`, not raw file paths, internal identifiers, source keys,
-or agent-invented prefixes. Required initial label shape is:
+or unspecified prefixes. Required label shape is:
 
 ```text
 <file preset title from top-level TOML title>
 ```
 
 REQ-TUI-CMD-SET-003: Command rows MUST keep the same shape regardless of
-preset set: command name, risk cue, and AT command string. Command rows MUST
+preset set: command name, one risk label, and AT command string. Command rows MUST
 NOT use inline preset set badges such as `[built-in]`,
 `[Quectel commands]`, or a file-path badge in the normal TUI command list.
 
@@ -2066,8 +1937,8 @@ ordered as:
 ```text
 1. Product command rows in curated workflow order, without a source header
 2. File preset source groups, sorted by user-facing preset set title
-3. Runtime-only command rows, sorted after built-in and file presets if a
-   future approved feature makes them visible in the command list
+3. Runtime-only command rows, sorted after built-in and file presets if this
+   specification later defines them as visible in the command list
 ```
 
 REQ-TUI-CMD-ORDER-003: Product presets MUST be displayed in the curated
@@ -2092,13 +1963,13 @@ REQ-TUI-SEQ-002: The executable-item pane title SHOULD be `Commands / Sequences`
 once Sequence support is implemented. This title is intentionally longer than
 `Commands` because the pane can contain both one-shot AT command presets and
 multi-step Sequences. The title MUST NOT be changed to a generic internal term
-such as `Actions` or `Items` without explicit approval.
+such as `Actions` or `Items` without a corresponding specification revision.
 
 REQ-TUI-SEQ-003: In the default view where no Sequence rows are visible, the TUI
 MUST NOT add explanatory headers only to describe the absence of Sequences. When
 both one-shot command rows and Sequence rows are visible in the same filtered
-result, the pane MUST distinguish them without relying on color. The initial
-approved distinction is non-selectable group headers:
+result, the pane MUST distinguish them without relying on color. The required
+distinction is non-selectable group headers:
 
 ```text
 Commands
@@ -2109,8 +1980,8 @@ These group headers are not executable rows and MUST follow the same
 non-selectable navigation rules as source group headers.
 
 REQ-TUI-SEQ-004: One-shot command rows MUST keep the existing command-row shape:
-command name, risk cue, and AT command string. Sequence rows MUST show the
-Sequence name, effective risk cue, and a concise human-readable summary or
+command name, one risk label, and AT command string. Sequence rows MUST show the
+Sequence name, one effective risk label, and a concise human-readable summary or
 purpose. A Sequence row MUST NOT try to show every step's AT command inline.
 That Sequence summary MUST NOT be duplicated into the compact Status area as
 normal active or selected context.
@@ -2161,7 +2032,7 @@ The allowed value states are:
 REQ-TUI-SEQ-006A.1: A Sequence parameter MAY declare a product-known
 `candidate` source in addition to `source`, `default`, and `hint`. A candidate
 source defines how the product can turn explicitly obtained modem or Sequence
-output into selectable values. Initial product-known candidate sources are:
+output into selectable values. Product-known candidate sources are:
 
 - `sms-message`: extracts SMS storage indexes and message context from
   `AT+CMGL` / `sms-receive-check` output.
@@ -2174,8 +2045,8 @@ Sequences. Product-known candidate sources are limited to behavior the product
 can parse without locking the standard product surface to a vendor/provider
 specific command family. Vendor-specific checks such as Quectel socket state
 MAY be exposed as explicitly loaded add-on commands or Sequences, but MUST NOT
-be added to product-standard candidate assistance unless the whole product
-contract is intentionally expanded and approved.
+be added to product-standard candidate assistance unless this specification is
+revised to expand the product contract.
 
 REQ-TUI-SEQ-006A.2: A candidate source MUST define its candidate acquisition
 actions as explicit product actions. The TUI MAY render those actions inside
@@ -2240,7 +2111,7 @@ value source.
 
 REQ-TUI-SEQ-006C.2: TUI candidate reuse MUST be scoped to the current TUI
 session. Candidate sets MUST NOT be loaded automatically from history files,
-session logs, raw diagnostic exports, saved Response files, previous process
+session logs, raw diagnostic exports, exported Response files, previous process
 runs, or another TUI session. If a future feature imports candidates from logs
 or saved output, that import must be an explicit product action with its own
 review surface and must not be confused with live or same-session modem state.
@@ -2367,8 +2238,8 @@ missing-value output MUST expose source/default/hint/candidate metadata
 compactly when present so add-on Sequence authors and automation users can see
 how a value is intended to be obtained. PTY bridge input is an AT execution
 surface and must not consult TUI session candidates automatically. Any
-cross-surface candidate sharing must be specified as an explicit user action
-before implementation.
+cross-surface candidate sharing requires an explicit user action defined by
+this specification.
 
 REQ-TUI-SEQ-006H: During Sequence confirmation, the risk action instruction and
 current confirmation input MUST remain visible at all supported modal sizes. For
@@ -2454,29 +2325,53 @@ REQ-TUI-025: When the Response pane is temporarily showing a saved masked log,
 Response copy MUST copy only the displayed masked log body. It MUST NOT include
 line-number UI, visible-range text, pane borders, or raw values.
 
-REQ-TUI-026: The initial implementation MAY use OSC 52 to request a terminal
-clipboard write. It MUST NOT read the clipboard. It MUST NOT shell out to
-`pbcopy` or add a clipboard dependency without a separate approved design.
+REQ-TUI-026: The TUI MAY use OSC 52 to request a terminal clipboard write. It
+MUST NOT read the clipboard. Other clipboard mechanisms require corresponding
+requirements in this specification.
 
 REQ-TUI-026A: After a Response copy action, the TUI MUST provide visible
 feedback. Because OSC 52 requests a terminal clipboard write and the TUI does
 not read the clipboard, success feedback MUST be worded as a copy request sent
 to the terminal, not as verified clipboard contents. If the terminal clipboard
 request fails, feedback MUST show a copy-request failure. The selectable copy
-row label MUST remain a stable action label such as `Copy response`.
+row label MUST remain an action label that identifies its applicable masking
+state as defined by REQ-TUI-026B; it MUST NOT be replaced by transient success
+or failure text.
 
 REQ-TUI-026B: The Response pane action menu MUST expose actions for the
 currently displayed Response target. When Response is showing an execution
-result, it MUST expose copy current Response, save current Response, open the
-Response output folder, and clear current Response when each operation is
+result, it MUST expose copy current Response, export current Response, reveal
+the exact last exported file, and clear current Response when each operation is
 applicable. When Response is showing an initial notice such as the external
 definition loading notice, that displayed notice is also a valid current
-Response target for copy/save actions. Saving a Response MUST keep normal
-saved-Response masking behavior. Opening the Response output folder MUST be an
-explicit user-selected action and MUST NOT happen automatically after saving.
-The menu MUST show the Response output folder location once as shared
-action-menu context, not repeated on individual action rows and not as a long
-compact-Status row.
+Response target for copy/export actions. When the current displayed Response
+has a distinct masked and unmasked representation, the action menu MUST identify
+the displayed content as masked or unmasked. It MUST use `Copy response` and
+`Export response...` for masked content, and `Copy unmasked response` and
+`Export unmasked response...` for displayed unmasked content. The ellipsis MUST
+show that destination input follows.
+
+`Export response...` and `Export unmasked response...` MUST open a
+destination-folder chooser on every invocation. Before the chooser opens, the
+menu context MUST identify the Response, UTF-8 text format, generated file name,
+and applicable masked or unmasked export state. Masked export MAY write after
+the operator selects a destination folder. Unmasked export MUST NOT write after
+folder selection alone: it MUST return to a dedicated TUI confirmation that
+shows the exact final file path, warns that the file may contain unmasked
+identifiers, messages, payloads, or credentials, and requires exact typed
+acknowledgement `export`. `Esc` and `q` MUST cancel without creating a file.
+
+Selecting `Copy unmasked response` MUST open a dedicated confirmation that
+states the terminal clipboard request will contain the unmasked Response and
+requires exact typed acknowledgement `copy`. `Esc` and `q` MUST cancel without
+sending an OSC 52 request. Masked `Copy response` MAY send the request
+immediately. Export MUST create a new file exclusively and MUST NOT
+overwrite, append to, or silently rename an existing file. Export success
+feedback MUST name the exact created file and retain that path as the exported
+file associated with the currently displayed Response. A repeated export MUST
+use a newly generated name and replace only the in-memory reveal association;
+it MUST NOT delete an earlier export. Replacing or clearing the displayed
+Response MUST clear the association without deleting the exported file.
 Clearing a Response MUST clear only the displayed Response body, not the active
 execution Status context, logs list, selected command, or masking setting.
 After a user clears the Response body, the Response pane MUST render an
@@ -2486,22 +2381,36 @@ Status and logs. It MUST NOT render the same `No response.` empty state used
 before any Response body is available.
 
 REQ-TUI-026C: When Response is showing an opened saved log, the Response pane
-action menu MUST expose opened-log actions: copy displayed log, open the logs
-folder, and close log view. It MUST NOT offer `Save response` for an already
-persisted log view, and it MUST NOT use `Clear response` to close a log view.
-Close log view MUST remove the opened log body from Response and clear the
-viewed-log state. The menu MUST show the logs folder location once as shared
-action-menu context when log-folder actions are present.
+action menu MUST expose opened-log actions: copy displayed log, reveal that
+exact saved log in Finder, and close log view. It MUST NOT offer `Export response...`
+for an already persisted log view, and it MUST NOT use `Clear response` to close
+a log view. Close log view MUST remove the opened log body from Response and
+clear the viewed-log state. The viewed-log state MUST retain the exact path that
+was opened. The action menu MUST show the opened log type and file name once as
+shared context so the operator can verify which `history.jsonl` or
+`.session.log` file the Finder action targets without putting a long path in the
+compact Status area.
 
 REQ-TUI-026D: The Response pane action menu MUST keep action labels stable and
 show unavailable reasons as nearby menu feedback when the menu remains open.
 If no Response body is available, including after the user has cleared the
-Response body, copy/save/clear MUST not execute. The Response output folder may
-still be opened because it targets the stable Response storage location rather
-than a specific displayed Response body. Copy-path and copy-directory actions
-for mechanically named saved Response files MUST NOT be exposed as primary TUI
-actions unless a future approved saved-response browser provides enough
-human-readable context to choose the correct file.
+Response body, copy/export/clear MUST not execute. The menu MUST NOT expose a
+fixed saved-Responses-folder action because each export destination is selected
+by the operator and may differ.
+
+REQ-TUI-026E: When the currently displayed Response has a successfully exported
+file association, its action menu MUST expose `Reveal in Finder`. The shared
+menu context MUST identify the Response as a command, Sequence, candidate
+action, or initial notice; show completion time when available; state the
+export masking mode and format; and name the exact exported file. On macOS,
+reveal MUST
+ask Finder to select that exact file without opening its contents. If the file
+was removed after export, reveal MUST be disabled with a concise missing-file
+reason and MUST NOT fall back to the containing folder or another exported file.
+Successful process launch MUST be reported as a request sent, not as verified
+Finder state. Export, destination selection, and reveal failures MUST name the
+failed action. Copy-path and copy-directory actions MUST NOT be added as
+substitutes for this visible target context.
 
 ### 16.1 TUI Visual Accessibility and Theme Requirements
 
@@ -2549,10 +2458,9 @@ scattered raw color choices. Required roles include at least focus, selected,
 status, muted text, safe risk, sensitive risk, write risk, dangerous risk,
 warning, and error.
 
-REQ-TUI-A11Y-004: The currently implemented cyan/yellow styling is a
-user-approved colored baseline for the dark terminal screenshot that was
-reviewed. It MUST NOT be claimed as verified light/dark support or WCAG
-contrast conformance.
+REQ-TUI-A11Y-004: The current cyan/yellow styling is the colored baseline for
+the documented dark-terminal presentation. It MUST NOT be claimed as verified
+light/dark support or WCAG contrast conformance.
 
 REQ-TUI-A11Y-005: Dark and light theme support MUST NOT be marked complete
 until separate palettes are specified for both themes and their relevant
@@ -2576,31 +2484,40 @@ REQ-TUI-A11Y-009: The TUI SHOULD provide a color opt-out path, such as honoring
 affordances.
 
 REQ-TUI-A11Y-010: Any change to TUI palette, emphasis, or visual state
-representation after user approval MUST receive explicit approval for the
-concrete replacement before implementation.
+representation MUST define the concrete replacement in this specification
+before implementation.
 
 REQ-TUI-A11Y-011: TUI risk levels MUST be visually distinguishable for at
 least `safe`, `sensitive`, `write`, `persistent`, `dangerous`, and `unknown`.
 The distinction MUST use semantic roles and MUST NOT rely on color alone.
 
-REQ-TUI-A11Y-012: The concrete TUI risk palette and emphasis design MUST be
-approved before implementation. The design MUST preserve the approved
-cyan/yellow TUI direction unless an explicit replacement is approved.
+REQ-TUI-A11Y-012: The TUI risk palette and emphasis design MUST preserve the
+specified cyan/yellow direction unless this specification defines a concrete
+replacement.
 
 REQ-TUI-A11Y-013: TUI risk styling MUST keep text labels such as `[safe]`,
 `[sensitive]`, and `[write]` visible even when colors are disabled or
 unavailable.
 
-Approved OQ-012 risk-display design:
+OQ-012 risk-display contract:
 
-- The TUI MUST display risk labels and non-color cues as:
+- Commands and Sequences MUST display exactly one risk-classification label:
   - `safe` -> `[safe]`
-  - `sensitive` -> `[sensitive] MASKED`
-  - `write` -> `[write] CONFIRM`
-  - `persistent` -> `[persistent] PERSISTS`
-  - `dangerous` -> `[dangerous] DANGER`
-  - `unknown` -> `[unknown] REVIEW`
-- The approved dark palette is:
+  - `sensitive` -> `[sensitive]`
+  - `write` -> `[write]`
+  - `persistent` -> `[persistent]`
+  - `dangerous` -> `[dangerous]`
+  - `unknown` -> `[unknown]`
+- The command or Sequence row MUST NOT append masking state, confirmation
+  instruction, persistence description, severity restatement, or review
+  instruction to the risk label. In particular, `MASKED`, `CONFIRM`, `PERSISTS`,
+  `DANGER`, and `REVIEW` are not risk labels.
+- Output masking is session and Response state. It MUST be shown separately as
+  `Output masking: on` or `Output masking: off` in the applicable Controls,
+  Status, and Response surfaces.
+- Expected effect and exact acknowledgement instructions belong in the
+  confirmation surface, not in the executable-item row or risk label.
+- The specified dark palette is:
   - background `#263238`
   - base text `#ECEFF1`
   - focus/status/safe `#4DD0E1`
@@ -2610,7 +2527,7 @@ Approved OQ-012 risk-display design:
   - persistent `#FFB86C`
   - dangerous `#FF6B6B`
   - unknown `#B0BEC5`
-- The approved light palette is:
+- The specified light palette is:
   - background `#FAFAFA`
   - base text `#263238`
   - focus/status/safe `#007C89`
@@ -2619,15 +2536,17 @@ Approved OQ-012 risk-display design:
   - persistent `#9A4D00`
   - dangerous `#B00020`
   - unknown `#4B5563`
-- Risk styling MUST apply to Commands, Status, Confirmation, and Response
-  areas.
+- Risk styling MUST apply to Commands, Status, and Confirmation areas. Response
+  content masking state and Response-action warnings MUST use their own state
+  and warning roles rather than reusing a command-risk label.
 - Selected rows MUST NOT erase risk-specific token styling.
 - TUI theme selection MUST support default dark, `--theme dark`,
   `--theme light`, and `--theme no-color`.
 - `NO_COLOR` without an explicit `--theme` MUST use no-color mode.
-- OQ-012 implementation verification MUST cover theme selection, semantic
-  risk-role mapping, selected-row risk-token preservation, and render-buffer
-  evidence for risk labels and non-color cues.
+- Verification MUST cover theme selection, semantic risk-role mapping,
+  selected-row risk-token preservation, all six exact labels, negative checks
+  for the removed suffix words, and render-buffer evidence that masking state
+  and confirmation instructions remain separate from risk labels.
 
 ### 16.2 TUI Output Masking Requirements
 
@@ -2641,53 +2560,54 @@ REQ-TUI-MASK-003: TUI unmasked foreground display MUST show a confirmation that
 explains that sensitive modem, subscriber, or credential-like values may become
 visible.
 
-REQ-TUI-MASK-004: TUI unmasked foreground display MUST define its scope before
-implementation. The design MUST state whether it applies to one response, one
-command execution, the current session, or a named mode.
+REQ-TUI-MASK-004: TUI unmasked foreground display applies to the current TUI
+session and foreground Response/copy behavior only.
 
-REQ-TUI-MASK-005: TUI unmasked foreground display MUST define its lifetime
-before implementation. The design MUST state how it is exited, whether it
-auto-resets after a command or timeout, and whether it survives pane focus or
-command selection changes.
+REQ-TUI-MASK-005: TUI unmasked foreground display persists until the user turns
+masking on again or exits the TUI. It MUST NOT reset because of focus,
+selection, response clearing, command completion, or timeout changes.
 
-REQ-TUI-MASK-006: TUI unmasked foreground display MUST define logging behavior
-before implementation. Saved history, saved responses, and session logs MUST
-remain masked unless a separate explicit raw-log design is approved.
+REQ-TUI-MASK-006: Saved history and session logs MUST remain masked while
+foreground display is unmasked. Explicit Response export MUST follow the
+visible Response masking state. Raw diagnostic export remains a separate
+explicitly acknowledged operation.
 
 REQ-TUI-MASK-007: TUI output masking state MUST be visible without relying on
 color when it can change what the user sees or copies. The TUI MUST avoid
 boilerplate state lines for safe responses whose displayed text is unchanged by
 masking.
 
-Approved TUI session output masking design:
+TUI session output masking contract:
 
 - TUI output masking MUST be on by default.
 - `atctl tui --no-mask` MUST start the TUI with output masking off for the
   foreground TUI session only.
 - The TUI Controls pane MUST provide an `Output masking` row with an inline
   state such as `on` or `off`.
+- `Output masking off` MUST use warning styling in Controls while retaining the
+  visible `off` text; color MUST NOT be the only indicator.
 - Turning output masking off from inside the TUI MUST require a confirmation
   dialog with exact typed acknowledgement `unmask`.
 - Turning output masking on from inside the TUI MAY happen immediately.
 - The confirmation dialog MUST explain that unmasked sensitive modem,
   subscriber, payload, message, credential, or TCP response values may become
   visible in the TUI Response display.
-- The confirmation dialog MUST explain that Response copy follows the visible
-  Response display.
-- The confirmation dialog MUST explain that saved responses, history, session
-  logs, and raw diagnostic export behavior remain separate and masked unless the
-  user starts raw diagnostic export through its own path and `raw-log`
-  acknowledgement.
+- The confirmation dialog MUST explain that Response copy and explicit Response
+  export follow the visible Response display. It MUST also explain that
+  unmasked copy requires `copy` and unmasked export requires `export`, while
+  generated history and session logs remain masked and raw diagnostic export
+  requires its own path and `raw-log` acknowledgement.
 - `Esc` and `q` MUST cancel the output-masking confirmation dialog.
 - Output masking off MUST persist until the user turns output masking on again
   or exits the TUI. It MUST survive focus changes, category changes, command
   selection changes, response clearing, and ordinary command execution during
   that TUI session.
 - TUI state MAY keep unmasked response text in memory only as needed for the
-  current foreground Response display and copy behavior.
+  current foreground Response display, copy, and explicit export behavior.
 - Unmasked response text MUST NOT be passed to normal log writers.
 - Unmasked response text MUST NOT be written to config, state, history, session
-  files, or saved Response files.
+  files, or any destination other than a Response export explicitly selected by
+  the operator.
 - When a saved masked log is opened in the Response pane, the displayed log
   remains masked even if TUI session output masking is off.
 - Status and Response context MUST show `Output masking: off` when output
@@ -2703,11 +2623,14 @@ Approved TUI session output masking design:
   visible Response display.
 - Safe responses whose displayed text is not changed by masking MUST NOT show a
   response-local output-masking state line while output masking is on.
-- OQ-013 implementation verification MUST cover masked/default behavior,
+- Verification MUST cover masked/default behavior,
   `atctl tui --no-mask`, exact typed acknowledgement, cancel behavior, visible
   output-masking state, session persistence across focus/category/selection and
-  command execution, Response copy behavior, saved Response masking, saved-log
-  masking, and raw diagnostic export separation.
+  command execution, immediate masked Response copy/export, exact `copy` and
+  `export` acknowledgement for displayed unmasked content, confirmation
+  mismatch and cancellation, no file before unmasked export acknowledgement,
+  exclusive file creation, destination cancellation, saved-log masking, and raw
+  diagnostic export separation.
 
 ## 17. AT Command Taxonomy and Presets
 
@@ -2738,6 +2661,9 @@ persistent:
 dangerous:
   May reset modem, detach from network, change bands, break connectivity, or
   make the device hard to recover.
+
+unknown:
+  Cannot be confidently classified and is treated as potentially unsafe.
 ```
 
 REQ-RISK-001: Every preset command MUST have a risk level.
@@ -2810,23 +2736,23 @@ REQ-PRESET-SET-003: Product presets MUST remain vendor-neutral where
 practical and MUST be organized around user workflows.
 
 REQ-PRESET-SET-004: Vendor-specific, modem-specific, and carrier-specific
-commands MUST be separated from product presets into file presets unless a
-future approved specification explicitly promotes them to product presets.
+commands MUST be separated from product presets into file presets unless this
+specification is revised to define them as product presets.
 
 REQ-PRESET-SET-005: Quectel and SORACOM preset TOML files MUST be
 repository-managed file preset examples and MUST be created, loaded, and
-verified in the same checkpoint that implements multi-file preset loading.
+verified through the same multi-file preset loading path.
 
-Initial repository-managed file preset examples:
+Repository-managed file preset examples:
 
 ```text
 examples/presets/quectel.toml
 examples/presets/soracom.toml
 ```
 
-These files are part of the implementation and verification surface for preset
-loading. They MUST NOT be treated as optional documentation-only examples.
-Checkpoint verification MUST load these files through the same multi-file TOML
+These files are part of the maintained product and verification surface for
+preset loading. They MUST NOT be treated as optional documentation-only examples.
+Verification MUST load these files through the same multi-file TOML
 loader used for file presets, such as by passing `--preset-dir
 examples/presets`. A separate example-only parser path is not acceptable
 verification.
@@ -3033,9 +2959,8 @@ standard Sequences. User-authored Sequence definitions are for additional,
 special, project-local, or verification workflows; they MUST NOT be the
 required first step for ordinary standard SMS checks. Vendor-specific
 data-send checks, such as Quectel TCP/IP socket checks, belong in
-repository-managed example Sequence definitions unless a future approved
-specification explicitly promotes a specific vendor-independent product
-behavior.
+repository-managed example Sequence definitions unless this specification is
+revised to define a vendor-independent product behavior.
 
 ### 17.5 Repository-Managed File Preset Examples
 
@@ -3062,8 +2987,8 @@ Quectel file preset requirements:
   preset. Other `AT+QMBNCFG` operations that select, deactivate, add, delete,
   or auto-select MBN files MUST NOT be added as ordinary safe presets.
 - Quectel configuration-changing commands such as `AT+QCFG=...` MUST remain
-  protected by persistent, dangerous, or unknown-risk handling unless a future
-  approved specification defines a specific safe read-only form.
+  protected by persistent, dangerous, or unknown-risk handling unless this
+  specification defines a specific safe read-only form.
 - MUST declare `title = "Quectel commands"` at file level.
 - MAY declare a file-level `description`.
 - MUST categorize entries with relevant workflow categories such as `sim`,
@@ -3096,7 +3021,7 @@ SORACOM file preset requirements:
 File presets are configuration, not source code. The TOML format MUST remain
 human-editable and explicit.
 
-Initial TOML shape:
+TOML shape:
 
 ```toml
 title = "Custom commands"
@@ -3125,9 +3050,8 @@ REQ-PRESET-FILE-004: Each `[[presets]]` entry MAY include `timeout_secs` for kno
 long-running commands. This value is a preset-specific execution hint, not a
 global timeout setting.
 
-REQ-PRESET-FILE-005: File presets MUST be loaded only from explicit
-per-invocation file preset location flags. They MUST NOT be auto-discovered
-from default user configuration directories.
+REQ-PRESET-FILE-005: File preset locations MUST be supplied for each invocation
+through `--preset-file` or `--preset-dir`.
 
 REQ-PRESET-FILE-006: File preset loading MUST reject invalid TOML with a file
 path and actionable parse error.
@@ -3190,7 +3114,7 @@ User-authored Sequences:
   --sequence-dir locations.
 ```
 
-Initial product-provided standard Sequence targets:
+Product-provided standard Sequence targets:
 
 ```text
 sms-send-check
@@ -3261,7 +3185,7 @@ If the TUI offers candidate rows for `sms-reply-check`, the rows choose only the
 storage index. Candidate sender values shown for recognition MUST NOT be reused
 as the submit destination.
 
-Initial repository-managed example Sequence targets:
+Repository-managed example Sequence targets:
 
 ```text
 examples/sequences/quectel.toml
@@ -3275,8 +3199,8 @@ commands such as `AT+QIACT?` or `AT+QIACT=<cid>` for context activation checks,
 `AT+QIOPEN=...` for socket opening, `AT+QISEND=...` for payload sending,
 `AT+QISEND=<connectID>,0` for sent/acknowledged/unacknowledged byte counters,
 `AT+QIRD=...` for reading an echo or response when available, and
-`AT+QICLOSE=...` for explicit socket close. The exact command forms MUST be
-verified against the selected Quectel manual before implementation. `OK` after
+`AT+QICLOSE=...` for explicit socket close. The exact command forms MUST match
+the selected Quectel manual. `OK` after
 `QIOPEN` MUST NOT be treated as socket-open success by itself when the command
 also reports success or failure through a later `+QIOPEN` URC. `SEND OK` MUST
 be reported as module-accepted-payload evidence, not remote application receipt
@@ -3345,9 +3269,8 @@ end-to-end application receipt.
 
 SORACOM Beam is not a default repository-managed basic connectivity check
 because a Beam TCP/TCPs entry point depends on SIM group configuration. A Beam
-example MAY be added as a separately approved optional example, but it MUST be
-presented as Beam-specific and MUST NOT replace the ping and Unified Endpoint
-checks as the basic SORACOM sequence set.
+example MAY be added when it is documented as Beam-specific. It MUST NOT replace
+the ping and Unified Endpoint checks as the basic SORACOM sequence set.
 
 For SORACOM TCP -> HTTP/HTTPS or Unified Endpoint forwarding, TCP byte streams
 may be split or combined before reaching an HTTP destination. If preserving
@@ -3359,7 +3282,7 @@ single-message delivery guarantee.
 Sequence TOML files are configuration, not source code. The TOML format MUST
 remain human-editable and explicit.
 
-Initial TOML shape:
+TOML shape:
 
 ```toml
 title = "Quectel Sequences"
@@ -3511,10 +3434,9 @@ is required and whether it is sensitive. They MAY also define:
 
 Sensitive parameters such as SMS message bodies, phone numbers, payloads, APN
 credentials, usernames, passwords, and application tokens MUST be masked in
-normal Response output, saved Response files, history, session logs, and CLI
-JSON unless the user explicitly requests unmasked output, disables foreground
-output masking, or enables raw diagnostic export with the required
-acknowledgement.
+normal Response output, Response exports, history, session logs, and CLI JSON
+unless the user explicitly requests unmasked foreground output or Response
+export, or enables raw diagnostic export with the required acknowledgement.
 
 REQ-SEQ-FILE-004A: Sequence value-resolution metadata is a product contract, not
 documentation decoration. TUI input, TUI confirmation, CLI missing-parameter
@@ -3555,7 +3477,7 @@ For example, `Quectel Sequences` is an acceptable Sequence set title, but
 REQ-SEQ-FILE-010: Standard AT PDP readiness remains covered by one-shot
 standard presets such as `packet-attach`, `active-pdp-contexts`,
 `pdp-addresses`, and `pdp-connection-details`. Portable external TCP data-send
-verification is not provided by standard one-shot AT commands; initial external
+verification is not provided by standard one-shot AT commands; external
 data-send Sequence examples therefore belong in vendor-specific Sequence
 definition files.
 
@@ -3571,8 +3493,8 @@ REQ-SEQ-FILE-012: Active Sequence input and pre-send review surfaces MAY show
 the current typed values for sensitive review items because the operator must be
 able to verify the destination and content before an irreversible send. This
 display MUST be limited to the active input or confirmation surface and MUST NOT
-be written to normal Response output, saved Response files, history, session
-logs, or CLI JSON by default.
+be written to normal Response output, Response exports, history, session logs,
+or CLI JSON by default.
 
 REQ-SEQ-FILE-013: A Sequence MAY define `success_notes`. These notes MUST be
 included in the `Notes:` text transcript section and CLI JSON notes after
@@ -3629,7 +3551,7 @@ a modem/select value, not as an unexplained arbitrary integer. For TCP this
 includes destination host/port, PDP context ID, socket connect ID, payload, and
 read/response expectation. Destination values fixed by a SORACOM Sequence MUST
 be shown as Sequence-provided review values, not as hidden user inputs. The TUI
-MUST still keep normal Response, history, saved Response, and session logs
+MUST still keep normal Response, Response export, history, and session logs
 masked by default.
 
 REQ-SEQ-FILE-018: `atctl send`, `atctl preset run`, TUI one-shot AT command input,
@@ -3680,16 +3602,17 @@ change Response, log, raw export, save, copy, or JSON masking requirements.
 REQ-MASK-004: If a command string itself contains a credential, logs MUST mask
 the sensitive part of the command string.
 
-REQ-MASK-005: `--no-mask` MUST affect foreground display output only. It MUST
-NOT cause saved logs, saved responses, command history, or session logs to
-become raw and MUST NOT imply raw diagnostic export creation. For `atctl tui`,
-`--no-mask` starts the TUI session with output masking off; that setting remains
-limited to the foreground TUI display and copy behavior.
+REQ-MASK-005: `--no-mask` MUST affect foreground output, Response copy, and an
+explicitly requested normal Response export. It MUST NOT cause command history
+or session logs to become raw and MUST NOT imply raw diagnostic export creation.
+For `atctl tui`, `--no-mask` starts the TUI session with output masking off; that
+setting remains limited to foreground Response display, copy, and explicit
+Response export behavior.
 
-REQ-MASK-006: Raw log diagnostic export MUST require a separately approved
-design. That design MUST preserve explicit user action, user-selected output
-destination, sensitive-data warning, and acknowledgement requirements from
-OQ-021 unless a later approved specification changes them.
+REQ-MASK-006: Raw log diagnostic export MUST require explicit user action, a
+user-selected output destination, a sensitive-data warning, and the
+acknowledgement defined by the OQ-021 decision. A later specification revision
+MAY replace these requirements.
 
 Example:
 
@@ -3701,48 +3624,37 @@ Masked:
 +QCCID: 89811000************
 ```
 
-## 19. Configuration
+## 19. Definition Loading and State Paths
 
-Default paths:
+`atctl` stores generated user state under an XDG state base. When
+`XDG_STATE_HOME` is unset or empty, the base is `$HOME/.local/state`:
 
 ```text
-Config:
-  ~/.config/atctl/config.toml
-
-State/logs:
-  ~/.local/state/atctl/
-  ~/.local/state/atctl/logs/
+$XDG_STATE_HOME/atctl/
+  history.jsonl
+  logs/
 ```
 
-REQ-CONFIG-001: The implementation MUST support XDG-style paths on macOS.
+REQ-STATE-001: The implementation MUST honor `XDG_STATE_HOME` when it is a
+non-empty absolute path and MUST append the application directory `atctl`.
 
-REQ-CONFIG-002: The implementation SHOULD honor `XDG_CONFIG_HOME` and
-`XDG_STATE_HOME` when set.
+REQ-STATE-002: When `XDG_STATE_HOME` is unset, empty, or relative, the
+implementation MUST use `$HOME/.local/state` as the state base. A relative XDG
+base MUST NOT be resolved against the process working directory.
 
-REQ-CONFIG-003: `~` expansion MUST be handled for user-facing config values.
+REQ-STATE-003: If neither a valid absolute `XDG_STATE_HOME` nor a valid absolute
+`HOME` is available, commands that require the state directory MUST fail with an
+actionable error instead of writing under a literal `~` or a relative path.
 
-REQ-CONFIG-004: Invalid TOML MUST produce actionable errors with file path and
-parse location when available.
+REQ-STATE-004: State directories created by `atctl` SHOULD use user-only
+permissions. The implementation MUST surface directory-creation and file-write
+failures with the resolved path.
 
-REQ-CONFIG-005: Explicit preset and Sequence directory loading MUST read only
-`.toml` regular files from the provided directory.
-
-REQ-CONFIG-006: Explicit preset and Sequence directory files MUST be loaded in
-deterministic lexicographic path order within each provided directory.
-
-REQ-CONFIG-007: `XDG_CONFIG_HOME` MUST apply to `config.toml`. It MUST NOT be
-used as an automatic discovery root for add-on preset or Sequence definitions.
-
-REQ-CONFIG-008: Absence of add-on preset or Sequence files MUST be the normal
-default state. The product MUST start with product-provided definitions only
-unless explicit add-on file or directory flags are provided.
-
-REQ-CONFIG-009: File preset TOML entries MAY include `timeout_secs` as a
-positive integer hint for command execution timeout. The value applies to that
-preset only and MUST NOT change global defaults.
-
-REQ-CONFIG-010: The implementation MUST NOT create or overwrite user config
-files unless the user explicitly requests initialization.
+REQ-STATE-005: `atctl` MUST NOT discover or load a per-user product
+configuration file. USB target, interface, and endpoint overrides are explicit
+per-invocation options or TUI selections. Normal masked logging is enabled by
+default and is disabled for one supported execution invocation with
+`--no-log`.
 
 File preset loading:
 
@@ -3760,39 +3672,67 @@ Explicit Sequence definition location flags for the current invocation:
   --sequence-dir <DIR>
 ```
 
-REQ-CONFIG-011: Explicit file preset location flags MUST apply only to the command
-invocation where they are provided. They MUST NOT modify config files,
-environment variables, or future invocations.
+REQ-LOAD-001: Invalid preset or Sequence TOML MUST produce actionable errors
+with the file path and parse location when available.
 
-REQ-CONFIG-012: Explicit Sequence definition location flags MUST apply only to
-the command invocation where they are provided. They MUST NOT modify config
-files, environment variables, or future invocations.
+REQ-LOAD-002: Explicit preset and Sequence directory loading MUST read only
+`.toml` regular files from the provided directory.
 
-REQ-CONFIG-013: The implementation SHOULD NOT add atctl-specific preset or
-Sequence directory environment variables in the initial design.
-`XDG_CONFIG_HOME` remains the environment-level configuration-root override,
-while explicit file preset and Sequence location flags are the per-invocation
-overrides.
+REQ-LOAD-003: Explicit preset and Sequence directory files MUST be loaded in
+deterministic lexicographic path order within each provided directory.
 
-Example `config.toml`:
+REQ-LOAD-004: Normal startup MUST load product-provided definitions. Add-on
+preset or Sequence files MUST join the loaded set only when their explicit file
+or directory flags are provided.
 
-```toml
-[device]
-default_vendor_id = "0x2c7c"
-default_product_id = "0x0125"
-default_interface = "auto"
-default_bulk_in = "auto"
-default_bulk_out = "auto"
+REQ-LOAD-005: File preset TOML entries MAY include `timeout_secs` as a positive
+integer hint for command execution timeout. The value applies to that preset
+only and MUST NOT change global defaults.
 
-[log]
-enabled = true
-log_dir = "~/.local/state/atctl/logs"
-```
+REQ-LOAD-006: Explicit file preset and Sequence location flags MUST apply only
+to the invocation where they are provided. They MUST NOT modify environment
+variables or future invocations.
+
+REQ-LOAD-007: The implementation SHOULD NOT add atctl-specific preset or
+Sequence directory environment variables. Explicit file and directory flags
+remain the per-invocation loading contract.
 
 ## 20. Logging and History
 
+Normal masked logging is enabled by default for direct send, preset execution,
+Sequence execution, and TUI execution. The default paths are:
+
+```text
+~/.local/state/atctl/history.jsonl
+~/.local/state/atctl/logs/YYYY-MM-DDTHH-MM-SS-NNNNNNNNNZ.session.log
+```
+
+For a non-empty absolute `XDG_STATE_HOME`, the same files are stored under
+`$XDG_STATE_HOME/atctl/`. The environment value applies to the current process
+and its children, so log creation and later `atctl logs list` invocations use
+the same state base only when they receive the same value.
+
 REQ-LOG-001: Session logs, command history, masked response logs, and optional
 raw logs MUST be separate concepts.
+
+REQ-LOG-001A: `atctl send`, `atctl preset run`, `atctl sequence run`, and
+`atctl tui` MUST write new masked command-history and session-log artifacts by
+default after an AT execution produces a recordable result.
+
+REQ-LOG-001B: `--no-log` MUST disable creation of both new masked command
+history and new masked session logs for the current `send`, `preset run`,
+`sequence run`, or TUI invocation. For TUI, the option applies to every AT
+execution in that TUI process. It MUST NOT delete, hide, or prevent read-only
+review of existing logs.
+
+REQ-LOG-001C: `--no-log` MUST NOT disable raw diagnostic export explicitly
+requested with a destination and acknowledgement. Normal masked logging and raw
+diagnostic export remain independent contracts.
+
+REQ-LOG-001D: PTY bridge does not create normal command-history or session-log
+artifacts because an external PTY client owns its command session and the bridge
+does not produce the same per-command execution record. Bridge raw diagnostic
+export remains available only through its explicit raw-export options.
 
 REQ-LOG-002: Raw logs MUST be disabled by default. They MUST NOT be created in
 the default state/log directory without an explicit user-selected output
@@ -3804,12 +3744,16 @@ duration, and status.
 
 REQ-LOG-004: Log files SHOULD use user-only permissions when created.
 
-REQ-LOG-005: Log retention and rotation are not required for the first
-implementation, but the limitation MUST be documented.
+REQ-LOG-005: Normal masked history and session logs MUST remain on disk until the
+operator removes them. `atctl` MUST NOT apply an automatic retention period,
+rotation policy, pruning policy, or deletion policy. User documentation MUST
+describe the two normal log artifacts, how to list and review them, the absence
+of automatic lifecycle management, the effect of deleting each artifact type,
+and the separate lifecycle of explicitly selected raw diagnostic exports.
 
 REQ-LOG-006: The TUI Logs pane MUST provide useful in-app review of saved
-masked log material, not only file names, when the masked log viewer checkpoint
-is in scope. The Logs pane is a read-only diagnostic-evidence review surface,
+masked log material, not only file names, when masked log viewing is available.
+The Logs pane is a read-only diagnostic-evidence review surface,
 not a log deletion, retention, rotation, raw-export, or file-management
 surface.
 
@@ -3861,19 +3805,22 @@ session logs. Row labels MAY continue to use `history:` and `session:` to show
 the log type. In-pane heading SHOULD describe the mixed content as `Saved logs`
 rather than `Recent logs` when the list includes the aggregate history file.
 
-REQ-LOG-017: The TUI MUST provide a Logs pane action menu for saved logs. The
-menu MUST provide open selected log in Response when a log is selected, and it
-MUST provide open logs folder. It MUST open only after the user focuses Logs
-and presses `Enter`; opening the menu MUST perform only a non-destructive
-refresh of the saved-log list before showing available actions. It MUST NOT
-launch an operating system file manager by default. It MUST NOT add destructive
-log management actions such as delete,
-clear, prune, or rotate. Opening a selected log in Response MUST keep the
-existing masked log-view behavior. The menu action target MUST remain the log
-identity that the user selected when opening the menu, based on log type and
-path. If that target no longer exists after the pre-menu refresh, the TUI MUST
-update the Logs list, show that the selected log no longer exists, and MUST NOT
-offer an open-log action for another row that moved into the same list index.
+REQ-LOG-017: The TUI MUST provide a Logs pane action menu for opening a selected
+saved log in Response or revealing that selected file in Finder. Opening the
+menu MUST perform only a non-destructive refresh of the saved-log list before
+showing available actions. The Logs menu MUST NOT provide a generic log-folder
+action because its rows include both the aggregate `history.jsonl` in the state
+directory and individual session files in the `logs/` subdirectory. It MUST NOT
+add destructive actions such as delete, clear, prune, or rotate. Opening a
+selected log in Response MUST keep the existing masked log-view behavior.
+Revealing a selected log MUST NOT require opening it in Response first. Both
+actions MUST remain bound to the log identity that the user selected when
+opening the menu, based on log type and exact path. If no log is available, pressing
+`Enter` in Logs MUST keep the pane unchanged and provide concise no-log feedback
+instead of opening an empty action menu. If a selected target no longer exists
+after the pre-menu refresh, the TUI MUST update the Logs list, show that the
+selected log no longer exists, and MUST NOT offer an open-log action for another
+row that moved into the same list index.
 That missing-log message is modal-state feedback, not selection-row feedback;
 it MUST remain visible while the same Log actions menu stays open, including
 after Up/Down/Home/End selection movement, and it is cleared only when the menu
@@ -3882,13 +3829,20 @@ recomputed.
 If that target disappears after the menu is already open, opening it MUST fail
 against the originally selected target, MUST show the missing-file failure in
 Response, MUST refresh the Logs list, and MUST NOT fall back to `history.jsonl`
-or any other remaining log. When the action menu includes log-folder
-actions, it MUST show the logs folder location once as shared action-menu
-context rather than repeating the same folder under each row. Copy-path and
-copy-directory actions for saved log files MUST NOT be exposed as primary TUI
-actions unless a future approved log browser provides enough human-readable
-context to choose the correct file or file-system integration explicitly
-requires those actions.
+or any other remaining log.
+
+REQ-LOG-017A: `Reveal in Finder` from Logs MUST target the exact selected path,
+and the same action from a saved log visible in Response MUST target the exact
+opened path, regardless of whether the log is the aggregate history file or an
+individual session file. On the supported macOS runtime, both actions MUST ask
+Finder to select the file without opening its contents and without modifying or
+deleting it. The TUI MUST describe successful process launch as a request sent,
+not as verified Finder state. If the file no longer exists before the Logs menu
+opens, both selected-log actions MUST be unavailable and the list MUST refresh
+without retargeting another row. If an opened log later disappears, copy
+displayed log and close log view MUST remain available, while `Reveal in Finder`
+MUST be disabled with an actionable missing-file explanation. Neither action
+MUST fall back to a parent directory or another log file.
 
 REQ-LOG-018: Raw diagnostic export files MUST be written as JSON Lines. The
 format MUST include a schema/version event, surface/source metadata, command
@@ -3925,6 +3879,13 @@ Reference basis for TUI log viewing:
 - Docker Desktop, Kubernetes `kubectl logs`, and similar operational tools
   expose logs for review or streaming without making log deletion/rotation the
   primary in-product workflow.
+- Apple `NSWorkspace.activateFileViewerSelecting` opens Finder with the exact
+  target file selected. VS Code and IntelliJ IDEA similarly expose file-manager
+  reveal actions for a file selected in a list or currently open in an editor.
+  Firefox similarly provides open and Finder-reveal actions for one completed
+  saved file and changes action availability with file state. These patterns
+  support independent selected-file, opened-file, and newly saved-file paths
+  without forcing one task to precede another.
 - OWASP logging guidance and NIST log-management guidance support keeping log
   generation, viewing, protection, retention, and disposal responsibilities
   distinct.
@@ -3938,12 +3899,6 @@ Reference basis for TUI log viewing:
 - WAI-ARIA keyboard-interface practices and Apple keyboard-navigation guidance
   distinguish focus movement between groups from arrow-key movement within a
   focused group.
-
-Default log path:
-
-```text
-~/.local/state/atctl/logs/YYYY-MM-DDTHH-MM-SS.session.log
-```
 
 ## 21. Error Handling
 
@@ -3974,8 +3929,8 @@ Try:
 
 REQ-PKG-001: `atctl` MUST be packaged as a command-line executable that
 provides CLI and TUI surfaces. The normal distribution path MUST NOT treat
-`atctl` as a macOS GUI application, app bundle, or Homebrew Cask unless a
-later approved product specification adds a GUI application.
+`atctl` as a macOS GUI application, app bundle, or Homebrew Cask unless a later
+specification revision defines a GUI application.
 
 REQ-PKG-002: The normal end-user install flow MUST be Homebrew through the
 fully qualified formula name `uchimanajet7/atctl/atctl`:
@@ -4052,11 +4007,11 @@ sha256sum-compatible line:
 `<sha256 hex>  atctl-v{VERSION}-aarch64-apple-darwin.tar.gz`.
 
 REQ-PKG-019: Source repository releases MUST publish one checksum file per
-archive and MUST NOT publish an aggregate checksum manifest unless separately
-approved.
+archive and MUST NOT publish an aggregate checksum manifest unless this
+specification is revised.
 
 REQ-PKG-020: Source repository releases MUST NOT publish provenance,
-attestation, or SBOM metadata unless separately approved.
+attestation, or SBOM metadata unless this specification is revised.
 
 REQ-PKG-021: Homebrew formula, tap CI, tap metadata, and bottle metadata belong
 to the tap repository `uchimanajet7/homebrew-atctl`.
@@ -4105,7 +4060,7 @@ metadata and source-package output, not as the normal end-user install path.
 The normal end-user install path remains Homebrew.
 
 REQ-PKG-034: `Cargo.toml` MUST use an explicit `include` whitelist for the
-Cargo source package so project-local agent files, backups, local history,
+Cargo source package so project-local process files, backups, local history,
 build outputs, release-workflow drafts, and other non-package repository
 materials cannot be accidentally included in `.crate` output.
 
@@ -4164,7 +4119,7 @@ missing or has no release-note content beyond the heading.
 
 REQ-PKG-042: GitHub automatically generated release notes MUST NOT be the sole
 or primary release notes for `atctl` source repository releases unless a later
-approved packaging specification explicitly changes the release-note source.
+specification revision changes the release-note source.
 
 REQ-PKG-043: The source repository release workflow MUST NOT create or
 update Homebrew Formula pull requests automatically.
@@ -4234,117 +4189,18 @@ instead of only asserting one local state, such as product-only commands,
 mixed product/file presets, mixed command/Sequence results, and loaded
 repository-managed examples.
 
-## 24. Implementation Phases
+## 24. Accepted Decisions
 
-### Phase 1: Core USB and CLI
+Accepted product and architecture decisions are summarized in
+`docs/DECISIONS.md`. That document records decision rationale and consequences;
+the normative product and technical requirements remain in this specification.
 
-- Rust project scaffold
-- `clap`, `rusb`, `serde`, `toml`, `tracing`
-- `atctl devices`
-- `atctl inspect`
-- USB device open/claim
-- Endpoint auto-detection
-- `atctl send AT` and `atctl send ATI`
-- Raw response reading
-- Timeout handling
-- Basic masking
-- Mock transport tests
+Any new unresolved decision that affects product behavior, safety, UI,
+transport, packaging, or distribution must be raised explicitly and must not be
+guessed. A later accepted decision must identify the earlier decision it
+supersedes.
 
-### Phase 2: Presets, Config, and Safety
-
-- Product presets
-- User config loading
-- Explicit file preset loading
-- Risk classification
-- Confirmation for write, persistent, and dangerous presets
-- Command history
-- Masked session logging
-
-### Phase 3: TUI
-
-- TUI app skeleton
-- Device pane
-- Preset category pane
-- Command pane
-- Response pane
-- Status pane
-- Logs pane
-- Controls pane
-- Masked log viewer
-- Compact status/context area
-- Standard workflow preset cleanup
-- Repository-managed Quectel and SORACOM file preset examples
-- Multi-file explicit file preset loading
-- Preset set display
-- Effective preset risk calculation
-- TUI AT command input
-- TUI visual accessibility and theme foundation
-- Semantic style roles
-- Non-color state affordances
-- Risk-level visual differentiation
-- TUI output masking workflow
-- Dark/light theme palette decisions and contrast verification before any
-  light/dark support claim
-- Color opt-out behavior
-- Search/filter
-- Edit-before-run
-- Confirmation dialogs
-
-### Phase 4: PTY Bridge
-
-- PTY bridge design
-- `portable-pty` first implementation
-- Symlink behavior
-- `screen` / `cu` compatibility workflow
-- Clean shutdown
-- PTY bridge prompt-capable multi-step manual operation for commands such as
-  `AT+CMGS` MUST be specified before it is called complete for SMS manual use.
-- Running-command interruption, host-side read abort, USB reconnect, and AT
-  resync remain out of scope unless a future approved specification reopens the
-  topic.
-
-### Phase 4.5: Sequences
-
-- Shared Sequence model and TOML loader
-- Product-provided standard SMS send/read/reply Sequences
-- User-authored Sequence definition loading from explicit `--sequence-file`
-  and `--sequence-dir` locations
-- Repository-managed Quectel TCP/IP example Sequence definition
-- Shared Sequence engine for prompt waits, payload writes, URC waits,
-  per-step timeouts, total timeout, masking, risk aggregation, and raw
-  diagnostic export
-- CLI `atctl sequence list` and `atctl sequence run <SEQUENCE>`
-- TUI `Commands / Sequences` display without adding a permanent pane
-- TUI `Run Sequence` modal for value resolution and confirmation
-- TUI Response step transcript and compact Status step context
-- PTY bridge prompt-capable manual multi-step behavior, or an explicitly
-  documented and approved product difference before claiming Sequence-related
-  feature completeness
-- Mock transport and TUI tests for SMS and Quectel Sequence behavior
-
-### Phase 5: Packaging and Documentation
-
-- README updates
-- Docs updates
-- GitHub Actions release workflow
-- Homebrew formula and bottle workflow
-- Example config and presets
-
-## 25. Open Questions
-
-Open questions are tracked in `docs/OPEN-QUESTIONS.md`. Implementers MUST NOT
-guess answers for those items.
-
-As of this specification version, OQ-012 TUI risk visual differentiation,
-OQ-013 TUI output masking, OQ-014 TUI masked log viewer scope, OQ-015
-TUI preset/input polish before PTY, OQ-016 TUI device pane and timeout control,
-OQ-017 TUI explicit device selection gate, OQ-018 running-command interruption,
-OQ-019 PTY bridge runtime behavior, OQ-020 device listing default scope,
-OQ-021 raw log diagnostic export, OQ-022 TUI shortcut reduction, and OQ-023
-Sequence product design are resolved. These decisions are tracked in
-`docs/OPEN-QUESTIONS.md`.
-
-## 26. References
+## 25. References
 
 - ISO/IEC/IEEE 29148:2018:
   https://www.iso.org/standard/72089.html
@@ -4422,6 +4278,14 @@ Sequence product design are resolved. These decisions are tracked in
   https://www.w3.org/WAI/WCAG21/Understanding/consistent-identification.html
 - Apple Human Interface Guidelines Writing:
   https://developer.apple.com/design/human-interface-guidelines/writing
+- Apple NSWorkspace `activateFileViewerSelecting`:
+  https://developer.apple.com/documentation/appkit/nsworkspace/activatefileviewerselecting%28_%3A%29
+- Visual Studio Code file navigation and native file-manager reveal actions:
+  https://code.visualstudio.com/docs/editing/userinterface
+- IntelliJ IDEA file navigation and `Open in | Finder`:
+  https://www.jetbrains.com/help/idea/file-navigation.html
+- Firefox saved-download actions and Show in Finder:
+  https://support.mozilla.org/kb/where-find-and-manage-downloaded-files-firefox
 - libusb:
   https://libusb.info/
 - libusb API:
@@ -4482,6 +4346,14 @@ Sequence product design are resolved. These decisions are tracked in
   https://docs.rs/crossterm/latest/crossterm/
 - clap:
   https://docs.rs/clap/latest/clap/
+- XDG Base Directory Specification:
+  https://specifications.freedesktop.org/basedir/latest/
+- OWASP Logging Cheat Sheet:
+  https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html
+- NIST Log Management:
+  https://csrc.nist.gov/projects/log-management
+- Command Line Interface Guidelines, Configuration:
+  https://clig.dev/#configuration
 - toml:
   https://docs.rs/toml/latest/toml/
 - tracing:

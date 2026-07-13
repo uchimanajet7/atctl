@@ -37,8 +37,8 @@ Run:
 ls /dev/cu.*
 ```
 
-If no Onyx or EG25-G callout device appears, `atctl` should still be able to
-use libusb if the USB interfaces and endpoints can be claimed.
+If no Onyx or EG25-G callout device appears, try `atctl devices`. `atctl` can
+use libusb when the USB interfaces and endpoints are available to claim.
 
 ## List Devices Through libusb
 
@@ -74,14 +74,10 @@ If an expected modem does not appear in the default output:
 4. Use explicit runtime selectors such as `--bus <BUS> --address <ADDRESS>` for
    CLI or bridge commands when appropriate.
 
-The TUI normal Devices pane uses the same operation-target scope as
-`atctl devices`. The intended product behavior is CLI/TUI discovery parity: the
-TUI provides an explicitly labeled full-USB troubleshooting view equivalent to
-`atctl devices --all-usb`. In the TUI Devices pane, select `Show all USB
-devices` and press `Enter` to open this view. From the full-USB view, select
-`Show operation targets` and press `Enter` to return to normal operation
-targets. Non-target USB devices are visible for diagnosis but remain
-diagnostic-only and unavailable for AT sending.
+The TUI Devices pane initially shows the same operation targets as
+`atctl devices`. Select `Show all USB devices` and press `Enter` to inspect the
+full USB view. Select `Show operation targets` to return. Devices that are not
+operation targets remain unavailable for AT sending.
 
 Reference basis:
 
@@ -100,8 +96,8 @@ Reference basis:
 atctl inspect
 ```
 
-The output should include configurations, interfaces, alternate settings, and
-bulk endpoints. Endpoint values observed in one environment are diagnostic
+The output includes configurations, interfaces, alternate settings, and bulk
+endpoints. Endpoint values observed in one environment are diagnostic
 evidence, not universal defaults. If auto-detection fails, retry with explicit
 values from the current `atctl inspect` output:
 
@@ -162,6 +158,22 @@ screen /tmp/atctl 115200
 `115200` is required by serial terminal tools as a compatibility value. It is
 not the physical speed of the USB modem path. To quit `screen`, press
 `Ctrl-A`, then `K`, then `y`.
+
+The bridge is a continuous terminal session, so it does not use the bounded
+`--export-response` option. To record the normal masked bridge transcript with
+GNU Screen, choose the transcript file when starting the client:
+
+```sh
+screen -L -Logfile "$HOME/Documents/atctl-bridge-session.log" \
+  /tmp/atctl 115200
+```
+
+Inside an existing Screen session, `Ctrl-A`, then `H` starts or stops session
+logging. Screen appends when the selected log already exists; choose a new path
+when a separate transcript is required. This terminal transcript is distinct
+from atctl raw diagnostic export. Use `--raw-log-file <PATH>` with
+`--raw-log-ack raw-log` only when underlying unmasked diagnostic exchanges are
+required and the sensitive-output warning is accepted.
 
 The bridge resolves the USB target before creating the symlink. If no matching
 device is visible, or if multiple devices match the provided filters, bridge
@@ -284,22 +296,20 @@ atctl preset run operator-auto-selection
 `pdp-auth-settings` reads standard PDP authentication settings and can expose APN
 credentials. Output and saved logs are masked by default.
 
-For the complete product preset reference, file preset TOML format, explicit
-loading rules, and repository-managed example preset files, see
-[docs/PRESETS.md](PRESETS.md). External preset and Sequence files are not
-discovered automatically from `~/.config/atctl`; pass their paths explicitly
-when you want those add-ons in the current command or TUI session.
+For the complete product preset reference, file preset TOML format, loading
+rules, and repository-managed example preset files, see
+[docs/PRESETS.md](PRESETS.md). To use external preset or Sequence files, pass
+their paths in the current command or TUI session.
 
 The standard PDP presets can show attach state, active PDP contexts, IP address
 assignment, and connection details. They do not prove that an application
-payload reached an external server. External data-send checks require a
-Sequence that can perform the required vendor-specific socket steps or another
-approved product surface.
+payload reached an external server. Use a vendor-specific data-send Sequence or
+another endpoint-aware tool for that check.
 
 ## SMS and Data-Send Sequence Checks
 
-Sequences are specified as the product path for multi-step checks that cannot
-be represented as one command and one final response.
+Use Sequences for multi-step checks that cannot be represented as one command
+and one final response.
 
 Standard SMS checks:
 
@@ -311,40 +321,25 @@ atctl sequence run sms-read-message --param index=<INDEX>
 atctl sequence run sms-reply-check --param index=<INDEX> --param message=<MESSAGE>
 ```
 
-In the TUI, SMS Sequences should appear in the `sms` category inside the
-`Commands / Sequences` pane. Selecting one opens a `Run Sequence` modal for
-values such as recipient, SMS storage index, and message body. The modal shows the
-current value plus the value source or confirmation hint. For SMS read/reply
-SMS storage indexes, the modal shows available candidates from known `AT+CMGL`
-or `sms-receive-check` rows in the same modal so the storage index can be
-selected without leaving the Sequence input flow. Those candidates come from
-the current TUI session's explicitly executed SMS listing result; opening the
-modal does not perform a hidden SMS listing. Candidate rows label the
-modem-returned value as `storage=<index>` and atctl sends it back unchanged in
-`AT+CMGR=<index>`, without assuming whether the modem starts numbering from 0
-or 1. Before USB access, the SMS send Sequence reviews destination and message
-body, the SMS read Sequence reviews the SMS storage index, and the SMS reply
-Sequence reviews the original SMS storage index plus reply body.
-Status shows the current step, while Response shows the step transcript.
-The transcript separates sent material, modem response, decoded SMS bodies,
-atctl analysis, notes, and result into readable section blocks.
+In the TUI, select the `sms` category and choose a Sequence from
+`Commands / Sequences`. `Run Sequence` shows the current values and their
+sources before execution. For SMS read or reply, use the candidate action to
+load message indexes from an explicit SMS list operation, then select the
+required `storage=<index>` value. Opening `Run Sequence` alone does not read
+messages.
 
-For confirmation-required Sequences, the `Run Sequence` modal must keep the
-`Type <risk> to run` instruction and `Input:` line visible. If a review is long,
-the modal summarizes lower-priority detail instead of hiding the confirmation
-input.
-
-Candidate actions shown inside the `Run Sequence` modal, such as loading an SMS
-list for message-index selection, use the same risk-confirmation rules as
-normal commands. If a candidate action fails, Response starts with
-`Result: failed` and then shows the action failure detail. Compact Status should
-identify the failed context as an action, not as a failed selected Sequence.
+Review the destination, message body, or storage index shown before USB access,
+then enter the requested risk confirmation. During execution, Status shows the
+current step and Response shows command material, modem response, decoded SMS,
+analysis, notes, and the final result in separate sections. If a candidate
+action fails, read the failure detail in Response and retry the candidate action
+before running the selected Sequence.
 
 For SMS send, `+CMGS` followed by `OK` is submit evidence from the modem/network
 path. It is not proof that the destination handset displayed the message. For
 SMS receive, sender numbers and message bodies are sensitive. Receive/list/read
 operations that change message status or unread/read flags require confirmation
-and must not silently delete messages. `REC READ` and `REC UNREAD` in modem
+and do not silently delete messages. `REC READ` and `REC UNREAD` in modem
 output are message status values. Reading a specific SMS with `AT+CMGR` can
 change unread state to read state, so `sms-read-message` and reply-by-index are
 write-risk. Supported SMS bodies such as UCS2 hex are decoded before masking.
@@ -377,9 +372,8 @@ examples are provider-specific reachability and endpoint checks implemented
 with Quectel TCP/IP AT commands as the modem backend. They are loaded
 explicitly, similar to repository-managed file presets.
 Loading those examples does not make them product-provided standard Sequences.
-It does put them on the same loaded Sequence contract for risk aggregation,
-masking, confirmation, transcript output, raw diagnostic export, and execution
-as other Sequences.
+They use the same risk aggregation, masking, confirmation, transcript, raw
+diagnostic export, and execution behavior as other Sequences.
 
 The TCP examples prefill routine modem plumbing values where a safe editable
 default is useful: PDP context ID defaults to `1`, socket connect ID defaults to
@@ -418,10 +412,10 @@ For Quectel socket checks, `+QIOPEN: <id>,0` indicates socket open success,
 `SEND OK` indicates the module accepted the payload for sending,
 `AT+QISEND=<id>,0` counters indicate TCP/socket acknowledgement state, and a
 non-empty `QIRD` response or remote endpoint evidence is needed for
-end-to-end application proof. `OK` alone after `QIOPEN` must not be treated as
-full network success. `+QIRD: 0` means no buffered receive data. Counter output
-should be read as sent/acknowledged/unacknowledged byte evidence, not as remote
-application processing proof. For the repository-managed TCP examples,
+end-to-end application proof. `OK` alone after `QIOPEN` is not full network
+success. `+QIRD: 0` means no buffered receive data. Read counter output as
+sent/acknowledged/unacknowledged byte evidence, not as remote application
+processing proof. For the repository-managed TCP examples,
 `+QISEND:` counters with remaining unacknowledged payload bytes are not a
 successful send condition; the Sequence retries the acknowledgement query
 within the step timeout and fails with the last counters visible if the payload
@@ -505,10 +499,111 @@ atctl preset run mbn-list-quectel --preset-dir examples/presets
 that select, deactivate, add, delete, or auto-select MBN files are not ordinary
 safe troubleshooting presets.
 
+## Review and Manage Logs
+
+Normal AT execution writes masked command history and session logs by default:
+
+```text
+~/.local/state/atctl/history.jsonl
+~/.local/state/atctl/logs/<timestamp>.session.log
+```
+
+`history.jsonl` is one append-only aggregate history file. It records masked
+command, timestamp, source, risk, status, duration, and device selection without
+the response body. Each `.session.log` is a separate masked record for one
+execution and includes its masked response.
+
+List the paths of both artifact types:
+
+```sh
+atctl logs list
+```
+
+If `XDG_STATE_HOME` was set for the original execution, use the same value when
+listing its logs. `atctl` appends its own `atctl` directory to the XDG base:
+
+```sh
+env XDG_STATE_HOME="$HOME/Documents" atctl send AT
+env XDG_STATE_HOME="$HOME/Documents" atctl logs list
+```
+
+This example stores and lists logs under `$HOME/Documents/atctl/`.
+
+To review or locate one log from the TUI:
+
+1. Focus `Logs`, select `history: history.jsonl` or a `session:` row, and press
+   `Enter`.
+2. Choose `Open log in Response` to review the masked contents, or choose
+   `Reveal in Finder` to locate the selected file directly.
+3. After opening a log in Response, press `Enter` there to copy the displayed
+   masked log, reveal the same exact file, or close log view.
+4. Finder opens the containing folder and selects the exact selected or opened
+   file. It does not open the file contents, move the file, or delete it.
+
+Complete the current `atctl` execution before moving log files to the Trash.
+Deleting `history.jsonl` removes the complete aggregate command history; the
+next logged execution creates a new history file. Deleting one `.session.log`
+removes only that detailed execution record and does not remove its existing
+entry from `history.jsonl`. Return to Logs and press `Enter` to refresh the list
+after external file changes.
+
+`atctl` does not apply an automatic retention period, rotation policy, pruning,
+or deletion. Retain logs according to the troubleshooting case and applicable
+organizational policy, then remove files and copies that are no longer needed.
+A command or TUI session started with `--no-log` does not create new history or
+session-log entries; existing logs remain listable.
+
+### Export a Response
+
+Response export creates an operator-selected copy of the current normal
+Response. It is separate from generated history, session logs, and raw
+diagnostic export.
+
+In the TUI, focus Response, press `Enter`, and choose `Export response...`.
+Before the folder chooser opens, the action menu identifies the Response,
+generated UTF-8 text file name, and the applicable masking state. Select a
+destination folder. The chooser is shown for every export. A masked export
+creates the file immediately after folder selection.
+
+If Response is displaying values that differ from its masked form, the actions
+are `Copy unmasked response` and `Export unmasked response...`. Copy requires
+typing `copy`. Export returns from the folder chooser to a confirmation showing
+the exact final path and requires typing `export` before creating the file.
+`Esc` or `q` cancels without copying or creating a file.
+
+After a successful export, open Response actions again and choose `Reveal in
+Finder` to select the exact exported file. Running another command, opening
+another Response, or clearing Response removes that association without
+deleting the exported file.
+
+For CLI execution, provide the complete output file path:
+
+```sh
+atctl send ATI --export-response "$HOME/Documents/ati-response.txt"
+atctl preset run modem-info \
+  --export-response "$HOME/Documents/modem-info-response.txt"
+atctl sequence run sms-receive-check \
+  --export-response "$HOME/Documents/sms-receive-check-response.txt"
+```
+
+The CLI validates the destination before USB access, refuses an existing file,
+and continues to print the normal Response to stdout. With `--json`, the export
+file contains JSON; otherwise it contains UTF-8 text. Export is masked by
+default. `--no-mask` makes both foreground output and the explicitly requested
+Response export unmasked; generated history and session logs remain masked.
+
+Each export creates a new file. `atctl` does not rotate or delete exported
+files. Previously created files under `$XDG_STATE_HOME/atctl/responses/` remain
+where they are and are not listed by `atctl logs list` or the TUI Logs pane.
+
+Raw diagnostic exports are separate files at the path explicitly selected by
+the operator. They are not returned by `atctl logs list` or shown in the TUI
+Logs pane and must be retained and removed separately.
+
 ## Sensitive Output Masking
 
-By default, `atctl` must mask IMSI, ICCID, IMEI, MSISDN, APN credentials, and
-similar identifiers.
+By default, `atctl` masks IMSI, ICCID, IMEI, MSISDN, APN credentials, and similar
+identifiers.
 
 Raw output requires explicit action:
 
@@ -519,7 +614,9 @@ atctl send AT+CIMI --no-mask
 The TUI keeps sensitive output masked by default. `atctl tui --no-mask` starts
 the foreground TUI session with output masking off, and the TUI Controls pane
 can disable output masking after exact typed `unmask` acknowledgement. Response
-copy follows the visible Response display. Saved logs remain masked.
+copy and export follow the visible Response display; unmasked copy requires
+`copy`, and unmasked export requires `export` after destination selection.
+Saved logs remain masked.
 
 Raw diagnostic export is for final evidence collection when masked output is
 not enough. It requires an explicit destination and acknowledgement, and it

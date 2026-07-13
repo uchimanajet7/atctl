@@ -45,7 +45,7 @@ brew install git
 # Optional task runner, only useful if the repository later adds a justfile.
 brew install just
 
-# Optional TOML formatter/checker for config examples and presets.
+# Optional TOML formatter/checker for preset and Sequence definitions.
 brew install taplo
 ```
 
@@ -64,7 +64,8 @@ cargo build --locked
 
 ## Test Without Hardware
 
-The implementation must provide unit tests that do not require a physical modem.
+Run the hardware-independent unit and documentation tests without a physical
+modem:
 
 ```sh
 cargo test --all-features --locked
@@ -79,226 +80,95 @@ Tests should cover at least:
 - CLI parsing
 - Mock transport behavior
 
-Product tests must verify product behavior, runtime contracts, and user-facing
-outputs. Do not add coding-agent process checks, fixed-phrase policy checks, or
-conversation-discipline checks to the product crate or the normal `cargo test`
-suite. If a prose or policy check is needed, keep it in a separately approved
-process tool outside the product runtime source and product test suite.
+The normative test requirements are `REQ-TEST-001` through `REQ-TEST-009` in
+[`SPEC.md`](SPEC.md). Run the change-specific checks described below in addition
+to the normal Rust verification gate when the affected area requires them.
 
-## Product Surface Gate
+## Before Product-Facing Changes
 
-Before proposing, documenting, or implementing AT execution behavior, identify
-the user-facing use case and check every relevant production surface:
+[`SPEC.md`](SPEC.md) is the normative source for product behavior and
+verification requirements. Before changing user-facing behavior or wording:
 
-- `atctl tui`
-- `atctl send`
-- `atctl preset run`
-- `atctl bridge --symlink <PATH>`
+1. Identify the user-facing use case and the affected production surfaces:
+   `atctl tui`, `atctl send`, `atctl preset run`, `atctl sequence run`, and the
+   PTY bridge where applicable.
+2. Inspect the current implementation before editing. For TUI changes, check the
+   affected pane titles, rows, help, footer, and representative rendered states.
+   For CLI changes, check the current command names, options, help, and output.
+   Check the corresponding user documentation as well.
+3. Record the exact SPEC requirements that own the behavior. Do not restate a
+   different product contract in this guide.
+4. Select verification that covers every affected surface and adjacent state.
+   If the specification does not define a consistent result, resolve that
+   specification gap before implementing the change.
 
-The TUI is the main interactive product surface. The CLI commands and PTY bridge
-are also production features. Do not describe them as validation-only,
-test-only, auxiliary, fallback, or second-class entry points unless the current
-specification or a direct user instruction says so.
+Use these requirement groups when selecting the implementation and verification
+scope:
 
-For each relevant surface, record whether the behavior is already implemented,
-specified but unimplemented, intentionally not applicable, or temporary staging.
-Temporary staging is not product completeness. A feature that affects AT
-execution, diagnostics, presets, raw diagnostic export, SMS, data-send, or
-multi-step command handling must not be called complete while an applicable
-production surface is silently omitted.
-
-Implementation artifacts, internal data structures, file formats, execution
-engines, and project terminology are not user responsibilities by default.
-Before a proposal, document, or implementation plan says that the user must
-author, create, maintain, supply, or operate something, identify whether that
-responsibility is product-provided behavior, a repository-managed example,
-user-authored extension, operator action, or implementation detail. Do not turn
-an internal mechanism into a user prerequisite unless the current specification
-or the user explicitly makes it one.
-
-Built-in workflow definitions are product-provided execution definitions, not a
-prerequisite that users must author before using standard SMS checks.
-User-authored workflow definitions are an extension point for additional,
-special, project-local, or verification workflows. Development notes, proposals,
-and implementation plans must preserve that distinction.
-
-When changing preset or Sequence loading, display, or execution, preserve origin
-metadata while using one shared product contract after validation. Standard
-product-provided items, repository-managed examples, and user-authored
-extensions must not become one responsibility class, but they must not fork into
-separate risk, masking, logging, raw export, duplicate-name, or execution
-semantics.
-Repository-managed examples and user-authored extensions must be loaded only
-from explicit per-invocation file or directory flags. Do not add default
-directory auto-loading for add-on Presets or Sequences; default startup must
-show only product-provided definitions.
-
-Use an internal definition/draft normalization boundary for product-provided and
-TOML-loaded execution definitions when it improves readability or prevents
-drift. Do not force product-provided built-ins through the runtime TOML file
-loader merely for symmetry, and do not make users author definition files before
-using standard product workflows.
-
-Use the product-facing term `Sequence`. Presets are
-one-shot AT command definitions. Sequences are multi-step AT actions that may
-include prompt waits, payload writes, URC waits, per-step timeouts, and a
-Response transcript. Product-provided standard SMS Sequences must not require a
-user-authored TOML file before ordinary use. Repository-managed Quectel
-data-send examples are loaded explicitly and must not be treated as default
-vendor-neutral product behavior.
-
-## Current Surface Evidence Gate
-
-Before proposing or changing user-facing naming, labels, terminology, grouping,
-or wording, check the current user-facing surfaces that the answer refers to.
-For implementation notes and pull-request planning, treat "answer" as the
-proposal, document, or implementation plan being written. Check:
-
-- TUI pane titles, status text, help text, and footer text from current source
-  or a current run when needed.
-- CLI command names, subcommands, options, and help output from current source
-  or current command output.
-- Relevant specification and user-facing documentation.
-
-Record current implemented or specified wording separately from proposed,
-future, translated, or internal wording. Do not describe a term as current TUI,
-CLI, or documentation wording unless the checked surface actually uses it. When
-the user asks for evidence, or when external convention matters, cite
-current-source references before recommending a concrete term.
-
-## Whole-Surface UI Grammar Gate
-
-TUI changes must not be designed as isolated conditional tweaks. Before changing
-pane structure, list grouping, group headers, status rows, controls rows, labels,
-or wording, define the whole-surface UI grammar for the affected pane or
-workflow. The grammar must state each visible hierarchy level, what concept it
-represents, when it is shown or hidden, and the allowed user-facing labels.
-
-For the executable-item surface, check representative adjacent states together:
-built-in-only commands, mixed built-in/file presets, mixed command/Sequence
-results, and loaded repository-managed examples when relevant. Do not satisfy
-separate local requirements by producing inconsistent visual hierarchy across
-those states. A group header position or style must not switch between unrelated
-meanings such as item kind and source set unless a stable parent hierarchy makes
-that distinction clear.
-
-If the current specification contains local display rules but lacks a combined
-grammar for the affected surface, stop and report the specification gap before
-implementation. Verification for TUI grouping or wording changes must include
-cross-state render-buffer or snapshot coverage that compares the affected
-adjacent states, not only a single local case.
-
-## TUI Status Content Gate
-
-Compact Status is current state and execution context only. Before changing
-Status rows or wording, classify each proposed line as state/context,
-operation output, action availability, action result, help, confirmation
-explanation, or implementation detail.
-
-Allowed compact Status content is limited to current state, active or selected
-command/Sequence identity, relevant command text, current Sequence step, risk,
-timeout/progress, meaningful output masking state, selected device context, raw
-export state, viewed-log state, and concise completion or failure result.
-
-Normal operation explanations, action semantics, confirmation rationale, help
-text, keyboard hints, copy/save behavior descriptions, Sequence summaries,
-Evidence/analysis notes, response bodies, transcripts, and implementation
-details must not be added to compact Status. Put action availability in Controls
-rows or the relevant pane action menu, action results in nearby action-surface
-feedback, longer explanations in confirmation dialogs/help/docs, and modem or
-analysis output in Response or an approved detail surface.
-
-Do not render arbitrary execution-error strings or implementation detail fields
-as compact Status rows such as `Detail:`. Completed and failed states may show a
-short `Result:` row, but full failure reasons and troubleshooting detail belong
-in Response or another approved detail surface.
-
-If proposed Status text explains how another control works rather than what
-state the product is currently in, stop and move it out of Status before
-editing. Verification for Status wording changes must include render-buffer
-coverage for the affected state and negative assertions for non-state
-explanatory text such as `Copy:`, `Keys:`, `Summary:`, `Evidence:`, and
-free-form `Detail:` error text.
-
-## Sequence Output Origin Gate
-
-Before changing Sequence transcript or JSON output, classify each output line or
-field by origin: operator-sent command/payload, modem response, atctl-derived
-decoding or analysis, Sequence success note, or execution result.
-
-Text transcripts must keep those origins visually separate with stable section
-labels:
-
-- `Command:` or `Payload:` for operator-sent material.
-- `Modem response:` for modem-returned lines.
-- `Decoded SMS:` for decoded SMS body values.
-- `Analysis:` for atctl-derived interpretation, including material generated
-  from a Sequence definition `evidence` field.
-- `Notes:` for Sequence success notes.
-- `Result:` for final execution status and duration.
-
-Section blocks in normal text transcripts must be separated by a single blank
-line. Do not add decorative divider lines, and do not insert extra spacing into
-the modem-returned content inside `Modem response:`.
-
-When a command or Sequence has failed before normal response output exists, the
-Response body must start with `Result: failed`, then a blank line, then the
-specific failure text. This keeps the failed before normal response state
-visible without requiring compact Status or color; the product must not rely on
-compact Status or color alone for that failure signal.
-
-Do not render the literal `Evidence:` prefix in normal Sequence text
-transcripts, TUI Response, saved Response, history, or session logs. CLI JSON
-Sequence output MUST expose derived interpretation as `analysis`, not
-`evidence`.
-Verification for Sequence output changes must include transcript and JSON
-negative assertions for `Evidence:` / `evidence` and positive assertions for the
-approved origin labels.
+- Shared execution and loaded-definition behavior: `REQ-ARCH-003` and
+  `REQ-ARCH-006` through `REQ-ARCH-008`.
+- File preset loading, source display, risk, and examples:
+  `REQ-CLI-PRESET-001` through `REQ-CLI-PRESET-011`,
+  `REQ-CLI-PRESET-RUN-001` through `REQ-CLI-PRESET-RUN-007`, and
+  `REQ-PRESET-SET-001` through `REQ-PRESET-SET-005`.
+- TUI structure, grouping, and adjacent-state coverage:
+  `REQ-TUI-GRAMMAR-001` through `REQ-TUI-GRAMMAR-005` and
+  `REQ-TEST-009`.
+- Compact Status and failed-before-response behavior: `REQ-TUI-013A`,
+  `REQ-TUI-014`, and the related `REQ-TUI-014*` requirements.
+- Sequence transcript and JSON output origins: `REQ-SEQ-ENGINE-004A`,
+  `REQ-SEQ-ENGINE-004B`, and `REQ-SEQ-ENGINE-007A`.
+- Sequence input, candidate assistance, and modal behavior: the
+  `REQ-TUI-SEQ-*` and `REQ-SEQ-FILE-*` requirement groups.
 
 ## Development Change Boundary
 
-Before changing product-facing behavior, identify the user-facing use case, the
-affected production surfaces, the product specification requirements, and the
-verification owner. Product behavior belongs in `docs/SPEC.md` and product
-tests. Coding-agent operating rules belong in `AGENTS.md`, incident records,
-memory, or a separately approved process check, not in product source or normal
-product tests.
+Keep the implementation, specification, and verification responsibilities
+separate:
+
+- `SPEC.md` owns normative product and technical requirements.
+- Product tests verify the corresponding runtime contracts and user-visible
+  output.
+- This guide provides the commands and change-specific checks used by
+  maintainers.
+
+When a change affects several production surfaces, implement and verify the
+shared behavior at the common layer required by the specification. Do not mark
+the change complete after checking only one applicable surface.
 
 ## File Preset Development
 
-Repository-managed file preset examples are part of the implementation surface,
-not documentation-only samples. When multi-file preset loading is implemented,
-the Quectel and SORACOM example TOML files must be checked through the same
-loader path used for file presets, for example with
-`cargo run -- preset list --preset-dir examples/presets` during verification.
-The CLI list verification must include the `source-path` column, and CLI run
-verification must cover external file preset notice output before USB access
-even when `--yes --risk-ack <risk>` is supplied.
+Repository-managed file preset examples are part of the maintained
+implementation and verification surface. Load the Quectel and SORACOM examples
+through the normal file preset loader:
 
-The example preset files must remain human-editable TOML and must declare risk
-for every preset. Tests must ensure that declared risk does not downgrade the
-command classifier's effective risk.
+```sh
+cargo run -- preset list --preset-dir examples/presets
+```
 
-Built-in preset coverage should be checked against the SORACOM advanced
-data-send/receive troubleshooting AT checkpoints when standard workflow
-presets change. The current expected core coverage includes `ATI`, `AT+CIMI`,
-`AT+WS46?`, `AT+WS46=?`, `AT+COPS?`, `AT+COPS=?`, `AT+COPS=3,2`,
-`AT+COPS=0`, `AT+CREG?`, `AT+CGREG?`, `AT+CEREG?`, `AT+CREG=2`,
-`AT+CGREG=2`, `AT+CEREG=2`, `AT+CEREG=3`, `AT+CEREG=5`, `AT+CSQ`,
-`AT+CESQ`, `AT+CESQ=?`, `AT+CGDCONT?`, `AT+CGAUTH?`, `AT+CGAUTH=?`,
-`AT+CGATT?`, `AT+CGACT?`, `AT+CGPADDR`, `AT+CGPADDR=?`, `AT+CGCONTRDP`,
-`AT+CEER`, `AT+CMEE?`, `AT+CMEE=2`, `AT+CPAS`, and standard `AT+CFUN` modem
-functionality presets. Vendor-specific modem control such as `AT+QPOWD` and
-vendor-specific diagnostics such as `AT+QINISTAT`, `AT+QPINC?`, `AT+QSPN`,
-`AT+QLTS`, `AT+QMBNCFG="List"`, and Quectel `AT+QCFG` network scan mode
-presets must remain in repository-managed file preset examples, not built-in
-presets.
+When changing file preset loading, listing, execution, or risk handling, verify:
+
+- Both repository-managed TOML files load through the same path used for other
+  file presets.
+- CLI list output includes the `source-path` column.
+- CLI run output shows the external file preset notice before USB access,
+  including the `--yes --risk-ack <risk>` path.
+- Duplicate names fail with an actionable error.
+- Every example preset declares risk, and declared risk cannot downgrade the
+  command classifier's effective risk.
+- The TOML remains human-editable.
+
+When changing standard or vendor-specific preset coverage, compare the result
+with SPEC sections 17.3 through 17.5. Those sections own the standard workflow
+command inventory, the vendor-neutral boundary, and the Quectel and SORACOM
+example requirements.
 
 ## Sequence Development
 
-Sequence implementation must be treated as application feature work before
-release, not as packaging work. The implementation plan must cover these
-surfaces together:
+Before changing Sequence behavior, review `REQ-SEQ-ENGINE-*`, `REQ-CLI-SEQ-*`,
+`REQ-TUI-SEQ-*`, `REQ-SEQ-FILE-*`, and `REQ-TEST-007` through `REQ-TEST-009` in
+[`SPEC.md`](SPEC.md). Cover these production surfaces together when they are
+affected:
 
 - TUI `Commands / Sequences` selection, `Run Sequence` modal, compact Status
   step/result context without Sequence summary text, Controls behavior, and
@@ -306,8 +176,8 @@ surfaces together:
 - CLI `atctl sequence list` and `atctl sequence run <SEQUENCE>`.
 - `atctl send` and `atctl preset run` staying one-shot surfaces with clear
   errors if a Sequence name is supplied there.
-- PTY bridge prompt-capable manual operation for prompt-required commands, or a
-  documented and approved product difference before completeness is claimed.
+- PTY bridge prompt-capable manual operation for prompt-required commands as
+  defined by the specification.
 
 Tests should cover at least:
 
@@ -405,12 +275,13 @@ Tests should cover at least:
   between origin sections and no decorative divider lines in normal output.
 - Raw diagnostic export events for multi-step Sequence execution.
 - TUI Sequence list rendering, modal input, running state, transcript display,
-  copy/save/output masking behavior, and no additional permanent pane.
+  the six exact risk labels without suffix words, separated output-masking
+  state, masked copy/export, unmasked `copy` and `export` confirmation, exact
+  destination identity, and no additional permanent pane.
 
-Repository-managed example Sequence files are part of the implementation
-surface, not documentation-only samples. When Sequence loading is implemented,
-the Quectel and SORACOM example TOML files must be checked through the same
-loader path used for explicit Sequence add-on definitions, for example:
+Repository-managed example Sequence files are maintained implementation and
+verification inputs. Load the Quectel and SORACOM examples through the same
+loader path used for other explicit Sequence definitions:
 
 ```sh
 cargo run -- sequence list --sequence-dir examples/sequences
@@ -474,6 +345,17 @@ screen /tmp/atctl 115200
 For `screen`, `115200` is a terminal-tool compatibility value, not a physical
 USB modem UART speed. To quit `screen`, press `Ctrl-A`, then `K`, then `y`.
 
+To verify normal masked bridge transcript recording, let GNU Screen own the
+continuous-session log:
+
+```sh
+screen -L -Logfile "$HOME/Documents/atctl-bridge-session.log" \
+  /tmp/atctl 115200
+```
+
+`Ctrl-A`, then `H` toggles Screen logging during the session. This is distinct
+from the atctl raw diagnostic export path and acknowledgement.
+
 Use `--replace-symlink` only for a stale symlink. Existing regular files and
 directories must not be overwritten.
 
@@ -487,9 +369,6 @@ cargo check --all-targets --all-features --locked
 cargo test --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
 ```
-
-These commands are product code gates. They must not contain or depend on
-coding-agent process checks.
 
 ## Source Repository Release Workflow
 

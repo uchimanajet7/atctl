@@ -7,11 +7,22 @@ cellular modems from macOS on Apple Silicon.
 
 ![atctl TUI showing device details, command categories, command list, response output, and saved logs](https://github.com/uchimanajet7/atctl/raw/main/docs/assets/atctl-tui-overview.png)
 
-Validated environments:
+Validated environment:
 
 - Mac: Apple Silicon Mac
 - USB modem: SORACOM Onyx LTE USB Dongle (Quectel EG25-G)
 - USB ID: `0x2c7c:0x0125`
+- Observed firmware: `EG25GGBR07A08M2G` (`ATI`, 2026-06-17)
+
+Real-hardware workflows confirmed in this environment:
+
+- USB device discovery and descriptor inspection with `devices` and `inspect`,
+  plus direct `AT`/`ATI` execution
+- Preset execution with masked history and session logging
+- TUI candidate refresh and related Sequence input behavior
+- PTY bridge operation through `screen`
+- SMS send, receive/list, read, and reply, plus Quectel/SORACOM ping and TCP
+  Sequence workflows
 
 ## Install
 
@@ -21,13 +32,13 @@ Install `atctl` with Homebrew:
 brew install uchimanajet7/atctl/atctl
 ```
 
-The Homebrew formula installs the runtime `libusb` dependency. See
-[docs/INSTALL.md](https://github.com/uchimanajet7/atctl/blob/main/docs/INSTALL.md)
-for installation details and runtime prerequisites.
+The Homebrew formula installs the `libusb` runtime dependency. See the
+[installation guide](https://github.com/uchimanajet7/atctl/blob/main/docs/INSTALL.md)
+for prerequisites and installation checks.
 
-## First commands
+## First Commands
 
-Start by confirming that the modem is visible and responds to AT commands:
+Confirm that the modem is visible and responds to AT commands:
 
 ```sh
 atctl devices
@@ -38,147 +49,126 @@ atctl tui
 ```
 
 Use `atctl devices` to find the current USB target. If the expected modem is not
-shown, run `atctl devices --all-usb` and see
-[docs/TROUBLESHOOTING.md](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md).
+shown, run `atctl devices --all-usb` and follow the
+[troubleshooting guide](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md).
 
-## Main workflows
+## Main Workflows
 
 - Work interactively with `atctl tui`.
-- Send a direct AT command with `atctl send <COMMAND>`.
-- Run repeatable one-command checks with `atctl preset list` and
+- Send one AT command with `atctl send <COMMAND>`.
+- Run repeatable checks with `atctl preset list` and
   `atctl preset run <NAME>`.
-- Run multi-step SMS checks with `atctl sequence list` and
+- Run multi-step SMS and data-send checks with `atctl sequence list` and
   `atctl sequence run <SEQUENCE>`.
-- Load repository-managed data-send examples explicitly with
-  `--sequence-dir examples/sequences`.
-- Use `atctl bridge --symlink <PATH>` when a terminal-style PTY bridge is needed.
+- Use `atctl bridge --symlink <PATH>` for a terminal-style PTY bridge.
 - Collect raw diagnostic evidence only with an explicit output path and
   `raw-log` acknowledgement.
 
+## Logs
+
+`atctl send`, `atctl preset run`, `atctl sequence run`, and TUI executions
+write masked command history and session logs by default:
+
+```text
+~/.local/state/atctl/history.jsonl
+~/.local/state/atctl/logs/<timestamp>.session.log
+```
+
+These paths follow the
+[XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/).
+Set `XDG_STATE_HOME` to a non-empty absolute path to use a different state
+directory for one invocation. `atctl` appends its own `atctl` directory:
+
+```sh
+env XDG_STATE_HOME="$HOME/Documents" atctl send AT
+env XDG_STATE_HOME="$HOME/Documents" atctl logs list
+```
+
+These commands use `$HOME/Documents/atctl/`. To skip new masked history and
+session logs for one command or TUI session, use `--no-log`:
+
+```sh
+atctl send AT --no-log
+atctl preset run modem-info --no-log
+atctl sequence run sms-receive-check --no-log
+atctl tui --no-log
+```
+
+`--no-log` does not hide existing logs and does not disable a raw diagnostic
+export explicitly requested with `--raw-log-file` or the TUI raw-export action.
+`atctl` retains normal masked logs in the XDG state directory until the operator
+removes them; it does not apply a retention period or automatic rotation. TUI
+log actions can reveal the selected log directly. To keep a separate copy of a
+current Response, choose `Export response...` in the TUI and select a destination
+folder, or pass `--export-response <PATH>` to `send`, `preset run`, or
+`sequence run`. Response export follows the selected foreground masking mode,
+uses a new file, and never replaces normal stdout or the generated masked logs.
+When the TUI Response is unmasked, copy requires `copy` acknowledgement and
+export requires `export` acknowledgement after destination selection.
+See
+[Review and Manage Logs](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md#review-and-manage-logs)
+for CLI and TUI review, Response export, Finder access, and deletion effects.
+
 ## Safety
 
-AT commands can read sensitive identifiers and change modem state. `atctl` masks
-sensitive output by default, requires confirmation for state-changing actions,
-and creates raw diagnostic exports only when the user chooses an output file and
-acknowledges the raw export risk. See
-[docs/SAFETY.md](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md).
+Command and Sequence rows use one risk label: `[safe]`, `[sensitive]`,
+`[write]`, `[persistent]`, `[dangerous]`, or `[unknown]`. Output masking state
+and required confirmation are shown separately.
 
-## Documentation
+AT commands can read sensitive identifiers and change modem state. `atctl`
+masks sensitive output by default, requires confirmation for state-changing
+actions, and creates raw diagnostic exports only when the user chooses an
+output file and acknowledges the risk. Read the
+[safety guide](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md)
+before running unfamiliar or state-changing commands.
 
-User docs:
+## Presets and Sequences
 
-- [docs/INSTALL.md](https://github.com/uchimanajet7/atctl/blob/main/docs/INSTALL.md): installation and runtime prerequisites
-- [docs/TROUBLESHOOTING.md](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md): USB and modem troubleshooting
-- [docs/PRESETS.md](https://github.com/uchimanajet7/atctl/blob/main/docs/PRESETS.md): presets, Sequences, TOML formats, and examples
-- [docs/SAFETY.md](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md): AT command safety and data handling
-
-Maintainer docs:
-
-- [docs/DEVELOPMENT.md](https://github.com/uchimanajet7/atctl/blob/main/docs/DEVELOPMENT.md): local development setup and verification
-- [docs/PACKAGING.md](https://github.com/uchimanajet7/atctl/blob/main/docs/PACKAGING.md): Homebrew and release packaging
-
-Specification and status docs:
-
-- [docs/SPEC.md](https://github.com/uchimanajet7/atctl/blob/main/docs/SPEC.md): implementation specification and source of truth
-- [docs/OPEN-QUESTIONS.md](https://github.com/uchimanajet7/atctl/blob/main/docs/OPEN-QUESTIONS.md): decisions that require approval
-- [docs/IMPLEMENTATION-STATUS.md](https://github.com/uchimanajet7/atctl/blob/main/docs/IMPLEMENTATION-STATUS.md): implementation progress and resume state
-
-## Shared presets
-
-Presets are an application-level workflow, not a TUI-only feature. The same
-loaded preset set is used by:
-
-- `atctl preset list`
-- `atctl preset run <NAME>`
-- `atctl tui`
-
-This lets a user define a modem, carrier, or project-specific AT command once,
-inspect it from the CLI, run it directly from scripts, and use it interactively
-from the TUI with the same masking, risk classification, confirmation, and
-timeout behavior. Product presets and file presets keep distinct origins, but
-they use one loaded preset contract after validation. CLI listings include the
-preset set label and a `source-path` column. Product presets use `-` for the
-source path; file presets show the file path that supplied the row. `preset
-run` also prints the source label, file path, and review notice before USB
-access when a file preset is executed, including non-interactive
-`--yes --risk-ack <risk>` runs. The TUI keeps the built-in-only view clean and
-distinguishes file presets with non-selectable source group headers and
-`Source: <title>` details only when that distinction is relevant. It uses the
-file-level TOML `title` directly, without an `Add-on:` prefix. Categories
-remain workflow categories; preset set title, vendor, and file-origin labels
-are not mixed into the category list.
-
-File presets are not discovered automatically from `~/.config/atctl`. Load
-repository-managed examples or project-local presets explicitly for the current
-invocation:
+A preset runs one AT command. A Sequence runs a multi-step workflow such as SMS
+send, read, or reply. Product-provided presets and standard Sequences are ready
+to use from the CLI and TUI.
 
 ```sh
-atctl preset list --preset-dir ./presets
-atctl preset run my-command --preset-file ./presets/custom.toml
-atctl tui --preset-dir ./presets
+atctl preset list
+atctl preset run modem-info
+atctl sequence list
+atctl sequence run sms-receive-check
 ```
 
-## Sequences
-
-Sequences are the multi-step counterpart to one-shot presets. A preset stores
-one AT command line. A Sequence can include prompt waits, payload writes, URC
-waits, per-step timeouts, and a result transcript.
-
-The same loaded Sequence set is used by:
-
-- `atctl sequence list`
-- `atctl sequence run <SEQUENCE>`
-- `atctl tui`
-
-Product-provided standard Sequences, repository-managed example Sequences, and
-user-authored Sequences keep separate origins and review responsibility. They
-share the same Sequence loader validation, duplicate-name rejection, execution
-engine, masking, risk aggregation, transcript, raw diagnostic export, and
-surface display contract after loading.
-
-Sequence add-ons are not discovered automatically from `~/.config/atctl`.
-Explicit per-invocation Sequence locations are available for repository
-examples, review, and project-local extensions:
+Repository-managed examples and project-local definitions are loaded by
+providing their file or directory for the current command or TUI session:
 
 ```sh
-atctl sequence list --sequence-dir ./sequences
-atctl sequence run custom-sequence --sequence-file ./sequences/custom.toml
-atctl tui --sequence-dir ./sequences
+atctl preset list --preset-dir examples/presets
+atctl sequence list --sequence-dir examples/sequences
+atctl tui --preset-dir examples/presets --sequence-dir examples/sequences
 ```
 
-CLI `sequence list` includes a `source-path` column. Product Sequences use `-`;
-file Sequences show the file path that supplied the row. `sequence run` prints
-the source label, file path, and review notice before USB access when a file
-Sequence is executed, including non-interactive `--yes --risk-ack <risk>` runs.
+External definitions retain their source identity and use the same risk,
+confirmation, masking, logging, and raw-export protections as product-provided
+definitions. Review their source and destination values before execution. See
+the [presets and Sequences reference](https://github.com/uchimanajet7/atctl/blob/main/docs/PRESETS.md)
+for inventories, TOML formats, loading options, Sequence parameters, and
+evidence interpretation.
 
-Standard SMS send/read/reply checks are product-provided standard Sequences.
-User-authored Sequence TOML is not a required first step for those ordinary
-product workflows. SMS send reviews destination and message body before USB
-access. SMS read reviews the SMS storage index and decodes supported bodies
-while keeping normal output masked. SMS reply reviews SMS storage index and reply body,
-derives the reply destination from the original message sender returned by
-`AT+CMGR`, and then uses the standard `AT+CMGS` submit path. Response output,
-logs, saved output, and JSON stay masked by default. Quectel ping/TCP checks
-and SORACOM ping/Unified Endpoint TCP checks are vendor/provider-specific and
-are provided as repository-managed example Sequence definitions under
-`examples/sequences/`; load them explicitly with
-`--sequence-dir examples/sequences`.
-Those examples check Quectel PDP context state with `AT+QIACT?` during the
-confirmed Sequence run and reuse an already active context instead of blindly
-sending `AT+QIACT=<contextID>` again. TCP examples also show any failure cleanup such as
-`AT+QICLOSE=<connectID>` in the Response transcript. Fixed-length TCP payload
-steps send only the declared payload bytes, and the send-acknowledgement step
-requires `AT+QISEND=<connectID>,0` counters to show the payload is fully
-acknowledged before the Sequence can finish with `Result: OK`. External
-application receipt still requires non-empty response data or destination-side
-logs. The repository-managed ping examples use `AT+QPING`; received replies
-are IP or SORACOM network reachability evidence, not TCP payload delivery or
-destination application proof. Those ping steps wait for `+QPING:` result lines;
-the command-accepted `OK` alone is not treated as reachability success.
+## User Documentation
 
-See [docs/PRESETS.md](https://github.com/uchimanajet7/atctl/blob/main/docs/PRESETS.md)
-for the product preset reference, file preset TOML format, loading rules, and
-repository-managed example preset files.
+- [Installation](https://github.com/uchimanajet7/atctl/blob/main/docs/INSTALL.md)
+- [Presets and Sequences reference](https://github.com/uchimanajet7/atctl/blob/main/docs/PRESETS.md)
+- [Safety guide](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md)
+- [Troubleshooting](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md)
+
+## Contributing
+
+Code and documentation contributions are welcome. Read the
+[contribution guide](CONTRIBUTING.md) before opening a pull request.
+
+## Maintainer Information
+
+- [Development guide](https://github.com/uchimanajet7/atctl/blob/main/docs/DEVELOPMENT.md)
+- [Packaging and release guide](https://github.com/uchimanajet7/atctl/blob/main/docs/PACKAGING.md)
+- [Product and technical specification](https://github.com/uchimanajet7/atctl/blob/main/docs/SPEC.md)
+- [Accepted product and architecture decisions](https://github.com/uchimanajet7/atctl/blob/main/docs/DECISIONS.md)
 
 ## License
 

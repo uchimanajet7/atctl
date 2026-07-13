@@ -62,6 +62,19 @@ fn help_modal_blocks_underlying_actions() {
 }
 
 #[test]
+fn help_shows_complete_risk_and_confirmation_grammar() {
+    let mut state = test_state();
+    handle_key_code(&mut state, KeyCode::Char('?'));
+
+    let buffer = rendered_buffer(&mut state, 100, 32);
+
+    assert!(buffer.contains("Risk labels: [safe] [sensitive] [write]"));
+    assert!(buffer.contains("[persistent] [dangerous] [unknown]"));
+    assert!(buffer.contains("Confirm: write / persistent / dangerous / unknown"));
+    assert!(buffer.contains("Unmasked Response: copy / export confirmation"));
+}
+
+#[test]
 fn status_does_not_render_keyboard_hint_boilerplate() {
     let mut state = test_state();
 
@@ -183,6 +196,7 @@ fn controls_render_as_actions_not_status_table() {
     assert!(buffer.contains("Output masking on"));
     assert!(!buffer.contains("Rerun last"));
     assert!(!buffer.contains("Save response"));
+    assert!(!buffer.contains("Export response"));
     assert!(!buffer.contains("Copy response"));
     assert!(!buffer.contains("Clear response"));
     assert!(!buffer.contains("Copy log path"));
@@ -217,10 +231,12 @@ fn response_enter_renders_response_action_menu() {
 
     assert!(buffer.contains("Response actions"));
     assert!(buffer.contains("Copy response"));
-    assert!(buffer.contains("Save response"));
-    assert!(buffer.contains("Open response folder"));
-    assert!(buffer.contains("Response folder:"));
-    assert!(!buffer.contains("Saves to:"));
+    assert!(buffer.contains("Export response..."));
+    assert!(buffer.contains("Export format: UTF-8 text"));
+    assert!(buffer.contains("Export content: masked"));
+    assert!(buffer.contains("File name:"));
+    assert!(!buffer.contains("Open saved responses folder"));
+    assert!(!buffer.contains("Reveal in Finder"));
     assert!(buffer.contains("Clear response"));
     assert!(!buffer.contains("Copy saved response path"));
     assert!(!buffer.contains("Open saved response dir"));
@@ -244,8 +260,10 @@ fn logs_enter_renders_log_action_menu() {
 
     assert!(buffer.contains("Log actions"));
     assert!(buffer.contains("Open log in Response"));
-    assert!(buffer.contains("Open logs folder"));
-    assert!(buffer.contains("Logs folder:"));
+    assert!(buffer.contains("Reveal in Finder"));
+    assert!(buffer.contains("Log: session:"));
+    assert!(buffer.contains("2026-07-03T00-00-00Z.session.log"));
+    assert!(!buffer.contains("Open logs folder"));
     assert!(!buffer.contains("    Folder:"));
     assert!(!buffer.contains("Copy log path"));
     assert!(!buffer.contains("Copy log dir"));
@@ -254,12 +272,17 @@ fn logs_enter_renders_log_action_menu() {
 
 #[test]
 fn response_enter_while_viewing_log_renders_log_view_actions() {
+    let paths = test_logging_paths("viewed-log-actions");
+    let session_log = paths.session_dir.join("test.session.log");
+    fs::write(&session_log, "masked log body").unwrap();
     let mut state = test_state();
+    state.log_paths = paths;
     state.focus = Pane::Response;
     state.response = ResponseState::masked("masked log body");
     state.active_command = None;
     state.viewed_log = Some(ViewedLog {
         kind: LogListingKind::Session,
+        path: session_log.clone(),
         label: "test.session.log".to_owned(),
     });
 
@@ -268,10 +291,13 @@ fn response_enter_while_viewing_log_renders_log_view_actions() {
 
     assert!(buffer.contains("Log view actions"));
     assert!(buffer.contains("Copy displayed log"));
-    assert!(buffer.contains("Open logs folder"));
+    assert!(buffer.contains("Reveal in Finder"));
     assert!(buffer.contains("Close log view"));
-    assert!(buffer.contains("Logs folder:"));
+    assert!(buffer.contains("Log: test.session.log"));
+    assert!(buffer.contains("test.session.log"));
+    assert!(!buffer.contains("Open logs folder"));
     assert!(!buffer.contains("Save response"));
+    assert!(!buffer.contains("Export response"));
     assert!(!buffer.contains("Clear response"));
 }
 
@@ -554,6 +580,7 @@ fn file_preset_commands_preserve_entry_order_within_preset_set() {
 #[test]
 fn raw_capture_requires_path_ack_and_writes_future_command() {
     let mut state = test_state();
+    state.normal_logging_enabled = false;
     let mut executor = TestExecutor::default();
     let path = unique_temp_dir("raw-capture").join("case.rawlog");
 
@@ -578,6 +605,7 @@ fn raw_capture_requires_path_ack_and_writes_future_command() {
     assert!(raw.contains("\"command_name\":\"modem-response\""));
     assert!(raw.contains("\"tx_base64\":\"QVQN\""));
     assert!(state.raw_capture.is_some());
+    assert_eq!(executor.normal_logging, vec![false]);
 
     run_control(&mut state, ControlAction::RawExport);
     assert!(state.raw_capture.is_none());
@@ -654,6 +682,7 @@ fn log_view_shows_response_local_line_numbers_and_range() {
     state.focus = Pane::Response;
     state.viewed_log = Some(ViewedLog {
         kind: LogListingKind::Session,
+        path: PathBuf::from("/tmp/test.session.log"),
         label: "test.session.log".to_owned(),
     });
     state.response = ResponseState::masked(
@@ -1718,34 +1747,94 @@ fn categories_enter_moves_to_commands_without_running_selected_command() {
 }
 
 #[test]
-fn save_current_response_writes_masked_response_file() {
-    let state = unmasked_sensitive_state();
-    let dir = unique_temp_dir("saved-response");
+fn response_export_request_follows_visible_masking_and_names_the_response() {
+    let mut state = unmasked_sensitive_state();
+    state.active_command = Some(CommandStatus::new(
+        CommandRunState::Completed,
+        &ExecutableItem::Preset(Preset::built_in(
+            "imsi",
+            "AT+CIMI",
+            RiskLevel::Sensitive,
+            ["sim"],
+        )),
+        DEFAULT_COMMAND_TIMEOUT_SECS,
+        StatusSummary::Completed {
+            status: "OK".to_owned(),
+            duration_ms: 4,
+        },
+    ));
 
-    let path = write_current_response(&dir, &state).unwrap();
-    let contents = fs::read_to_string(&path).unwrap();
+    state.output_masking_enabled = true;
+    let masked = response_export_request(&state).expect("masked export request");
+    assert!(masked.masked);
+    assert!(masked.contents.contains("89811000*******"));
+    assert!(!masked.contents.contains("898110001234567"));
+    assert!(masked.file_name.starts_with("command-imsi-2026-"));
+    assert!(masked.file_name.ends_with(".response.txt"));
 
-    assert!(
-        path.parent()
-            .is_some_and(|parent| parent.ends_with("responses"))
-    );
-    assert!(path.display().to_string().ends_with(".response.txt"));
-    assert!(contents.contains("AT+CIMI"));
-    assert!(contents.contains("89811000*******"));
-    assert!(!contents.contains("898110001234567"));
+    state.output_masking_enabled = false;
+    let unmasked = response_export_request(&state).expect("unmasked export request");
+    assert!(!unmasked.masked);
+    assert!(unmasked.contents.contains("898110001234567"));
+
+    open_response_action_menu(&mut state);
+    let context = action_menu_context_lines(&state, ActionMenuKind::Response);
+    assert!(context.contains(&"Export content: unmasked".to_owned()));
+    assert!(!context.iter().any(|line| line.starts_with("Warning:")));
 }
 
 #[test]
-fn response_actions_without_body_only_offer_response_folder() {
+fn response_export_masks_a_sensitive_command_when_response_has_no_echo() {
     let mut state = test_state();
+    let item = ExecutableItem::Preset(Preset::built_in(
+        "pdp-auth",
+        "AT+CGAUTH=1,1,\"user\",\"password\"",
+        RiskLevel::Write,
+        ["pdp"],
+    ));
+    state.active_command = Some(CommandStatus::new(
+        CommandRunState::Completed,
+        &item,
+        DEFAULT_COMMAND_TIMEOUT_SECS,
+        StatusSummary::Completed {
+            status: "OK".to_owned(),
+            duration_ms: 2,
+        },
+    ));
+    state.response = ResponseState::masked("OK");
+    state.output_masking_enabled = true;
+
+    let request = response_export_request(&state).unwrap();
+
+    assert!(!request.contents.contains("user"));
+    assert!(!request.contents.contains("password"));
+    assert!(request.contents.contains("AT+CGAUTH=1,1"));
+
+    state.output_masking_enabled = false;
+    let unmasked = response_export_request(&state).unwrap();
+    assert!(!unmasked.masked);
+    assert!(unmasked.contents.contains("user"));
+    assert!(unmasked.contents.contains("password"));
+
+    let rows = response_action_rows(&state);
+    assert!(rows.iter().any(|row| {
+        row.action == ActionMenuAction::CopyResponse && row.label == "Copy unmasked response"
+    }));
+    assert!(rows.iter().any(|row| {
+        row.action == ActionMenuAction::ExportResponse && row.label == "Export unmasked response..."
+    }));
+}
+
+#[test]
+fn response_actions_without_body_offer_no_response_operations() {
+    let mut state = test_state();
+    state.log_paths = test_logging_paths("empty-response-actions");
     state.response.clear();
+    open_response_action_menu(&mut state);
 
     let rows = action_menu_rows(&state, ActionMenuKind::Response);
 
-    assert!(
-        rows.iter()
-            .any(|row| row.action == ActionMenuAction::OpenResponseDirectory)
-    );
+    assert!(rows.is_empty());
     assert!(
         !rows
             .iter()
@@ -1754,7 +1843,7 @@ fn response_actions_without_body_only_offer_response_folder() {
     assert!(
         !rows
             .iter()
-            .any(|row| row.action == ActionMenuAction::SaveResponse)
+            .any(|row| row.action == ActionMenuAction::ExportResponse)
     );
     assert!(
         !rows
@@ -1764,17 +1853,20 @@ fn response_actions_without_body_only_offer_response_folder() {
 }
 
 #[test]
-fn response_actions_show_response_folder_without_path_copy_actions() {
-    let state = test_state();
+fn response_actions_show_export_contract_without_fixed_folder_action() {
+    let mut state = test_state();
+    state.response = ResponseState::masked("AT\nOK");
+    open_response_action_menu(&mut state);
     let rows = action_menu_rows(&state, ActionMenuKind::Response);
 
-    assert!(
-        rows.iter()
-            .any(|row| row.action == ActionMenuAction::OpenResponseDirectory)
-    );
-    let context = action_menu_context_line(&state, ActionMenuKind::Response).expect("context");
-    assert!(context.starts_with("Response folder: "));
-    assert!(context.contains("responses"));
+    assert!(rows.iter().any(|row| {
+        row.action == ActionMenuAction::ExportResponse && row.label == "Export response..."
+    }));
+    let context = action_menu_context_lines(&state, ActionMenuKind::Response);
+    assert!(context.contains(&"Export format: UTF-8 text".to_owned()));
+    assert!(context.contains(&"Export content: masked".to_owned()));
+    assert!(context.iter().any(|line| line.starts_with("File name: ")));
+    assert!(!context.iter().any(|line| line.contains("responses folder")));
     assert!(!rows.iter().any(|row| row.label.contains("path")));
     assert!(!rows.iter().any(|row| row.label.contains("dir")));
 }
@@ -1789,7 +1881,8 @@ fn write_command_opens_confirmation_without_executing() {
     assert!(state.confirmation.is_some());
     assert!(state.pending_execution.is_none());
     assert!(state.response.contains("Command requires confirmation"));
-    assert!(state.response.contains("Risk: [write] CONFIRM"));
+    assert!(state.response.contains("Risk: [write]"));
+    assert!(!state.response.contains("CONFIRM"));
 }
 
 #[test]
@@ -2240,15 +2333,15 @@ fn logs_pane_labels_mixed_history_and_sessions_as_saved_logs() {
 fn log_entries_use_resolved_session_log_directory() {
     let dir = unique_temp_dir("resolved-log-dir");
     let state_dir = dir.join("state");
-    let configured_log_dir = dir.join("configured-logs");
+    let resolved_log_dir = dir.join("resolved-logs");
     let default_log_dir = state_dir.join("logs");
     fs::create_dir_all(&state_dir).unwrap();
-    fs::create_dir_all(&configured_log_dir).unwrap();
+    fs::create_dir_all(&resolved_log_dir).unwrap();
     fs::create_dir_all(&default_log_dir).unwrap();
     fs::write(state_dir.join("history.jsonl"), "{}\n").unwrap();
     fs::write(
-        configured_log_dir.join("2026-07-03T00-00-00Z.session.log"),
-        "configured",
+        resolved_log_dir.join("2026-07-03T00-00-00Z.session.log"),
+        "resolved",
     )
     .unwrap();
     fs::write(
@@ -2259,7 +2352,7 @@ fn log_entries_use_resolved_session_log_directory() {
 
     let entries = log_entries_from_paths(&LoggingPaths {
         state_dir,
-        session_dir: configured_log_dir,
+        session_dir: resolved_log_dir,
     })
     .unwrap();
     let labels = entries
@@ -2332,10 +2425,7 @@ fn opening_log_actions_refreshes_externally_deleted_logs() {
             .iter()
             .any(|row| row.action == ActionMenuAction::OpenLog)
     );
-    assert!(
-        rows.iter()
-            .any(|row| row.action == ActionMenuAction::OpenLogsDirectory)
-    );
+    assert!(rows.is_empty());
     assert!(
         state
             .action_menu
@@ -2375,10 +2465,7 @@ fn opening_log_actions_does_not_retarget_deleted_session_to_history() {
             .iter()
             .any(|row| row.action == ActionMenuAction::OpenLog)
     );
-    assert!(
-        rows.iter()
-            .any(|row| row.action == ActionMenuAction::OpenLogsDirectory)
-    );
+    assert!(rows.is_empty());
     let buffer = rendered_buffer(&mut state, 100, 24);
     assert!(buffer.contains("Selected log no longer exists"));
     assert!(buffer.contains("2026-07-03T02-45-00Z.session.log"));
@@ -2413,15 +2500,13 @@ fn deleted_selected_log_feedback_persists_during_log_action_navigation() {
             .iter()
             .any(|row| row.action == ActionMenuAction::OpenLog)
     );
-    assert!(
-        rows.iter()
-            .any(|row| row.action == ActionMenuAction::OpenLogsDirectory)
-    );
+    assert!(rows.is_empty());
     let buffer = rendered_buffer(&mut state, 100, 24);
     assert!(buffer.contains("Selected log no longer exists"));
     assert!(buffer.contains("2026-07-03T02-50-00Z.session.log"));
-    assert!(buffer.contains("Open logs folder"));
     assert!(!buffer.contains("Open log in Response"));
+    assert!(!buffer.contains("Open logs folder"));
+    assert!(buffer.contains("Esc or q closes."));
 }
 
 #[test]
@@ -2641,6 +2726,7 @@ fn renders_running_command_context_before_transport_executes() {
 #[test]
 fn clear_response_removes_previous_rendered_content() {
     let mut state = test_state();
+    state.log_paths = test_logging_paths("clear-response-actions");
     let command = ExecutableItem::Preset(Preset::built_in(
         "signal-quality",
         "AT+CSQ",
@@ -2702,11 +2788,9 @@ fn clear_response_removes_previous_rendered_content() {
     assert!(status_buffer.contains("AT command: AT+CSQ"));
     assert_eq!(state.status, "Response body cleared.");
 
+    open_response_action_menu(&mut state);
     let rows = action_menu_rows(&state, ActionMenuKind::Response);
-    assert!(
-        rows.iter()
-            .any(|row| row.action == ActionMenuAction::OpenResponseDirectory)
-    );
+    assert!(rows.is_empty());
     assert!(
         !rows
             .iter()
@@ -2715,7 +2799,7 @@ fn clear_response_removes_previous_rendered_content() {
     assert!(
         !rows
             .iter()
-            .any(|row| row.action == ActionMenuAction::SaveResponse)
+            .any(|row| row.action == ActionMenuAction::ExportResponse)
     );
     assert!(
         !rows
@@ -2844,9 +2928,20 @@ fn renders_non_color_state_affordances() {
 }
 
 #[test]
-fn selected_command_keeps_risk_label_and_non_color_cue() {
-    let mut state = test_state();
-    state.selected_command = 2;
+fn command_rows_use_one_exact_risk_label_without_action_suffixes() {
+    let mut state = TuiState::new(
+        vec![
+            Preset::built_in("risk-safe", "AT", RiskLevel::Safe, ["risk"]),
+            Preset::built_in("risk-sensitive", "AT", RiskLevel::Sensitive, ["risk"]),
+            Preset::built_in("risk-write", "AT", RiskLevel::Write, ["risk"]),
+            Preset::built_in("risk-persistent", "AT", RiskLevel::Persistent, ["risk"]),
+            Preset::built_in("risk-dangerous", "AT", RiskLevel::Dangerous, ["risk"]),
+            Preset::built_in("risk-unknown", "AT", RiskLevel::Unknown, ["risk"]),
+        ],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        Vec::new(),
+        TuiTheme::dark(),
+    );
     let backend = TestBackend::new(100, 32);
     let mut terminal = Terminal::new(backend).unwrap();
 
@@ -2855,9 +2950,76 @@ fn selected_command_keeps_risk_label_and_non_color_cue() {
         .unwrap();
     let buffer = format!("{:?}", terminal.backend().buffer());
 
-    assert!(buffer.contains("> imsi"));
+    for label in [
+        "[safe]",
+        "[sensitive]",
+        "[write]",
+        "[persistent]",
+        "[dangerous]",
+        "[unknown]",
+    ] {
+        assert!(buffer.contains(label), "missing {label} in {buffer}");
+    }
+    assert!(buffer.contains("> risk-safe"));
     assert!(buffer.contains("[sensitive]"));
-    assert!(buffer.contains("MASKED"));
+    for removed in ["MASKED", "CONFIRM", "PERSISTS", "DANGER", "REVIEW"] {
+        assert!(
+            !buffer.contains(removed),
+            "unexpected {removed} in {buffer}"
+        );
+    }
+}
+
+#[test]
+fn risk_confirmation_behavior_matches_the_six_label_grammar() {
+    for risk in [RiskLevel::Safe, RiskLevel::Sensitive] {
+        let mut state = TuiState::new(
+            vec![Preset::built_in("direct", "AT", risk, ["risk"])],
+            vec![test_usb_device(1, 3, "Onyx A")],
+            Vec::new(),
+            TuiTheme::dark(),
+        );
+
+        handle_key_code(&mut state, KeyCode::Enter);
+
+        assert!(
+            state.confirmation.is_none(),
+            "unexpected confirmation for {risk}"
+        );
+        assert!(
+            state.pending_execution.is_some(),
+            "missing execution for {risk}"
+        );
+    }
+
+    for risk in [
+        RiskLevel::Write,
+        RiskLevel::Persistent,
+        RiskLevel::Dangerous,
+        RiskLevel::Unknown,
+    ] {
+        let mut state = TuiState::new(
+            vec![Preset::built_in("confirm", "AT", risk, ["risk"])],
+            vec![test_usb_device(1, 3, "Onyx A")],
+            Vec::new(),
+            TuiTheme::dark(),
+        );
+
+        handle_key_code(&mut state, KeyCode::Enter);
+
+        assert!(
+            state.pending_execution.is_none(),
+            "unexpected execution for {risk}"
+        );
+        assert!(
+            state.confirmation.is_some(),
+            "missing confirmation for {risk}"
+        );
+        let buffer = rendered_buffer(&mut state, 100, 32);
+        assert!(buffer.contains(&format!("Risk: [{risk}]")));
+        assert!(buffer.contains("Expected effect:"));
+        assert!(buffer.contains(&format!("Type `{risk}` to send")));
+    }
 }
 
 #[test]
@@ -2961,6 +3123,59 @@ fn response_copy_uses_body_without_duplicate_echo_or_ui_chrome() {
     assert_eq!(text, "AT\nOK");
     assert!(!text.contains("Response"));
     assert!(!text.contains("Status"));
+    assert!(state.response_action_confirmation.is_none());
+}
+
+#[test]
+fn unmasked_response_copy_requires_explicit_confirmation_and_can_be_cancelled() {
+    let mut state = unmasked_sensitive_state();
+
+    let rows = response_action_rows(&state);
+    assert!(rows.iter().any(|row| {
+        row.action == ActionMenuAction::CopyResponse && row.label == "Copy unmasked response"
+    }));
+    let action = run_action_menu(
+        &mut state,
+        ActionMenuKind::Response,
+        ActionMenuAction::CopyResponse,
+    );
+    assert_eq!(action, TuiAction::Continue);
+    assert!(state.response_action_confirmation.is_some());
+
+    let buffer = rendered_buffer(&mut state, 120, 32);
+    assert!(buffer.contains("Copy unmasked response?"));
+    assert!(buffer.contains("Warning:"));
+    assert!(buffer.contains("Type `copy` to continue"));
+
+    assert_eq!(
+        handle_key_code(&mut state, KeyCode::Enter),
+        TuiAction::Continue
+    );
+    assert!(state.response_action_confirmation.is_some());
+    assert!(rendered_buffer(&mut state, 120, 32).contains("Type `copy` exactly."));
+
+    for value in RESPONSE_COPY_ACK.chars() {
+        handle_key_code(&mut state, KeyCode::Char(value));
+    }
+    let action = handle_key_code(&mut state, KeyCode::Enter);
+    let TuiAction::CopyToClipboard(contents) = action else {
+        panic!("expected clipboard action after exact confirmation");
+    };
+    assert!(contents.contains("898110001234567"));
+    assert!(state.response_action_confirmation.is_none());
+
+    let mut cancelled = unmasked_sensitive_state();
+    run_action_menu(
+        &mut cancelled,
+        ActionMenuKind::Response,
+        ActionMenuAction::CopyResponse,
+    );
+    assert_eq!(
+        handle_key_code(&mut cancelled, KeyCode::Char('q')),
+        TuiAction::Continue
+    );
+    assert!(cancelled.response_action_confirmation.is_none());
+    assert_eq!(cancelled.status, "Response copy cancelled.");
 }
 
 #[test]
@@ -3002,7 +3217,7 @@ fn response_copy_reports_clipboard_request_result() {
 }
 
 #[test]
-fn log_actions_offer_open_folder_without_path_copy_actions() {
+fn log_actions_offer_open_and_reveal_for_selected_log() {
     let mut state = test_state();
     let log_path = PathBuf::from("/tmp/atctl/logs/2026-06-18T04-02-06Z.session.log");
     state.logs = vec![test_log_entry(LogListingKind::Session, log_path.clone())];
@@ -3014,19 +3229,20 @@ fn log_actions_offer_open_folder_without_path_copy_actions() {
         rows.iter()
             .any(|row| row.action == ActionMenuAction::OpenLog)
     );
+    let context = action_menu_context_lines(&state, ActionMenuKind::Log);
+    assert!(context[0].starts_with("Log: session: "));
+    assert!(context[0].contains("2026-06-18T04-02-06Z.session.log"));
+    assert_eq!(rows.len(), 2);
     assert!(
         rows.iter()
-            .any(|row| row.action == ActionMenuAction::OpenLogsDirectory)
+            .any(|row| row.action == ActionMenuAction::RevealInFinder)
     );
-    let context = action_menu_context_line(&state, ActionMenuKind::Log).expect("context");
-    assert!(context.starts_with("Logs folder: "));
-    assert!(context.contains("logs"));
     assert!(!rows.iter().any(|row| row.label == "Copy log path"));
     assert!(!rows.iter().any(|row| row.label == "Copy log folder"));
 }
 
 #[test]
-fn log_actions_without_selected_log_still_offer_logs_folder() {
+fn log_actions_without_selected_log_are_empty() {
     let mut state = test_state();
     state.logs.clear();
 
@@ -3037,9 +3253,488 @@ fn log_actions_without_selected_log_still_offer_logs_folder() {
             .iter()
             .any(|row| row.action == ActionMenuAction::OpenLog)
     );
+    assert!(rows.is_empty());
+    assert!(action_menu_context_lines(&state, ActionMenuKind::Log).is_empty());
+}
+
+#[test]
+fn logs_enter_without_saved_logs_does_not_open_empty_menu() {
+    let mut state = test_state();
+    state.log_paths = test_logging_paths("no-saved-logs");
+    state.logs.clear();
+    state.focus = Pane::History;
+
+    let action = handle_key_code(&mut state, KeyCode::Enter);
+
+    assert_eq!(action, TuiAction::Continue);
+    assert!(state.action_menu.is_none());
+    assert_eq!(state.status, "No logs are available.");
+}
+
+#[test]
+fn selected_history_and_session_logs_reveal_exact_file_directly_from_logs() {
+    let paths = test_logging_paths("direct-log-reveal");
+    let history_log = paths.state_dir.join("history.jsonl");
+    let session_log = paths.session_dir.join("2026-07-03T04-00-00Z.session.log");
+    fs::write(&history_log, "history").unwrap();
+    fs::write(&session_log, "session").unwrap();
+
+    for (kind, path) in [
+        (LogListingKind::History, history_log),
+        (LogListingKind::Session, session_log),
+    ] {
+        let mut state = test_state();
+        state.log_paths = paths.clone();
+        state.logs = vec![test_log_entry(kind, path.clone())];
+        state.selected_log = 0;
+        state.focus = Pane::History;
+
+        handle_key_code(&mut state, KeyCode::Enter);
+        handle_key_code(&mut state, KeyCode::Down);
+        let action = handle_key_code(&mut state, KeyCode::Enter);
+
+        assert_eq!(action, TuiAction::RevealPath(path));
+        assert!(state.viewed_log.is_none());
+        assert_eq!(state.focus, Pane::History);
+        assert!(state.action_menu.is_none());
+    }
+}
+
+#[test]
+fn viewed_history_and_session_logs_reveal_the_exact_opened_file() {
+    let paths = test_logging_paths("reveal-exact-log");
+    let history_log = paths.state_dir.join("history.jsonl");
+    let session_log = paths.session_dir.join("2026-07-03T04-00-00Z.session.log");
+    fs::write(&history_log, "history").unwrap();
+    fs::write(&session_log, "session").unwrap();
+
+    for (kind, path) in [
+        (LogListingKind::History, history_log),
+        (LogListingKind::Session, session_log),
+    ] {
+        let mut state = test_state();
+        state.response = ResponseState::masked("masked log body");
+        state.viewed_log = Some(ViewedLog {
+            kind,
+            path: path.clone(),
+            label: compact_path_label(&path),
+        });
+
+        let action = run_action_menu(
+            &mut state,
+            ActionMenuKind::Response,
+            ActionMenuAction::RevealInFinder,
+        );
+
+        assert_eq!(action, TuiAction::RevealPath(path));
+        assert!(state.action_menu.is_none());
+    }
+}
+
+#[test]
+fn export_response_uses_selected_folder_and_retains_exact_file_context() {
+    let mut state = test_state();
+    let command = ExecutableItem::Preset(Preset::built_in(
+        "signal-quality",
+        "AT+CSQ",
+        RiskLevel::Safe,
+        ["signal"],
+    ));
+    state.active_command = Some(
+        CommandStatus::new(
+            CommandRunState::Completed,
+            &command,
+            DEFAULT_COMMAND_TIMEOUT_SECS,
+            StatusSummary::Completed {
+                status: "OK".to_owned(),
+                duration_ms: 7,
+            },
+        )
+        .with_finished_at("2026-07-12T09:00:00Z".to_owned()),
+    );
+    state.response = ResponseState::masked("AT+CSQ\n+CSQ: 20,99\nOK");
+
+    let action = run_action_menu(
+        &mut state,
+        ActionMenuKind::Response,
+        ActionMenuAction::ExportResponse,
+    );
+    let TuiAction::ChooseResponseExportDirectory(request) = action else {
+        panic!("expected folder chooser request");
+    };
+    assert_eq!(request.response_label, "Command: signal-quality");
+    assert!(request.masked);
+    assert!(request.file_name.starts_with("command-signal-quality-"));
+    let directory = unique_temp_dir("exported-response-context");
+    finish_response_export(&mut state, request, Ok(Some(directory.clone())));
+    assert!(state.response_action_confirmation.is_none());
+
+    let exported = state.exported_response.as_ref().expect("exported response");
+    assert!(exported.path.is_file());
+    assert_eq!(exported.response_label, "Command: signal-quality");
+    assert_eq!(
+        exported.finished_at.as_deref(),
+        Some("2026-07-12T09:00:00Z")
+    );
+    assert!(
+        state
+            .status
+            .starts_with("Exported response: command-signal-quality-")
+    );
+    assert!(state.status.ends_with(".response.txt."));
+    assert_eq!(
+        fs::read_to_string(&exported.path).unwrap(),
+        "AT+CSQ\n+CSQ: 20,99\nOK\n"
+    );
+    let expected_path = exported.path.clone();
+
+    open_response_action_menu(&mut state);
+    let context = action_menu_context_lines(&state, ActionMenuKind::Response);
+    assert!(context.contains(&"Response: Command: signal-quality".to_owned()));
+    assert!(context.contains(&"Completed: 2026-07-12T09:00:00Z".to_owned()));
+    assert!(context.contains(&"Export format: UTF-8 text".to_owned()));
+    assert!(context.contains(&"Export content: masked".to_owned()));
+    assert!(
+        context
+            .iter()
+            .any(|line| line.starts_with("File name: command-signal-quality-"))
+    );
+    assert!(context.contains(&"Last exported response: Command: signal-quality".to_owned()));
+    assert!(context.contains(&"Last export content: masked".to_owned()));
+
+    state.focus = Pane::Response;
+    let buffer = rendered_buffer(&mut state, 80, 24);
+    assert!(buffer.contains("Response: Command: signal-quality"));
+    assert!(buffer.contains("Completed: 2026-07-12T09:00:00Z"));
+    assert!(buffer.contains("Export content: masked"));
+    assert!(buffer.contains("File name:"), "{buffer}");
+    assert!(buffer.contains("command-signal-quality-"), "{buffer}");
+    assert!(buffer.contains("Reveal in Finder"));
+    state.action_menu = None;
+
+    let action = run_action_menu(
+        &mut state,
+        ActionMenuKind::Response,
+        ActionMenuAction::RevealInFinder,
+    );
+    assert_eq!(action, TuiAction::RevealPath(expected_path));
+}
+
+#[test]
+fn unmasked_response_export_requires_exact_path_confirmation_before_file_creation() {
+    let mut state = unmasked_sensitive_state();
+    let action = run_action_menu(
+        &mut state,
+        ActionMenuKind::Response,
+        ActionMenuAction::ExportResponse,
+    );
+    let TuiAction::ChooseResponseExportDirectory(request) = action else {
+        panic!("expected folder chooser request");
+    };
+    assert!(!request.masked);
+    let directory = unique_temp_dir("unmasked-response-export-confirmation");
+    let expected_path = directory.join(&request.file_name);
+
+    finish_response_export(&mut state, request, Ok(Some(directory)));
+
+    assert!(!expected_path.exists());
+    assert!(state.response_action_confirmation.is_some());
+    let Some(ResponseActionConfirmationState {
+        action: ResponseActionConfirmation::Export { path, .. },
+        ..
+    }) = state.response_action_confirmation.as_ref()
+    else {
+        panic!("expected unmasked export confirmation");
+    };
+    assert_eq!(path, &expected_path);
+    let buffer = rendered_buffer(&mut state, 140, 32);
+    assert!(buffer.contains("Export unmasked response?"));
+    assert!(buffer.contains("Warning:"));
+    assert!(buffer.contains("File:"));
+    assert!(buffer.contains(expected_path.file_name().unwrap().to_str().unwrap()));
+    assert!(buffer.contains("Type `export` to continue"));
+
+    handle_key_code(&mut state, KeyCode::Enter);
+    assert!(!expected_path.exists());
+    assert!(state.response_action_confirmation.is_some());
+    assert!(rendered_buffer(&mut state, 140, 32).contains("Type `export` exactly."));
+
+    for value in RESPONSE_EXPORT_ACK.chars() {
+        handle_key_code(&mut state, KeyCode::Char(value));
+    }
+    assert_eq!(
+        handle_key_code(&mut state, KeyCode::Enter),
+        TuiAction::Continue
+    );
+    assert!(state.response_action_confirmation.is_none());
+    assert!(expected_path.is_file());
+    assert!(
+        fs::read_to_string(&expected_path)
+            .unwrap()
+            .contains("898110001234567")
+    );
+
+    let mut cancelled = unmasked_sensitive_state();
+    let action = run_action_menu(
+        &mut cancelled,
+        ActionMenuKind::Response,
+        ActionMenuAction::ExportResponse,
+    );
+    let TuiAction::ChooseResponseExportDirectory(request) = action else {
+        panic!("expected folder chooser request");
+    };
+    let directory = unique_temp_dir("unmasked-response-export-cancel");
+    let cancelled_path = directory.join(&request.file_name);
+    finish_response_export(&mut cancelled, request, Ok(Some(directory)));
+    handle_key_code(&mut cancelled, KeyCode::Esc);
+    assert!(!cancelled_path.exists());
+    assert!(cancelled.response_action_confirmation.is_none());
+    assert_eq!(cancelled.status, "Response export cancelled.");
+}
+
+#[test]
+fn response_export_context_identifies_initial_notice_sequence_and_candidate_action() {
+    let mut state = test_state();
+    assert_eq!(response_export_target_label(&state), "Initial notice");
+
+    let sequence = crate::sequences::builtin::builtins()
+        .into_iter()
+        .next()
+        .expect("built-in sequence");
+    let item = ExecutableItem::Sequence(sequence.clone());
+    state.active_command = Some(CommandStatus::new(
+        CommandRunState::Completed,
+        &item,
+        DEFAULT_COMMAND_TIMEOUT_SECS,
+        StatusSummary::Completed {
+            status: "OK".to_owned(),
+            duration_ms: 4,
+        },
+    ));
+
+    assert_eq!(
+        response_export_target_label(&state),
+        format!("Sequence: {}", sequence.name)
+    );
+
+    let candidate_action = state.active_command.as_mut().unwrap();
+    candidate_action.kind = ExecutableKind::CandidateAction;
+    candidate_action.name = "Load candidates".to_owned();
+    assert_eq!(
+        response_export_target_label(&state),
+        "Candidate action: Load candidates"
+    );
+}
+
+#[test]
+fn response_export_cancellation_and_folder_failure_keep_no_association() {
+    let mut state = test_state();
+    state.response = ResponseState::masked("AT\nOK");
+    let request = response_export_request(&state).unwrap();
+
+    finish_response_export(&mut state, request.clone(), Ok(None));
+    assert!(state.exported_response.is_none());
+    assert_eq!(state.status, "Response export cancelled.");
+
+    finish_response_export(
+        &mut state,
+        request,
+        Ok(Some(unique_temp_dir("missing-folder").join("missing"))),
+    );
+    assert!(state.exported_response.is_none());
+    assert!(state.status.starts_with("Response export failed:"));
+    assert_eq!(state.status_role, TuiStyleRole::Error);
+}
+
+#[test]
+fn repeated_export_creates_new_files_without_deleting_prior_export() {
+    let mut state = test_state();
+    state.response = ResponseState::masked("AT\nOK");
+    let directory = unique_temp_dir("repeated-response-export");
+
+    let first_request = response_export_request(&state).unwrap();
+    finish_response_export(&mut state, first_request, Ok(Some(directory.clone())));
+    let first = state
+        .exported_response
+        .as_ref()
+        .expect("first exported response")
+        .path
+        .clone();
+    std::thread::sleep(Duration::from_millis(1));
+    let second_request = response_export_request(&state).unwrap();
+    finish_response_export(&mut state, second_request, Ok(Some(directory)));
+    let second = state
+        .exported_response
+        .as_ref()
+        .expect("second exported response")
+        .path
+        .clone();
+
+    assert_ne!(first, second);
+    assert!(first.is_file());
+    assert!(second.is_file());
+}
+
+#[test]
+fn replacing_or_clearing_response_removes_export_association_only() {
+    let mut state = test_state();
+    state.response = ResponseState::masked("AT\nOK");
+    let directory = unique_temp_dir("response-export-replacement");
+    let first_request = response_export_request(&state).unwrap();
+    finish_response_export(&mut state, first_request, Ok(Some(directory.clone())));
+    let first = state.exported_response.as_ref().unwrap().path.clone();
+
+    set_response(&mut state, ResponseState::masked("ATI\nOK"));
+    assert!(state.exported_response.is_none());
+    assert!(first.is_file());
+
+    let second_request = response_export_request(&state).unwrap();
+    finish_response_export(&mut state, second_request, Ok(Some(directory)));
+    let second = state.exported_response.as_ref().unwrap().path.clone();
+    clear_response(&mut state);
+    assert!(state.exported_response.is_none());
+    assert!(second.is_file());
+}
+
+#[test]
+fn deleted_export_disables_reveal_without_disabling_another_export() {
+    let mut state = test_state();
+    state.response = ResponseState::masked("AT\nOK");
+    let directory = unique_temp_dir("deleted-response-export");
+    let request = response_export_request(&state).unwrap();
+    finish_response_export(&mut state, request, Ok(Some(directory)));
+    let path = state.exported_response.as_ref().unwrap().path.clone();
+    fs::remove_file(path).unwrap();
+
+    open_response_action_menu(&mut state);
+    let rows = action_menu_rows(&state, ActionMenuKind::Response);
+    let reveal = rows
+        .iter()
+        .find(|row| row.action == ActionMenuAction::RevealInFinder)
+        .expect("exported response reveal row");
+    assert!(!reveal.enabled);
+    assert_eq!(
+        reveal.unavailable_message,
+        "Exported response no longer exists."
+    );
     assert!(
         rows.iter()
-            .any(|row| row.action == ActionMenuAction::OpenLogsDirectory)
+            .any(|row| row.action == ActionMenuAction::ExportResponse && row.enabled)
+    );
+}
+
+#[test]
+fn response_export_refuses_an_existing_file_without_overwriting_it() {
+    let mut state = test_state();
+    state.response = ResponseState::masked("AT\nOK");
+    let request = response_export_request(&state).unwrap();
+    let directory = unique_temp_dir("existing-response-export");
+    let path = directory.join(&request.file_name);
+    fs::write(&path, "existing").unwrap();
+
+    finish_response_export(&mut state, request, Ok(Some(directory)));
+    assert!(state.exported_response.is_none());
+    assert!(state.status.contains("Response export file already exists"));
+    assert_eq!(fs::read_to_string(path).unwrap(), "existing");
+}
+
+#[test]
+fn deleted_viewed_log_disables_reveal_but_keeps_copy_and_close() {
+    let missing_log = unique_temp_dir("deleted-viewed-log").join("missing.session.log");
+    let mut state = test_state();
+    state.response = ResponseState::masked("cached masked log body");
+    state.viewed_log = Some(ViewedLog {
+        kind: LogListingKind::Session,
+        path: missing_log,
+        label: "missing.session.log".to_owned(),
+    });
+
+    let rows = action_menu_rows(&state, ActionMenuKind::Response);
+    let reveal = rows
+        .iter()
+        .find(|row| row.action == ActionMenuAction::RevealInFinder)
+        .expect("reveal row");
+
+    assert!(!reveal.enabled);
+    assert_eq!(reveal.unavailable_message, "Saved log no longer exists.");
+    assert!(
+        rows.iter()
+            .any(|row| row.action == ActionMenuAction::CopyDisplayedLog)
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.action == ActionMenuAction::CloseLogView)
+    );
+
+    let action = run_action_menu(
+        &mut state,
+        ActionMenuKind::Response,
+        ActionMenuAction::RevealInFinder,
+    );
+    assert_eq!(action, TuiAction::Continue);
+    assert!(state.action_menu.is_some());
+    assert!(
+        state
+            .action_menu
+            .as_ref()
+            .and_then(|menu| menu.feedback.as_ref())
+            .is_some_and(|feedback| feedback.message == "Saved log no longer exists.")
+    );
+}
+
+#[test]
+fn selected_log_deleted_after_menu_open_cannot_reveal_or_retarget() {
+    let paths = test_logging_paths("deleted-log-before-reveal");
+    let selected = paths.session_dir.join("2026-07-03T05-00-00Z.session.log");
+    let history = paths.state_dir.join("history.jsonl");
+    fs::write(&selected, "session").unwrap();
+    fs::write(&history, "history").unwrap();
+    let mut state = test_state();
+    state.log_paths = paths;
+    refresh_log_summaries(&mut state).unwrap();
+    state.selected_log = state
+        .logs
+        .iter()
+        .position(|entry| entry.path == selected)
+        .expect("selected session");
+    state.focus = Pane::History;
+
+    handle_key_code(&mut state, KeyCode::Enter);
+    fs::remove_file(&selected).unwrap();
+    handle_key_code(&mut state, KeyCode::Down);
+    let action = handle_key_code(&mut state, KeyCode::Enter);
+
+    assert_eq!(action, TuiAction::Continue);
+    assert!(state.action_menu.is_some());
+    assert!(
+        state
+            .action_menu
+            .as_ref()
+            .and_then(|menu| menu.feedback.as_ref())
+            .is_some_and(|feedback| feedback.message == "Saved log no longer exists.")
+    );
+    assert!(state.viewed_log.is_none());
+}
+
+#[test]
+fn reveal_feedback_reports_request_without_claiming_finder_state() {
+    let mut state = test_state();
+    let path = PathBuf::from("/tmp/history.jsonl");
+
+    finish_path_reveal(&mut state, &path, Ok(()));
+    assert_eq!(
+        state.status,
+        "Reveal in Finder request sent: history.jsonl."
+    );
+
+    finish_path_reveal(
+        &mut state,
+        &path,
+        Err(AtctlError::Transport("blocked".to_owned())),
+    );
+    assert_eq!(
+        state.status,
+        "Reveal in Finder request failed: transport error: blocked"
     );
 }
 
@@ -3050,6 +3745,7 @@ fn log_view_close_clears_opened_log_without_status_clear_action() {
     state.response = ResponseState::masked("persisted log body");
     state.viewed_log = Some(ViewedLog {
         kind: LogListingKind::Session,
+        path: PathBuf::from("/tmp/test.session.log"),
         label: "test.session.log".to_owned(),
     });
 
@@ -3114,6 +3810,7 @@ fn response_copy_for_log_view_omits_line_number_ui() {
     state.status = "Opened masked log.".to_owned();
     state.viewed_log = Some(ViewedLog {
         kind: LogListingKind::Session,
+        path: PathBuf::from("/tmp/test.session.log"),
         label: "test.session.log".to_owned(),
     });
     state.response = ResponseState::masked("{\n  \"response\": \"OK\"\n}");
@@ -3229,6 +3926,7 @@ fn status_does_not_render_copy_behavior_explanation_for_viewed_log() {
     state.status = "Opened masked log.".to_owned();
     state.viewed_log = Some(ViewedLog {
         kind: LogListingKind::Session,
+        path: PathBuf::from("/tmp/test.session.log"),
         label: "test.session.log".to_owned(),
     });
     state.response = ResponseState::masked("{\n  \"response\": \"OK\"\n}");
@@ -3549,6 +4247,11 @@ fn run_action_menu(
     kind: ActionMenuKind,
     action: ActionMenuAction,
 ) -> TuiAction {
+    let response_export = if kind == ActionMenuKind::Response && state.viewed_log.is_none() {
+        response_export_request(state)
+    } else {
+        None
+    };
     let selected = action_menu_rows(state, kind)
         .iter()
         .position(|row| row.action == action)
@@ -3563,6 +4266,7 @@ fn run_action_menu(
         } else {
             None
         },
+        response_export,
     });
     handle_key_code(state, KeyCode::Enter)
 }
@@ -3655,6 +4359,7 @@ struct TestExecutor {
     timeouts: Vec<u64>,
     devices: Vec<Option<TuiDeviceSelection>>,
     sequence_params: Vec<Vec<(String, String)>>,
+    normal_logging: Vec<bool>,
     sms_candidates: Vec<SmsMessageCandidate>,
     value_candidate_sets: Vec<SequenceValueCandidateSet>,
     preset_error: Option<AtctlError>,
@@ -3665,17 +4370,15 @@ struct TestExecutor {
 impl TuiCommandExecutor for TestExecutor {
     fn execute_item(
         &mut self,
-        item: &ExecutableItem,
-        confirmed: bool,
-        timeout_secs: u64,
-        device_selection: Option<TuiDeviceSelection>,
-        sequence_params: &[SequenceParamValue],
+        pending: &PendingExecution,
         raw_log: Option<&mut RawLogSink>,
     ) -> Result<ExecutionOutput> {
-        self.calls.push((item.name().to_owned(), confirmed));
-        self.timeouts.push(timeout_secs);
-        self.devices.push(device_selection);
-        match item {
+        self.calls
+            .push((pending.item.name().to_owned(), pending.confirmed));
+        self.timeouts.push(pending.timeout_secs);
+        self.devices.push(pending.device_selection);
+        self.normal_logging.push(pending.normal_logging_enabled);
+        match &pending.item {
             ExecutableItem::Preset(preset) | ExecutableItem::CandidateAction { preset, .. } => {
                 if let Some(error) = self.preset_error.take() {
                     return Err(error);
@@ -3714,7 +4417,8 @@ impl TuiCommandExecutor for TestExecutor {
             }
             ExecutableItem::Sequence(sequence) => {
                 self.sequence_params.push(
-                    sequence_params
+                    pending
+                        .sequence_params
                         .iter()
                         .map(|param| (param.name.clone(), param.value.clone()))
                         .collect(),

@@ -12,6 +12,11 @@ pub enum AtctlError {
     #[error("invalid value for {name}: {value}")]
     InvalidValue { name: &'static str, value: String },
 
+    #[error(
+        "cannot resolve the atctl state directory; set XDG_STATE_HOME to an absolute path or HOME to an absolute home directory"
+    )]
+    StateDirectoryUnavailable,
+
     #[error("failed to read {path}: {source}")]
     ReadFile {
         path: String,
@@ -127,6 +132,12 @@ pub enum AtctlError {
 
     #[error("raw diagnostic export file already exists: {path}")]
     RawLogFileExists { path: String },
+
+    #[error("Response export file already exists: {path}")]
+    ResponseExportFileExists { path: String },
+
+    #[error("Response export parent directory does not exist: {path}")]
+    ResponseExportParentUnavailable { path: String },
 
     #[error("transport error: {0}")]
     Transport(String),
