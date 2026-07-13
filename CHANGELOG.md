@@ -2,7 +2,7 @@
 
 All notable project changes should be recorded in this file.
 
-## Unreleased
+## 0.2.0 - 2026-07-13
 
 ### Added
 

@@ -158,10 +158,23 @@ evidence interpretation.
 - [Safety guide](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md)
 - [Troubleshooting](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md)
 
+## Questions and reports
+
+For usage questions, bug reports, and feature requests, search the existing
+[GitHub Issues](https://github.com/uchimanajet7/atctl/issues) and open a new issue
+if needed.
+
+For a bug report, include the `atctl` version when available, the affected
+command or TUI action, reproduction steps, expected result, actual result, and
+only reviewed masked output when needed. Do not include raw diagnostic exports,
+unmasked output, credentials, subscriber identifiers, phone numbers, or message
+contents in a public issue.
+
 ## Contributing
 
 Code and documentation contributions are welcome. Read the
-[contribution guide](CONTRIBUTING.md) before opening a pull request.
+[contribution guide](https://github.com/uchimanajet7/atctl/blob/main/CONTRIBUTING.md)
+before opening a pull request.
 
 ## Maintainer Information
 
