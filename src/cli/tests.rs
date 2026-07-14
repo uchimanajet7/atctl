@@ -218,6 +218,7 @@ fn help_describes_primary_product_options() {
     let root_help = String::from_utf8(root_help).unwrap();
     assert!(root_help.contains("Send one AT command"));
     assert!(root_help.contains("List or run product and loaded multi-step Sequences"));
+    assert!(root_help.contains("Examples:\n  atctl devices\n  atctl send AT\n  atctl tui"));
     assert!(!root_help.contains("Show configuration paths"));
 
     let mut command = Cli::command();

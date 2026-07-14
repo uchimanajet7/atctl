@@ -62,7 +62,11 @@ pub(crate) struct TuiDeviceSelection {
 #[command(
     name = "atctl",
     version,
-    about = "AT command controller for USB cellular modems"
+    about = "AT command controller for USB cellular modems",
+    after_help = "Examples:
+  atctl devices
+  atctl send AT
+  atctl tui"
 )]
 pub struct Cli {
     #[command(subcommand)]
