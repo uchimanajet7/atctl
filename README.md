@@ -164,6 +164,10 @@ For usage questions, bug reports, and feature requests, search the existing
 [GitHub Issues](https://github.com/uchimanajet7/atctl/issues) and open a new issue
 if needed.
 
+For suspected security vulnerabilities, use
+[GitHub private vulnerability reporting](https://github.com/uchimanajet7/atctl/security/advisories/new)
+instead of opening a public issue.
+
 For a bug report, include the `atctl` version when available, the affected
 command or TUI action, reproduction steps, expected result, actual result, and
 only reviewed masked output when needed. Do not include raw diagnostic exports,

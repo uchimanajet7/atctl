@@ -166,6 +166,10 @@ Sequenceのパラメーター、証跡の読み方は
 [GitHub Issues](https://github.com/uchimanajet7/atctl/issues)を検索し、
 該当するものがなければ新しいIssueを作成してください。
 
+セキュリティ脆弱性の疑いは、公開Issueではなく
+[GitHubの非公開脆弱性報告](https://github.com/uchimanajet7/atctl/security/advisories/new)から
+報告してください。
+
 不具合報告には、確認できる場合は`atctl`のバージョン、対象のコマンドまたは
 TUI操作、再現手順、期待する結果、実際の結果を記載し、必要な場合だけ
 確認済みのマスクされた出力を添えてください。公開Issueには、raw診断
