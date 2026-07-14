@@ -113,6 +113,7 @@ struct TuiState {
     timeout_input: Option<TimeoutInputState>,
     timeout_override_secs: Option<u64>,
     controls_feedback: Option<ControlsFeedback>,
+    response_action_feedback: Option<ControlsFeedback>,
     action_menu: Option<ActionMenuState>,
     pending_execution: Option<PendingExecution>,
     running_execution: Option<RunningExecution>,
@@ -169,7 +170,10 @@ enum TuiAction {
     Quit,
     CopyToClipboard(String),
     ChooseResponseExportDirectory(ResponseExportRequest),
-    RevealPath(PathBuf),
+    RevealPath {
+        path: PathBuf,
+        origin: ActionMenuKind,
+    },
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -734,9 +738,9 @@ pub fn run(
                     let result = terminal.choose_response_export_directory();
                     finish_response_export(&mut state, request, result);
                 }
-                TuiAction::RevealPath(path) => {
+                TuiAction::RevealPath { path, origin } => {
                     let result = terminal.reveal_path(&path);
-                    finish_path_reveal(&mut state, &path, result);
+                    finish_path_reveal(&mut state, &path, origin, result);
                 }
             }
             if state.pending_execution.is_some() {
@@ -1063,6 +1067,7 @@ impl TuiState {
             timeout_input: None,
             timeout_override_secs: None,
             controls_feedback: None,
+            response_action_feedback: None,
             action_menu: None,
             pending_execution: None,
             running_execution: None,
@@ -1262,10 +1267,15 @@ fn block_device_dependent_action(state: &mut TuiState) {
     let message = device_gate_message(state).unwrap_or("Select a USB device before sending.");
     state.status = message.to_owned();
     state.status_role = TuiStyleRole::Warning;
+    let recovery = if state.devices.is_empty() {
+        "\nReview Devices and all USB. After changing the USB connection, restart `atctl tui` to rescan."
+    } else {
+        ""
+    };
     set_response(
         state,
         ResponseState::masked(format!(
-            "{message}\nDevice-dependent actions are disabled until a USB device is selected."
+            "{message}\nDevice-dependent actions are disabled until a USB device is selected.{recovery}"
         )),
     );
     if !state.devices.is_empty() {
@@ -1719,6 +1729,10 @@ fn execute_selected_action_menu_row(state: &mut TuiState) -> TuiAction {
         return TuiAction::Continue;
     }
 
+    if kind == ActionMenuKind::Response {
+        clear_response_action_feedback(state);
+    }
+
     match row.action {
         ActionMenuAction::CopyDisplayedLog => {
             state.action_menu = None;
@@ -1741,9 +1755,10 @@ fn execute_selected_action_menu_row(state: &mut TuiState) -> TuiAction {
             match request {
                 Some(request) => TuiAction::ChooseResponseExportDirectory(request),
                 None => {
-                    set_operation_status(
+                    set_response_action_result(
                         state,
                         TuiStyleRole::Warning,
+                        "Response export unavailable.",
                         "No response is available to export.",
                     );
                     TuiAction::Continue
@@ -1758,7 +1773,7 @@ fn execute_selected_action_menu_row(state: &mut TuiState) -> TuiAction {
         ActionMenuAction::RevealInFinder => {
             let (path, missing_message) = reveal_action_target(state, kind);
             state.action_menu = None;
-            reveal_file(state, path, missing_message)
+            reveal_file(state, path, missing_message, kind)
         }
         ActionMenuAction::CloseLogView => {
             state.action_menu = None;
@@ -1865,9 +1880,10 @@ fn copy_current_response(state: &mut TuiState) -> TuiAction {
     match copyable_response_text(state) {
         Some(text) => TuiAction::CopyToClipboard(text),
         None => {
-            set_operation_status(
+            set_response_action_result(
                 state,
                 TuiStyleRole::Warning,
+                "Response copy unavailable.",
                 "No response is available to copy.",
             );
             TuiAction::Continue
@@ -1877,9 +1893,10 @@ fn copy_current_response(state: &mut TuiState) -> TuiAction {
 
 fn open_unmasked_response_copy_confirmation(state: &mut TuiState) -> TuiAction {
     let Some(contents) = copyable_response_text(state) else {
-        set_operation_status(
+        set_response_action_result(
             state,
             TuiStyleRole::Warning,
+            "Response copy unavailable.",
             "No response is available to copy.",
         );
         return TuiAction::Continue;
@@ -1902,6 +1919,7 @@ fn close_log_view(state: &mut TuiState) {
     state.response_scroll = 0;
     state.viewed_log = None;
     state.exported_response = None;
+    clear_response_action_feedback(state);
     state.status = "Log view closed.".to_owned();
     state.status_role = TuiStyleRole::Status;
 }
@@ -1909,12 +1927,18 @@ fn close_log_view(state: &mut TuiState) {
 fn finish_clipboard_copy(state: &mut TuiState, result: Result<()>) {
     match result {
         Ok(()) => {
-            set_operation_status(state, TuiStyleRole::Status, COPY_REQUEST_SENT_FEEDBACK);
+            set_response_action_result(
+                state,
+                TuiStyleRole::Status,
+                "Response copy requested.",
+                COPY_REQUEST_SENT_FEEDBACK,
+            );
         }
         Err(error) => {
-            set_operation_status(
+            set_response_action_result(
                 state,
                 TuiStyleRole::Error,
+                "Response copy failed.",
                 format!("Copy request failed: {error}"),
             );
         }
@@ -1929,26 +1953,35 @@ fn finish_response_export(
     let directory = match directory_result {
         Ok(Some(directory)) => directory,
         Ok(None) => {
-            set_operation_status(state, TuiStyleRole::Status, "Response export cancelled.");
+            set_response_action_result(
+                state,
+                TuiStyleRole::Status,
+                "Response export cancelled.",
+                "Response export cancelled.",
+            );
             return;
         }
         Err(error) => {
-            set_operation_status(
+            set_response_action_result(
                 state,
                 TuiStyleRole::Error,
-                format!("Response export folder selection failed: {error}"),
+                "Response export failed.",
+                format!(
+                    "Choose an existing folder and export again. Folder selection failed: {error}"
+                ),
             );
             return;
         }
     };
 
     if !directory.is_dir() {
-        set_operation_status(
+        set_response_action_result(
             state,
             TuiStyleRole::Error,
+            "Response export failed.",
             format!(
-                "Response export failed: destination folder does not exist: {}",
-                directory.display()
+                "Choose an existing folder and export again. Destination folder does not exist: {}.",
+                compact_path_label(&directory)
             ),
         );
         return;
@@ -1982,16 +2015,40 @@ fn write_response_export_request(
                 finished_at: request.finished_at,
                 masked: request.masked,
             });
-            set_operation_status(
+            set_response_action_result(
                 state,
                 TuiStyleRole::Status,
+                "Response export completed.",
                 format!("Exported response: {}.", compact_path_label(&path)),
             );
         }
-        Err(error) => {
-            set_operation_status(
+        Err(AtctlError::ResponseExportFileExists { path }) => {
+            set_response_action_result(
                 state,
                 TuiStyleRole::Error,
+                "Response export failed.",
+                format!(
+                    "Choose another folder and export again. File already exists: {}.",
+                    compact_path_label(Path::new(&path))
+                ),
+            );
+        }
+        Err(AtctlError::ResponseExportParentUnavailable { path }) => {
+            set_response_action_result(
+                state,
+                TuiStyleRole::Error,
+                "Response export failed.",
+                format!(
+                    "Choose an existing folder and export again. Destination folder does not exist: {}.",
+                    compact_path_label(Path::new(&path))
+                ),
+            );
+        }
+        Err(error) => {
+            set_response_action_result(
+                state,
+                TuiStyleRole::Error,
+                "Response export failed.",
                 format!("Response export failed: {error}"),
             );
         }
@@ -2022,24 +2079,44 @@ fn reveal_file(
     state: &mut TuiState,
     path: Option<PathBuf>,
     missing_message: &'static str,
+    origin: ActionMenuKind,
 ) -> TuiAction {
     let Some(path) = path else {
-        set_operation_status(state, TuiStyleRole::Warning, missing_message);
+        set_action_result(
+            state,
+            origin,
+            TuiStyleRole::Warning,
+            "Reveal unavailable.",
+            missing_message,
+        );
         return TuiAction::Continue;
     };
     if !path.is_file() {
-        set_operation_status(state, TuiStyleRole::Warning, missing_message);
+        set_action_result(
+            state,
+            origin,
+            TuiStyleRole::Warning,
+            "Reveal unavailable.",
+            missing_message,
+        );
         return TuiAction::Continue;
     }
-    TuiAction::RevealPath(path)
+    TuiAction::RevealPath { path, origin }
 }
 
-fn finish_path_reveal(state: &mut TuiState, path: &Path, result: Result<()>) {
+fn finish_path_reveal(
+    state: &mut TuiState,
+    path: &Path,
+    origin: ActionMenuKind,
+    result: Result<()>,
+) {
     match result {
         Ok(()) => {
-            set_operation_status(
+            set_action_result(
                 state,
+                origin,
                 TuiStyleRole::Status,
+                "Reveal request sent.",
                 format!(
                     "Reveal in Finder request sent: {}.",
                     compact_path_label(path)
@@ -2047,23 +2124,48 @@ fn finish_path_reveal(state: &mut TuiState, path: &Path, result: Result<()>) {
             );
         }
         Err(error) => {
-            set_operation_status(
+            set_action_result(
                 state,
+                origin,
                 TuiStyleRole::Error,
+                "Reveal request failed.",
                 format!("Reveal in Finder request failed: {error}"),
             );
         }
     }
 }
 
-fn set_operation_status(state: &mut TuiState, role: TuiStyleRole, message: impl Into<String>) {
-    let message = message.into();
-    if state.action_menu.is_some() {
-        set_action_menu_feedback(state, role, message);
+fn set_action_result(
+    state: &mut TuiState,
+    origin: ActionMenuKind,
+    role: TuiStyleRole,
+    status: impl Into<String>,
+    message: impl Into<String>,
+) {
+    if origin == ActionMenuKind::Response {
+        set_response_action_result(state, role, status, message);
     } else {
-        state.status = message;
+        state.status = message.into();
         state.status_role = role;
     }
+}
+
+fn set_response_action_result(
+    state: &mut TuiState,
+    role: TuiStyleRole,
+    status: impl Into<String>,
+    message: impl Into<String>,
+) {
+    state.status = status.into();
+    state.status_role = role;
+    state.response_action_feedback = Some(ControlsFeedback {
+        message: message.into(),
+        role,
+    });
+}
+
+fn clear_response_action_feedback(state: &mut TuiState) {
+    state.response_action_feedback = None;
 }
 
 fn set_response(state: &mut TuiState, response: ResponseState) {
@@ -2071,6 +2173,7 @@ fn set_response(state: &mut TuiState, response: ResponseState) {
     state.response_cleared_at = None;
     state.response_scroll = 0;
     state.exported_response = None;
+    clear_response_action_feedback(state);
 }
 
 fn toggle_output_masking(state: &mut TuiState) -> TuiAction {
@@ -2095,8 +2198,12 @@ fn clear_response(state: &mut TuiState) {
     state.response_cleared_at = Some(now_timestamp().display().to_owned());
     state.response_scroll = 0;
     state.exported_response = None;
-    state.status = "Response body cleared.".to_owned();
-    state.status_role = TuiStyleRole::Status;
+    set_response_action_result(
+        state,
+        TuiStyleRole::Status,
+        "Response body cleared.",
+        "Response body cleared.",
+    );
 }
 
 fn handle_output_masking_confirmation_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
@@ -2151,7 +2258,7 @@ fn handle_response_action_confirmation_key(state: &mut TuiState, key: KeyCode) -
                 Some(ResponseActionConfirmation::Export { .. }) => "Response export cancelled.",
                 None => "Response action cancelled.",
             };
-            set_operation_status(state, TuiStyleRole::Status, message);
+            set_response_action_result(state, TuiStyleRole::Status, message, message);
         }
         KeyCode::Enter => {
             let Some(mut confirmation) = state.response_action_confirmation.take() else {
@@ -3867,9 +3974,6 @@ fn render_frame(frame: &mut Frame<'_>, state: &mut TuiState) {
     state.commands_visible_height = pane_inner_height(top[2]);
     state.controls_visible_height = pane_inner_height(bottom[0]);
     state.logs_visible_height = pane_inner_height(bottom_main[1]);
-    state.response_visible_height = bottom_main[0].height.saturating_sub(2) as usize;
-    state.response_scroll = state.response_scroll.min(response_max_scroll(state));
-
     render_devices(frame, top_left[0], state, &theme);
     render_status(frame, top_left[1], state, &theme);
     render_categories(frame, top[1], state, &theme);
@@ -4193,7 +4297,7 @@ fn render_controls(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, them
     );
 
     if let (Some(feedback), Some(area)) = (feedback, feedback_area) {
-        render_controls_feedback(frame, area, &feedback, theme);
+        render_surface_feedback(frame, area, &feedback, theme);
     }
 }
 
@@ -4247,7 +4351,7 @@ fn controls_feedback_for_render(
     })
 }
 
-fn render_controls_feedback(
+fn render_surface_feedback(
     frame: &mut Frame<'_>,
     area: Rect,
     feedback: &ControlsFeedback,
@@ -4585,11 +4689,16 @@ fn selected_command_row_index(rows: &[CommandListRow<'_>], selected_command: usi
         .unwrap_or(0)
 }
 
-fn render_response(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &TuiTheme) {
+fn render_response(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, theme: &TuiTheme) {
     let lines = response_lines(state);
-    let visible_height = area.height.saturating_sub(2) as usize;
+    let inner = pane_block(Pane::Response, state.focus, theme).inner(area);
+    let (body_area, feedback_area) =
+        response_inner_areas(inner, state.response_action_feedback.as_ref());
+    let visible_height = body_area.height.max(1) as usize;
+    state.response_visible_height = visible_height;
     let max_scroll = lines.len().saturating_sub(visible_height);
     let scroll = state.response_scroll.min(max_scroll);
+    state.response_scroll = scroll;
     let visible_lines = lines
         .into_iter()
         .skip(scroll)
@@ -4597,19 +4706,37 @@ fn render_response(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &
         .collect::<Vec<_>>();
 
     frame.render_widget(Clear, area);
+    let block = response_block(
+        state,
+        theme,
+        lines_len_for_title(state),
+        visible_height,
+        scroll,
+    );
+    frame.render_widget(block, area);
     frame.render_widget(
         Paragraph::new(visible_lines)
-            .block(response_block(
-                state,
-                theme,
-                lines_len_for_title(state),
-                visible_height,
-                scroll,
-            ))
             .style(theme.style(TuiStyleRole::Text))
             .wrap(Wrap { trim: false }),
-        area,
+        body_area,
     );
+
+    if let (Some(feedback), Some(area)) = (&state.response_action_feedback, feedback_area) {
+        render_surface_feedback(frame, area, feedback, theme);
+    }
+}
+
+fn response_inner_areas(inner: Rect, feedback: Option<&ControlsFeedback>) -> (Rect, Option<Rect>) {
+    if feedback.is_none() || inner.height < 2 {
+        return (inner, None);
+    }
+
+    let feedback_height = inner.height.saturating_sub(1).min(4);
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(feedback_height)])
+        .split(inner);
+    (areas[0], Some(areas[1]))
 }
 
 fn response_lines(state: &TuiState) -> Vec<Line<'static>> {

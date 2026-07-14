@@ -299,9 +299,13 @@ mod tests {
             ),
         ];
 
+        let error = validate_unique_preset_names(&presets).unwrap_err();
         assert!(matches!(
-            validate_unique_preset_names(&presets),
-            Err(AtctlError::DuplicatePreset { name, .. }) if name == "modem-response"
+            &error,
+            AtctlError::DuplicatePreset { name, .. } if name == "modem-response"
+        ));
+        assert!(error.to_string().contains(
+            "help: rename one duplicate definition, or stop loading one of the conflicting file sources"
         ));
     }
 

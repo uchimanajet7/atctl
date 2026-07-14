@@ -105,6 +105,34 @@ Depending on how it was downloaded and on local macOS policy, Gatekeeper or a
 quarantine warning may appear. The Homebrew formula remains the supported
 normal installation path.
 
+## Check the Version, Upgrade, or Remove atctl
+
+Check the version of the executable you are running:
+
+```sh
+atctl --version
+```
+
+For an installation made through the normal Homebrew path, upgrade or uninstall
+the formula with its fully qualified name:
+
+```sh
+brew upgrade uchimanajet7/atctl/atctl
+brew uninstall uchimanajet7/atctl/atctl
+```
+
+For a manual GitHub Release archive, download and verify the newer version's
+archive and checksum as described above, extract its versioned directory, and
+run that directory's `atctl` executable. After confirming the replacement,
+remove the old version's archive, checksum, and extracted directory from the
+location where you stored them.
+
+Removing the Homebrew formula or a manually downloaded executable does not
+remove normal state under `$XDG_STATE_HOME/atctl` (by default,
+`~/.local/state/atctl`), user-selected Response or raw-export files, or
+terminal-owned PTY transcripts. Review and remove those separately when they
+are no longer needed; see [Review and Manage Logs](TROUBLESHOOTING.md#review-and-manage-logs).
+
 ## Manual libusb Fallback
 
 Use this only when troubleshooting Homebrew dependency installation or when

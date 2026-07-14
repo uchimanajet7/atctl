@@ -326,7 +326,12 @@ mod tests {
         assert!(contents.contains("898110001234567"));
 
         let error = RawLogSink::create(RawLogConfig::new(&path, "send", "send")).unwrap_err();
-        assert!(matches!(error, AtctlError::RawLogFileExists { .. }));
+        assert!(matches!(&error, AtctlError::RawLogFileExists { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("help: choose a new file path; existing files are not overwritten")
+        );
     }
 
     #[test]

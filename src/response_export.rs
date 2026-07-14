@@ -129,7 +129,15 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "AT\nOK\n");
 
         let error = write_response_export(&path, "replacement").unwrap_err();
-        assert!(matches!(error, AtctlError::ResponseExportFileExists { .. }));
+        assert!(matches!(
+            &error,
+            AtctlError::ResponseExportFileExists { .. }
+        ));
+        assert!(
+            error
+                .to_string()
+                .contains("help: choose a new file path; existing files are not overwritten")
+        );
 
         #[cfg(unix)]
         {
@@ -149,8 +157,11 @@ mod tests {
 
         let error = validate_response_export_target(&path).unwrap_err();
         assert!(matches!(
-            error,
+            &error,
             AtctlError::ResponseExportParentUnavailable { .. }
+        ));
+        assert!(error.to_string().contains(
+            "help: choose a path in an existing directory, or create the parent directory first"
         ));
         fs::remove_dir_all(directory).unwrap();
     }

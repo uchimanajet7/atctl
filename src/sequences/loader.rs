@@ -590,9 +590,13 @@ mod tests {
             ),
         ];
 
+        let error = validate_unique_sequence_names(&sequences).unwrap_err();
         assert!(matches!(
-            validate_unique_sequence_names(&sequences),
-            Err(AtctlError::DuplicateSequence { name, .. }) if name == "sms-send-check"
+            &error,
+            AtctlError::DuplicateSequence { name, .. } if name == "sms-send-check"
+        ));
+        assert!(error.to_string().contains(
+            "help: rename one duplicate definition, or stop loading one of the conflicting file sources"
         ));
     }
 

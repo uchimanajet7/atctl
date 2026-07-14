@@ -916,9 +916,28 @@ fn preset_lookup_uses_exact_name_instead_of_category() {
         find_preset(&presets, "current-operator").unwrap().name,
         "current-operator"
     );
+    let error = find_preset(&presets, "network").unwrap_err();
     assert!(matches!(
-        find_preset(&presets, "network"),
-        Err(AtctlError::PresetNotFound { name }) if name == "network"
+        &error,
+        AtctlError::PresetNotFound { name } if name == "network"
+    ));
+    assert!(error.to_string().contains(
+        "help: run `atctl preset list` with the same `--preset-file` and `--preset-dir` options"
+    ));
+}
+
+#[test]
+fn sequence_lookup_error_points_to_the_exact_loaded_name_list() {
+    let sequences = crate::sequences::builtin::builtins();
+
+    let error = find_sequence(&sequences, "missing-sequence").unwrap_err();
+
+    assert!(matches!(
+        &error,
+        AtctlError::SequenceNotFound { name } if name == "missing-sequence"
+    ));
+    assert!(error.to_string().contains(
+        "help: run `atctl sequence list` with the same `--sequence-file` and `--sequence-dir` options"
     ));
 }
 

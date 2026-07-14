@@ -2124,12 +2124,18 @@ fn no_visible_device_blocks_device_dependent_actions() {
 
     assert!(state.pending_execution.is_none());
     assert!(state.response.contains("No matching USB device"));
+    assert!(state.response.contains("Review Devices and all USB"));
+    assert!(state.response.contains("restart `atctl tui` to rescan"));
     assert_eq!(state.status_role, TuiStyleRole::Warning);
+    let buffer = rendered_buffer(&mut state, 120, 32);
+    assert!(buffer.contains("Review Devices and all USB"), "{buffer}");
+    assert!(buffer.contains("restart `atctl tui` to rescan"), "{buffer}");
 
     run_control(&mut state, ControlAction::AdHocCommand);
 
     assert!(state.ad_hoc_input.is_none());
     assert!(state.response.contains("No matching USB device"));
+    assert!(state.response.contains("restart `atctl tui` to rescan"));
 }
 
 #[test]
@@ -2148,6 +2154,8 @@ fn multiple_visible_devices_require_explicit_selection_before_execution() {
     assert!(state.pending_execution.is_none());
     assert!(state.status.contains("Select a USB device"));
     assert_eq!(state.focus, Pane::Devices);
+    assert!(!state.response.contains("restart `atctl tui` to rescan"));
+    assert!(!rendered_buffer(&mut state, 120, 32).contains("restart `atctl tui` to rescan"));
 
     handle_key_code(&mut state, KeyCode::Down);
     assert_eq!(state.highlighted_device, 1);
@@ -2787,6 +2795,13 @@ fn clear_response_removes_previous_rendered_content() {
     assert!(status_buffer.contains("Command: signal-quality"));
     assert!(status_buffer.contains("AT command: AT+CSQ"));
     assert_eq!(state.status, "Response body cleared.");
+    assert_eq!(
+        state
+            .response_action_feedback
+            .as_ref()
+            .map(|feedback| feedback.message.as_str()),
+        Some("Response body cleared.")
+    );
 
     open_response_action_menu(&mut state);
     let rows = action_menu_rows(&state, ActionMenuKind::Response);
@@ -3176,6 +3191,13 @@ fn unmasked_response_copy_requires_explicit_confirmation_and_can_be_cancelled() 
     );
     assert!(cancelled.response_action_confirmation.is_none());
     assert_eq!(cancelled.status, "Response copy cancelled.");
+    assert_eq!(
+        cancelled
+            .response_action_feedback
+            .as_ref()
+            .map(|feedback| feedback.message.as_str()),
+        Some("Response copy cancelled.")
+    );
 }
 
 #[test]
@@ -3195,8 +3217,20 @@ fn response_copy_reports_clipboard_request_result() {
     assert!(state.action_menu.is_none());
 
     finish_clipboard_copy(&mut state, Ok(()));
-    assert_eq!(state.status, COPY_REQUEST_SENT_FEEDBACK);
+    assert_eq!(state.status, "Response copy requested.");
     assert_eq!(state.status_role, TuiStyleRole::Status);
+    assert_eq!(
+        state
+            .response_action_feedback
+            .as_ref()
+            .map(|feedback| feedback.message.as_str()),
+        Some(COPY_REQUEST_SENT_FEEDBACK)
+    );
+    let copied_response = copyable_response_text(&state).expect("copyable response");
+    assert!(!copied_response.contains(COPY_REQUEST_SENT_FEEDBACK));
+    let buffer = rendered_buffer(&mut state, 100, 24);
+    assert!(buffer.contains(COPY_REQUEST_SENT_FEEDBACK));
+    assert!(buffer.contains("AT"));
     let copy_row = action_menu_rows(&state, ActionMenuKind::Response)
         .into_iter()
         .find(|row| row.action == ActionMenuAction::CopyResponse)
@@ -3204,11 +3238,15 @@ fn response_copy_reports_clipboard_request_result() {
     assert_eq!(copy_row.label, "Copy response");
 
     finish_clipboard_copy(&mut state, Err(AtctlError::Transport("blocked".to_owned())));
-    assert_eq!(
-        state.status,
-        "Copy request failed: transport error: blocked"
-    );
+    assert_eq!(state.status, "Response copy failed.");
     assert_eq!(state.status_role, TuiStyleRole::Error);
+    assert_eq!(
+        state
+            .response_action_feedback
+            .as_ref()
+            .map(|feedback| feedback.message.as_str()),
+        Some("Copy request failed: transport error: blocked")
+    );
     let copy_row = action_menu_rows(&state, ActionMenuKind::Response)
         .into_iter()
         .find(|row| row.action == ActionMenuAction::CopyResponse)
@@ -3293,7 +3331,13 @@ fn selected_history_and_session_logs_reveal_exact_file_directly_from_logs() {
         handle_key_code(&mut state, KeyCode::Down);
         let action = handle_key_code(&mut state, KeyCode::Enter);
 
-        assert_eq!(action, TuiAction::RevealPath(path));
+        assert_eq!(
+            action,
+            TuiAction::RevealPath {
+                path,
+                origin: ActionMenuKind::Log,
+            }
+        );
         assert!(state.viewed_log.is_none());
         assert_eq!(state.focus, Pane::History);
         assert!(state.action_menu.is_none());
@@ -3326,7 +3370,13 @@ fn viewed_history_and_session_logs_reveal_the_exact_opened_file() {
             ActionMenuAction::RevealInFinder,
         );
 
-        assert_eq!(action, TuiAction::RevealPath(path));
+        assert_eq!(
+            action,
+            TuiAction::RevealPath {
+                path,
+                origin: ActionMenuKind::Response,
+            }
+        );
         assert!(state.action_menu.is_none());
     }
 }
@@ -3376,12 +3426,17 @@ fn export_response_uses_selected_folder_and_retains_exact_file_context() {
         exported.finished_at.as_deref(),
         Some("2026-07-12T09:00:00Z")
     );
+    assert_eq!(state.status, "Response export completed.");
+    let export_feedback = state
+        .response_action_feedback
+        .as_ref()
+        .expect("response export feedback");
     assert!(
-        state
-            .status
+        export_feedback
+            .message
             .starts_with("Exported response: command-signal-quality-")
     );
-    assert!(state.status.ends_with(".response.txt."));
+    assert!(export_feedback.message.ends_with(".response.txt."));
     assert_eq!(
         fs::read_to_string(&exported.path).unwrap(),
         "AT+CSQ\n+CSQ: 20,99\nOK\n"
@@ -3417,7 +3472,13 @@ fn export_response_uses_selected_folder_and_retains_exact_file_context() {
         ActionMenuKind::Response,
         ActionMenuAction::RevealInFinder,
     );
-    assert_eq!(action, TuiAction::RevealPath(expected_path));
+    assert_eq!(
+        action,
+        TuiAction::RevealPath {
+            path: expected_path,
+            origin: ActionMenuKind::Response,
+        }
+    );
 }
 
 #[test]
@@ -3490,6 +3551,13 @@ fn unmasked_response_export_requires_exact_path_confirmation_before_file_creatio
     assert!(!cancelled_path.exists());
     assert!(cancelled.response_action_confirmation.is_none());
     assert_eq!(cancelled.status, "Response export cancelled.");
+    assert_eq!(
+        cancelled
+            .response_action_feedback
+            .as_ref()
+            .map(|feedback| feedback.message.as_str()),
+        Some("Response export cancelled.")
+    );
 }
 
 #[test]
@@ -3535,6 +3603,13 @@ fn response_export_cancellation_and_folder_failure_keep_no_association() {
     finish_response_export(&mut state, request.clone(), Ok(None));
     assert!(state.exported_response.is_none());
     assert_eq!(state.status, "Response export cancelled.");
+    assert_eq!(
+        state
+            .response_action_feedback
+            .as_ref()
+            .map(|feedback| feedback.message.as_str()),
+        Some("Response export cancelled.")
+    );
 
     finish_response_export(
         &mut state,
@@ -3542,8 +3617,25 @@ fn response_export_cancellation_and_folder_failure_keep_no_association() {
         Ok(Some(unique_temp_dir("missing-folder").join("missing"))),
     );
     assert!(state.exported_response.is_none());
-    assert!(state.status.starts_with("Response export failed:"));
+    assert_eq!(state.status, "Response export failed.");
+    let feedback = state
+        .response_action_feedback
+        .as_ref()
+        .expect("response export failure feedback");
+    assert!(
+        feedback
+            .message
+            .contains("Destination folder does not exist")
+    );
+    assert!(
+        feedback
+            .message
+            .starts_with("Choose an existing folder and export again.")
+    );
     assert_eq!(state.status_role, TuiStyleRole::Error);
+    let buffer = rendered_buffer(&mut state, 80, 24);
+    assert!(buffer.contains("Choose an existing"), "{buffer}");
+    assert!(buffer.contains("folder and export again."), "{buffer}");
 }
 
 #[test]
@@ -3583,9 +3675,11 @@ fn replacing_or_clearing_response_removes_export_association_only() {
     let first_request = response_export_request(&state).unwrap();
     finish_response_export(&mut state, first_request, Ok(Some(directory.clone())));
     let first = state.exported_response.as_ref().unwrap().path.clone();
+    assert!(state.response_action_feedback.is_some());
 
     set_response(&mut state, ResponseState::masked("ATI\nOK"));
     assert!(state.exported_response.is_none());
+    assert!(state.response_action_feedback.is_none());
     assert!(first.is_file());
 
     let second_request = response_export_request(&state).unwrap();
@@ -3593,6 +3687,13 @@ fn replacing_or_clearing_response_removes_export_association_only() {
     let second = state.exported_response.as_ref().unwrap().path.clone();
     clear_response(&mut state);
     assert!(state.exported_response.is_none());
+    assert_eq!(
+        state
+            .response_action_feedback
+            .as_ref()
+            .map(|feedback| feedback.message.as_str()),
+        Some("Response body cleared.")
+    );
     assert!(second.is_file());
 }
 
@@ -3634,7 +3735,19 @@ fn response_export_refuses_an_existing_file_without_overwriting_it() {
 
     finish_response_export(&mut state, request, Ok(Some(directory)));
     assert!(state.exported_response.is_none());
-    assert!(state.status.contains("Response export file already exists"));
+    assert_eq!(state.status, "Response export failed.");
+    let feedback = state
+        .response_action_feedback
+        .as_ref()
+        .expect("response export failure feedback");
+    assert!(feedback.message.contains("File already exists"));
+    assert!(
+        feedback
+            .message
+            .starts_with("Choose another folder and export again.")
+    );
+    let buffer = rendered_buffer(&mut state, 80, 24);
+    assert!(buffer.contains("Choose another folder"), "{buffer}");
     assert_eq!(fs::read_to_string(path).unwrap(), "existing");
 }
 
@@ -3720,22 +3833,36 @@ fn selected_log_deleted_after_menu_open_cannot_reveal_or_retarget() {
 fn reveal_feedback_reports_request_without_claiming_finder_state() {
     let mut state = test_state();
     let path = PathBuf::from("/tmp/history.jsonl");
+    state.response = ResponseState::masked("unchanged response body");
 
-    finish_path_reveal(&mut state, &path, Ok(()));
+    finish_path_reveal(&mut state, &path, ActionMenuKind::Response, Ok(()));
+    assert_eq!(state.status, "Reveal request sent.");
     assert_eq!(
-        state.status,
-        "Reveal in Finder request sent: history.jsonl."
+        state
+            .response_action_feedback
+            .as_ref()
+            .map(|feedback| feedback.message.as_str()),
+        Some("Reveal in Finder request sent: history.jsonl.")
     );
 
     finish_path_reveal(
         &mut state,
         &path,
+        ActionMenuKind::Response,
         Err(AtctlError::Transport("blocked".to_owned())),
     );
+    assert_eq!(state.status, "Reveal request failed.");
     assert_eq!(
-        state.status,
-        "Reveal in Finder request failed: transport error: blocked"
+        state
+            .response_action_feedback
+            .as_ref()
+            .map(|feedback| feedback.message.as_str()),
+        Some("Reveal in Finder request failed: transport error: blocked")
     );
+
+    let buffer = rendered_buffer(&mut state, 100, 24);
+    assert!(buffer.contains("Reveal in Finder request failed"));
+    assert!(buffer.contains("unchanged response body"));
 }
 
 #[test]
@@ -3748,6 +3875,12 @@ fn log_view_close_clears_opened_log_without_status_clear_action() {
         path: PathBuf::from("/tmp/test.session.log"),
         label: "test.session.log".to_owned(),
     });
+    set_response_action_result(
+        &mut state,
+        TuiStyleRole::Status,
+        "Response copy requested.",
+        COPY_REQUEST_SENT_FEEDBACK,
+    );
 
     run_action_menu(
         &mut state,
@@ -3758,6 +3891,7 @@ fn log_view_close_clears_opened_log_without_status_clear_action() {
     assert!(state.action_menu.is_none());
     assert!(state.response.is_empty());
     assert!(state.viewed_log.is_none());
+    assert!(state.response_action_feedback.is_none());
     assert_eq!(state.status, "Log view closed.");
 }
 

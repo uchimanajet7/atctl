@@ -45,14 +45,18 @@ pub enum AtctlError {
         source: toml::de::Error,
     },
 
-    #[error("preset not found: {name}")]
+    #[error(
+        "preset not found: {name}\nhelp: run `atctl preset list` with the same `--preset-file` and `--preset-dir` options, then use an exact listed name"
+    )]
     PresetNotFound { name: String },
 
-    #[error("sequence not found: {name}")]
+    #[error(
+        "sequence not found: {name}\nhelp: run `atctl sequence list` with the same `--sequence-file` and `--sequence-dir` options, then use an exact listed name"
+    )]
     SequenceNotFound { name: String },
 
     #[error(
-        "duplicate preset name `{name}` from {duplicate_source}; first definition was from {first_source}"
+        "duplicate preset name `{name}` from {duplicate_source}; first definition was from {first_source}\nhelp: rename one duplicate definition, or stop loading one of the conflicting file sources"
     )]
     DuplicatePreset {
         name: String,
@@ -61,7 +65,7 @@ pub enum AtctlError {
     },
 
     #[error(
-        "duplicate sequence name `{name}` from {duplicate_source}; first definition was from {first_source}"
+        "duplicate sequence name `{name}` from {duplicate_source}; first definition was from {first_source}\nhelp: rename one duplicate definition, or stop loading one of the conflicting file sources"
     )]
     DuplicateSequence {
         name: String,
@@ -69,7 +73,9 @@ pub enum AtctlError {
         duplicate_source: String,
     },
 
-    #[error("sequence `{sequence}` requires parameter `{param}`{hint}")]
+    #[error(
+        "sequence `{sequence}` requires parameter `{param}`{hint}\nhelp: rerun with `--param {param}=<VALUE>`"
+    )]
     MissingSequenceParam {
         sequence: String,
         param: String,
@@ -130,13 +136,19 @@ pub enum AtctlError {
     )]
     RawLogAckMismatch { acknowledged: String },
 
-    #[error("raw diagnostic export file already exists: {path}")]
+    #[error(
+        "raw diagnostic export file already exists: {path}\nhelp: choose a new file path; existing files are not overwritten"
+    )]
     RawLogFileExists { path: String },
 
-    #[error("Response export file already exists: {path}")]
+    #[error(
+        "Response export file already exists: {path}\nhelp: choose a new file path; existing files are not overwritten"
+    )]
     ResponseExportFileExists { path: String },
 
-    #[error("Response export parent directory does not exist: {path}")]
+    #[error(
+        "Response export parent directory does not exist: {path}\nhelp: choose a path in an existing directory, or create the parent directory first"
+    )]
     ResponseExportParentUnavailable { path: String },
 
     #[error("transport error: {0}")]

@@ -652,9 +652,14 @@ fn missing_required_param_is_rejected_before_transport() {
     let error = validate_and_bind_params(&sequence, &[]).unwrap_err();
 
     assert!(matches!(
-        error,
+        &error,
         AtctlError::MissingSequenceParam { param, .. } if param == "recipient"
     ));
+    assert!(
+        error
+            .to_string()
+            .contains("help: rerun with `--param recipient=<VALUE>`")
+    );
 }
 
 #[test]

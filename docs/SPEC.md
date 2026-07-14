@@ -1800,13 +1800,17 @@ the user oriented after the action. Controls actions MUST provide visible
 feedback near the Controls action list. Action-menu rows MUST keep stable
 labels and MUST NOT turn selectable rows into past-tense result labels.
 One-shot Response and Logs action-menu commands MAY close the menu after
-selection; when they close the menu, the compact Status area MAY show a concise
-operation result such as `Exported response: <file>.`,
-`Response body cleared.`, or a copy/reveal request result. Compact Status MUST
-NOT become the only place that
-explains a changed Response body state, and it MUST NOT become the place for
-long exported-file paths. Target identity belongs in the action-menu context for
-the specific selected, opened, or exported file.
+selection. Copy, export, reveal, and clear actions started from Response MUST
+show their result in a dedicated feedback area inside the Response pane while
+leaving the Response body unchanged, except for the separately specified clear
+operation. This feedback MUST remain outside the scrollable Response body and
+MUST NOT become part of copied or exported Response content. A later Response
+action MAY replace the feedback, and replacing the Response body or closing an
+opened log MUST clear it. The compact Status area MAY show only the concise
+operation state and MUST NOT become the only place that explains a changed
+Response body state or the place for long exported-file paths. Target identity
+belongs in the action-menu context for the specific selected, opened, or
+exported file.
 
 REQ-TUI-015B2: The TUI Logs pane MUST represent the current saved history and
 session log list for the running TUI session. It MUST read from the same
@@ -3915,8 +3919,10 @@ Reference basis for TUI log viewing:
 
 ## 21. Error Handling
 
-REQ-ERR-001: Error messages MUST explain what failed, likely cause, and next
-action.
+REQ-ERR-001: Error messages MUST identify the failed operation. When current
+runtime evidence identifies a specific cause or corrective action, the message
+MUST include it. Error messages MUST NOT guess a cause or corrective action when
+current runtime evidence does not distinguish one.
 
 REQ-ERR-002: Error messages MUST distinguish device-not-found, multiple-device,
 open failure, claim failure, endpoint detection failure, write failure, read
