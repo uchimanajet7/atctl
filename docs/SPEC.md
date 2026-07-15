@@ -4263,12 +4263,8 @@ disable persisted checkout credentials when later steps do not need GitHub
 write access. Superseded runs for the same pull request or ref SHOULD be
 cancelled.
 
-REQ-TEST-004E: After the source-change workflow has produced its first
-successful **Rust quality gate** check, the GitHub repository rules for `main`
-MUST require that named check before merge. The workflow definition and the
-repository rule are separate controls: the workflow reports the result, while
-the repository rule enforces it. The release workflow MUST retain its own
-pre-publication execution of the normal Rust verification gate.
+REQ-TEST-004E: The release workflow MUST independently execute the normal Rust
+verification gate before publication and MUST NOT publish when that gate fails.
 
 REQ-TEST-005: TUI verification MUST include terminal restoration behavior and
 basic interaction state checks before TUI completion is claimed.

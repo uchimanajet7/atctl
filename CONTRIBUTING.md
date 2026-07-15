@@ -35,8 +35,8 @@ formatting, compilation checks, tests, and Clippy with warnings denied.
 
 GitHub Actions runs the same gate as the **Rust quality gate** check for every
 pull request targeting `main`, including documentation-only changes. The check
-must pass before merge. A new push updates the check for the current pull
-request revision.
+reports the result for review. Correct any failure before merging; a new push
+updates the check for the current pull request revision.
 
 Run any additional change-specific checks described in the development guide.
 When a change affects hardware-dependent behavior, run the relevant real-device

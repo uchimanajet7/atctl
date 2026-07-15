@@ -386,10 +386,9 @@ project's `libusb` and `pkgconf` build prerequisites, verifies that the runner
 architecture is `arm64`, and then runs the commands from [Format and
 Lint](#format-and-lint).
 
-After the workflow has completed successfully at least once, the repository's
-GitHub rules for `main` must require the **Rust quality gate** status check.
-The workflow file produces the check; the GitHub repository rule is what blocks
-a merge while the check is pending or failing.
+Review the reported **Rust quality gate** result and correct failed runs before
+release. The release workflow independently runs the same gate and stops
+publication when the gate fails.
 
 ## Source Repository Release Workflow
 

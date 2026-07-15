@@ -429,17 +429,15 @@ pull request targeting `main`, every push to `main`, and manual dispatch. The
 job runs the documented normal Rust verification gate on the GitHub-hosted
 `macos-26` Apple Silicon runner, verifies `arm64`, uses read-only repository
 permission and immutable Action revisions, and does not use pull-request path
-filters. After the job has completed successfully, the GitHub repository rules
-for `main` require that named check before merge.
+filters.
 
 Rationale and consequences: Contributors and maintainers receive the same
 automatic result for source, test, workflow, and documentation changes without
 depending on a remembered local check. A target-specific runner exercises the
 supported Apple Silicon macOS build environment, and the absence of path filters
-keeps the required-check result from remaining pending on an otherwise eligible
-pull request. The release workflow retains an independent pre-publication run of
-the same gate. GitHub rule configuration remains a separate repository-owner
-operation after the workflow has produced a selectable successful check.
+reports a result for every pull request. Maintainers review failed runs and
+correct the change before release. The release workflow retains an independent
+pre-publication run of the gate and stops publication when it fails.
 
 Normative owner: [SPEC.md](SPEC.md) verification requirements,
 [DEVELOPMENT.md](DEVELOPMENT.md) maintainer procedure, and
