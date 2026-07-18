@@ -1,4 +1,3 @@
-use crate::at::risk::RiskLevel;
 use crate::presets::definition::{PresetDefinition, definitions_into_presets};
 use crate::presets::model::{Preset, PresetOrigin};
 
@@ -8,217 +7,77 @@ pub fn builtins() -> Vec<Preset> {
 
 fn builtin_definitions() -> Vec<PresetDefinition> {
     vec![
-        preset_definition("modem-response", "AT", RiskLevel::Safe, ["basic"]),
-        preset_definition("modem-info", "ATI", RiskLevel::Safe, ["identity"]),
-        preset_definition("manufacturer", "AT+CGMI", RiskLevel::Safe, ["identity"]),
-        preset_definition("model", "AT+CGMM", RiskLevel::Safe, ["identity"]),
-        preset_definition(
-            "firmware-revision",
-            "AT+CGMR",
-            RiskLevel::Safe,
-            ["identity"],
-        ),
-        preset_definition("imei", "AT+CGSN", RiskLevel::Sensitive, ["identity"]),
-        preset_definition("sim-pin-status", "AT+CPIN?", RiskLevel::Safe, ["sim"]),
-        preset_definition("imsi", "AT+CIMI", RiskLevel::Sensitive, ["sim"]),
-        preset_definition("radio-stack", "AT+WS46?", RiskLevel::Safe, ["network"]),
-        preset_definition(
-            "radio-stack-capabilities",
-            "AT+WS46=?",
-            RiskLevel::Safe,
-            ["network"],
-        ),
-        preset_definition("current-operator", "AT+COPS?", RiskLevel::Safe, ["network"]),
-        preset_definition_with_timeout(
-            "available-operators",
-            "AT+COPS=?",
-            RiskLevel::Safe,
-            ["network"],
-            180,
-        ),
-        preset_definition(
-            "operator-format-numeric",
-            "AT+COPS=3,2",
-            RiskLevel::Write,
-            ["network"],
-        ),
-        preset_definition(
-            "operator-auto-selection",
-            "AT+COPS=0",
-            RiskLevel::Write,
-            ["network"],
-        ),
-        preset_definition(
-            "circuit-registration",
-            "AT+CREG?",
-            RiskLevel::Safe,
-            ["network"],
-        ),
-        preset_definition(
-            "gprs-registration",
-            "AT+CGREG?",
-            RiskLevel::Safe,
-            ["network"],
-        ),
-        preset_definition(
-            "eps-registration",
-            "AT+CEREG?",
-            RiskLevel::Safe,
-            ["network"],
-        ),
+        preset_definition("modem-response", "AT", ["basic"]),
+        preset_definition("modem-info", "ATI", ["identity"]),
+        preset_definition("manufacturer", "AT+CGMI", ["identity"]),
+        preset_definition("model", "AT+CGMM", ["identity"]),
+        preset_definition("firmware-revision", "AT+CGMR", ["identity"]),
+        preset_definition("imei", "AT+CGSN", ["identity"]),
+        preset_definition("sim-pin-status", "AT+CPIN?", ["sim"]),
+        preset_definition("imsi", "AT+CIMI", ["sim"]),
+        preset_definition("radio-stack", "AT+WS46?", ["network"]),
+        preset_definition("radio-stack-capabilities", "AT+WS46=?", ["network"]),
+        preset_definition("current-operator", "AT+COPS?", ["network"]),
+        preset_definition_with_timeout("available-operators", "AT+COPS=?", ["network"], 180),
+        preset_definition("operator-format-numeric", "AT+COPS=3,2", ["network"]),
+        preset_definition("operator-auto-selection", "AT+COPS=0", ["network"]),
+        preset_definition("circuit-registration", "AT+CREG?", ["network"]),
+        preset_definition("gprs-registration", "AT+CGREG?", ["network"]),
+        preset_definition("eps-registration", "AT+CEREG?", ["network"]),
         preset_definition(
             "enable-circuit-registration-detail",
             "AT+CREG=2",
-            RiskLevel::Write,
             ["network"],
         ),
-        preset_definition(
-            "enable-gprs-registration-detail",
-            "AT+CGREG=2",
-            RiskLevel::Write,
-            ["network"],
-        ),
-        preset_definition(
-            "enable-eps-registration-detail",
-            "AT+CEREG=2",
-            RiskLevel::Write,
-            ["network"],
-        ),
-        preset_definition(
-            "enable-eps-registration-cause",
-            "AT+CEREG=3",
-            RiskLevel::Write,
-            ["network"],
-        ),
+        preset_definition("enable-gprs-registration-detail", "AT+CGREG=2", ["network"]),
+        preset_definition("enable-eps-registration-detail", "AT+CEREG=2", ["network"]),
+        preset_definition("enable-eps-registration-cause", "AT+CEREG=3", ["network"]),
         preset_definition(
             "enable-eps-registration-extended",
             "AT+CEREG=5",
-            RiskLevel::Write,
             ["network"],
         ),
-        preset_definition("signal-quality", "AT+CSQ", RiskLevel::Safe, ["signal"]),
-        preset_definition(
-            "extended-signal-quality",
-            "AT+CESQ",
-            RiskLevel::Safe,
-            ["signal"],
-        ),
-        preset_definition(
-            "extended-signal-capabilities",
-            "AT+CESQ=?",
-            RiskLevel::Safe,
-            ["signal"],
-        ),
-        preset_definition(
-            "pdp-contexts",
-            "AT+CGDCONT?",
-            RiskLevel::Safe,
-            ["pdp", "apn"],
-        ),
-        preset_definition(
-            "pdp-auth-settings",
-            "AT+CGAUTH?",
-            RiskLevel::Sensitive,
-            ["pdp", "apn"],
-        ),
-        preset_definition(
-            "pdp-auth-capabilities",
-            "AT+CGAUTH=?",
-            RiskLevel::Safe,
-            ["pdp", "apn"],
-        ),
-        preset_definition(
-            "packet-attach",
-            "AT+CGATT?",
-            RiskLevel::Safe,
-            ["network", "pdp"],
-        ),
-        preset_definition("active-pdp-contexts", "AT+CGACT?", RiskLevel::Safe, ["pdp"]),
-        preset_definition("pdp-addresses", "AT+CGPADDR", RiskLevel::Safe, ["pdp"]),
-        preset_definition(
-            "pdp-address-capabilities",
-            "AT+CGPADDR=?",
-            RiskLevel::Safe,
-            ["pdp"],
-        ),
-        preset_definition(
-            "pdp-connection-details",
-            "AT+CGCONTRDP",
-            RiskLevel::Safe,
-            ["pdp"],
-        ),
-        preset_definition(
-            "extended-error-report",
-            "AT+CEER",
-            RiskLevel::Safe,
-            ["diagnostics"],
-        ),
-        preset_definition(
-            "error-reporting-status",
-            "AT+CMEE?",
-            RiskLevel::Safe,
-            ["diagnostics"],
-        ),
-        preset_definition(
-            "enable-verbose-errors",
-            "AT+CMEE=2",
-            RiskLevel::Write,
-            ["diagnostics"],
-        ),
-        preset_definition(
-            "modem-activity-status",
-            "AT+CPAS",
-            RiskLevel::Safe,
-            ["modem", "diagnostics"],
-        ),
-        preset_definition("sms-service-support", "AT+CSMS?", RiskLevel::Safe, ["sms"]),
-        preset_definition("sms-format", "AT+CMGF?", RiskLevel::Safe, ["sms"]),
-        preset_definition("sms-storage", "AT+CPMS?", RiskLevel::Safe, ["sms"]),
-        preset_definition(
-            "modem-functionality",
-            "AT+CFUN?",
-            RiskLevel::Safe,
-            ["modem"],
-        ),
-        preset_definition(
-            "set-modem-minimum-functionality",
-            "AT+CFUN=0",
-            RiskLevel::Dangerous,
-            ["modem"],
-        ),
-        preset_definition(
-            "set-modem-full-functionality",
-            "AT+CFUN=1",
-            RiskLevel::Dangerous,
-            ["modem"],
-        ),
-        preset_definition(
-            "restart-modem",
-            "AT+CFUN=1,1",
-            RiskLevel::Dangerous,
-            ["modem"],
-        ),
-        preset_definition("disable-command-echo", "ATE0", RiskLevel::Write, ["basic"]),
+        preset_definition("signal-quality", "AT+CSQ", ["signal"]),
+        preset_definition("extended-signal-quality", "AT+CESQ", ["signal"]),
+        preset_definition("extended-signal-capabilities", "AT+CESQ=?", ["signal"]),
+        preset_definition("pdp-contexts", "AT+CGDCONT?", ["pdp", "apn"]),
+        preset_definition("pdp-auth-settings", "AT+CGAUTH?", ["pdp", "apn"]),
+        preset_definition("pdp-auth-capabilities", "AT+CGAUTH=?", ["pdp", "apn"]),
+        preset_definition("packet-attach", "AT+CGATT?", ["network", "pdp"]),
+        preset_definition("active-pdp-contexts", "AT+CGACT?", ["pdp"]),
+        preset_definition("pdp-addresses", "AT+CGPADDR", ["pdp"]),
+        preset_definition("pdp-address-capabilities", "AT+CGPADDR=?", ["pdp"]),
+        preset_definition("pdp-connection-details", "AT+CGCONTRDP", ["pdp"]),
+        preset_definition("extended-error-report", "AT+CEER", ["diagnostics"]),
+        preset_definition("error-reporting-status", "AT+CMEE?", ["diagnostics"]),
+        preset_definition("enable-verbose-errors", "AT+CMEE=2", ["diagnostics"]),
+        preset_definition("modem-activity-status", "AT+CPAS", ["modem", "diagnostics"]),
+        preset_definition("sms-service-support", "AT+CSMS?", ["sms"]),
+        preset_definition("sms-format", "AT+CMGF?", ["sms"]),
+        preset_definition("sms-storage", "AT+CPMS?", ["sms"]),
+        preset_definition("modem-functionality", "AT+CFUN?", ["modem"]),
+        preset_definition("set-modem-minimum-functionality", "AT+CFUN=0", ["modem"]),
+        preset_definition("set-modem-full-functionality", "AT+CFUN=1", ["modem"]),
+        preset_definition("restart-modem", "AT+CFUN=1,1", ["modem"]),
+        preset_definition("disable-command-echo", "ATE0", ["basic"]),
     ]
 }
 
 fn preset_definition<I, S>(
     name: impl Into<String>,
     command: impl Into<String>,
-    risk: RiskLevel,
     categories: I,
 ) -> PresetDefinition
 where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    PresetDefinition::new(name, command, risk, categories)
+    PresetDefinition::new(name, command, categories)
 }
 
 fn preset_definition_with_timeout<I, S>(
     name: impl Into<String>,
     command: impl Into<String>,
-    risk: RiskLevel,
     categories: I,
     timeout_secs: u64,
 ) -> PresetDefinition
@@ -226,7 +85,7 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
-    PresetDefinition::new(name, command, risk, categories).with_timeout(timeout_secs)
+    PresetDefinition::new(name, command, categories).with_timeout(timeout_secs)
 }
 
 #[cfg(test)]

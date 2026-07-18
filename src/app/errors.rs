@@ -1,5 +1,4 @@
 use crate::at::response::AtStatus;
-use crate::at::risk::RiskLevel;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, AtctlError>;
@@ -114,17 +113,27 @@ pub enum AtctlError {
         source: rusb::Error,
     },
 
-    #[error("command requires confirmation: risk={risk}")]
-    ConfirmationRequired { risk: RiskLevel },
+    #[error("operation requires interactive confirmation")]
+    ConfirmationRequired,
 
-    #[error("direct send requires --risk-ack {risk} when --yes is used")]
-    MissingRiskAck { risk: RiskLevel },
+    #[error(
+        "prompt-required operation cannot run through one-shot send or preset execution\nhelp: use a Sequence, or use the PTY bridge for a supported prompt/payload command"
+    )]
+    PromptRequiredOneShot,
 
-    #[error("risk acknowledgement mismatch: classified={classified}, acknowledged={acknowledged}")]
-    RiskAckMismatch {
-        classified: RiskLevel,
-        acknowledged: RiskLevel,
-    },
+    #[error("--allow-unknown requires --yes")]
+    AllowUnknownRequiresYes,
+
+    #[error("unknown operation requires --yes --allow-unknown for non-interactive execution")]
+    UnknownOperationRequiresAllowance,
+
+    #[error("--allow-unknown applies only when the operation assessment is unknown")]
+    AllowUnknownNotApplicable,
+
+    #[error(
+        "operation changed outside the reviewed execution boundary before transport write: {operation}"
+    )]
+    OperationOutsideReviewedBoundary { operation: String },
 
     #[error(
         "raw diagnostic export requires --raw-log-ack raw-log when --raw-log-file is used non-interactively or with --yes"

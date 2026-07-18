@@ -75,8 +75,9 @@ cargo test --all-features --locked
 Tests should cover at least:
 
 - AT response parser
-- Sensitive value masking
-- Preset risk classification
+- Semantic/provenance-sensitive value masking, including short phone fields
+  next to visible short operational values
+- Product-derived execution review and authorization
 - Config parsing
 - CLI parsing
 - Mock transport behavior
@@ -108,7 +109,7 @@ scope:
 
 - Shared execution and loaded-definition behavior: `REQ-ARCH-003` and
   `REQ-ARCH-006` through `REQ-ARCH-008`.
-- File preset loading, source display, risk, and examples:
+- File preset loading, source display, execution review, and examples:
   `REQ-CLI-PRESET-001` through `REQ-CLI-PRESET-011`,
   `REQ-CLI-PRESET-RUN-001` through `REQ-CLI-PRESET-RUN-007`, and
   `REQ-PRESET-SET-001` through `REQ-PRESET-SET-005`.
@@ -147,16 +148,18 @@ through the normal file preset loader:
 cargo run -- preset list --preset-dir examples/presets
 ```
 
-When changing file preset loading, listing, execution, or risk handling, verify:
+When changing file preset loading, listing, execution, or review handling, verify:
 
 - Both repository-managed TOML files load through the same path used for other
   file presets.
-- CLI list output includes the `source-path` column.
+- Human CLI list output stays on the compact `NAME` / `AT COMMAND` /
+  `ATTENTION` grammar, groups each file source once, and preserves complete
+  source metadata in `list --json` and `preset show`.
 - CLI run output shows the external file preset notice before USB access,
-  including the `--yes --risk-ack <risk>` path.
+  including the `--yes` and `--yes --allow-unknown` paths.
 - Duplicate names fail with an actionable error.
-- Every example preset declares risk, and declared risk cannot downgrade the
-  command classifier's effective risk.
+- Example presets contain no operator-declared risk field; the product derives
+  the review from the final command, and a removed `risk` field is rejected.
 - The TOML remains human-editable.
 
 When changing standard or vendor-specific preset coverage, compare the result
@@ -167,13 +170,14 @@ example requirements.
 ## Sequence Development
 
 Before changing Sequence behavior, review `REQ-SEQ-ENGINE-*`, `REQ-CLI-SEQ-*`,
-`REQ-TUI-SEQ-*`, `REQ-SEQ-FILE-*`, and `REQ-TEST-007` through `REQ-TEST-009` in
+`REQ-TUI-SEQ-*`, `REQ-SEQ-FILE-*`, and `REQ-TEST-007` through `REQ-TEST-010` in
 [`SPEC.md`](SPEC.md). Cover these production surfaces together when they are
 affected:
 
-- TUI `Commands / Sequences` selection, `Run Sequence` modal, compact Status
-  step/result context without Sequence summary text, Controls behavior, and
-  Response step transcript.
+- TUI `Commands / Sequences` one-row command/Sequence grammar, `d Details`,
+  `Run Sequence` modal identity and scroll/pinned-control behavior, compact
+  Status step/result context without Sequence purpose text, Controls behavior,
+  and Response step transcript.
 - CLI `atctl sequence list` and `atctl sequence run <SEQUENCE>`.
 - `atctl send` and `atctl preset run` staying one-shot surfaces with clear
   errors if a Sequence name is supplied there.
@@ -182,16 +186,45 @@ affected:
 
 Tests should cover at least:
 
+- TUI command and Sequence rows using the same physical height and explicit
+  `│ AT:` / `│ Purpose:` delimiters in product-only, mixed-kind, and loaded
+  definition states. Selection styling must not erase warning styling.
+- `d Details` for commands and Sequences without a visible device, complete
+  wrapped identity, non-default source/file disclosure, hidden-field search
+  matches, line/page scrolling, `q` no-op, `Esc` close, and exact discovery
+  state restoration.
+- Empty category and search-result recovery text plus the safe resize fallback
+  when complete warning, Details, or pinned confirmation content cannot fit.
+- Complete Sequence Name/Purpose in parameter, candidate, candidate-action
+  confirmation, no-confirmation review, known confirmation, unknown
+  confirmation, and error states. Long context must page independently while
+  the active value/candidate or confirmation instruction/Input remains visible.
+
 - Sequence TOML parsing for explicit `--sequence-file` and
   `--sequence-dir` locations.
 - Sequence TOML parsing for pre-send `review` items, `success_notes`, and
   per-step `evidence` text rendered as `Analysis:`.
 - Explicit `--sequence-file` and `--sequence-dir` loading.
-- CLI `sequence list` `source-path` output and CLI `sequence run` external
-  definition notice output before USB access, including the
-  `--yes --risk-ack <risk>` path.
+- CLI `sequence list` compact output, `list --json`, complete read-only
+  `sequence show`, and CLI `sequence run` external definition notice output
+  before USB access, including the `--yes` and `--yes --allow-unknown` paths.
 - Duplicate Sequence name rejection.
 - Required parameter validation and sensitive parameter masking.
+- Raw/masked execution-pair coverage across direct `send`, preset execution,
+  Sequence command/payload templates, TUI Response/Status/copy/export, PTY
+  output, JSON, history, and session logs. Tests must prove that a known short
+  phone/MSISDN field is hidden on each applicable path, an adjacent short
+  operational value remains visible, unclassified short vendor output is not
+  guessed, and explicit unmasked foreground/raw diagnostic paths remain raw.
+- Normal log-writer and saved-log-view tests must consume the already-masked
+  operation/review/response artifact and reject context-losing remasking in a
+  later consumer.
+- Sequence list review from the unresolved definition boundary, followed by a
+  newly derived CLI/TUI confirmation review after operator values and defaults
+  are bound; execution output and logs must retain that resolved review.
+- Runtime-derived values may remain unresolved before the producing modem step,
+  but the resulting command must stay within the authorized effects and data
+  handling immediately before its transport write.
 - Active input/review rendering for SMS send destination/body, SMS read index,
   SMS reply index/body, and TCP destination/PDP context/socket ID/payload/read
   length before USB access, while default Response output, logs, saved output,
@@ -220,7 +253,7 @@ Tests should cover at least:
   command/Sequence path instead of hidden I/O. When candidates are already
   loaded, the same product actions remain selectable as explicit refresh/load
   actions for that candidate source, so stale SMS or PDP candidates can be
-  updated without leaving the modal. If the selected action requires risk
+  updated without leaving the modal. If the selected action requires execution
   confirmation, confirmation stays inside the same `Run Sequence` modal.
   Candidate action failure is reported as action failure, with full detail in
   Response and concise `Action` state in compact Status; it must not mark the
@@ -237,7 +270,7 @@ Tests should cover at least:
   candidate-window range label must be visibly separate from the modem storage
   index value.
 - TUI Sequence confirmation as a phase-based modal state: long Values or Review
-  sections must not push the risk instruction or `Input:` line out of view.
+  sections must not push the confirmation instruction or `Input:` line out of view.
   Render-buffer coverage should include a long TCP Sequence confirmation at the
   normal TUI modal size.
 - SMS `+CMGL` / `+CMGR` response parsing, UCS2 decoded-body analysis in
@@ -257,9 +290,9 @@ Tests should cover at least:
 - Best-effort failure cleanup for product-managed Sequence resources such as
   an opened Quectel socket, with cleanup commands visible in the transcript
   without replacing the original failed step reason.
-- Risk aggregation from declared Sequence risk, step commands, payloads,
-  parameters, state-aware execution actions, cleanup actions, and known side
-  effects.
+- Execution-review aggregation from step commands, payloads, sensitive
+  parameters, state-aware execution actions, cleanup actions, and known or
+  unestablished effects.
 - Prompt wait, payload write, Ctrl-Z or ESC terminator handling, final response
   wait, URC wait, and per-step timeout behavior through mock transports.
 - Sequence loader validation for semantic success flags and wait markers:
@@ -275,10 +308,18 @@ Tests should cover at least:
 - Sequence text transcript positive assertions for single blank-line separation
   between origin sections and no decorative divider lines in normal output.
 - Raw diagnostic export events for multi-step Sequence execution.
-- TUI Sequence list rendering, modal input, running state, transcript display,
-  the six exact risk labels without suffix words, separated output-masking
-  state, masked copy/export, unmasked `copy` and `export` confirmation, exact
-  destination identity, and no additional permanent pane.
+- TUI Sequence list rendering with identity-first rows and exception-only
+  confirmation warnings, phase-specific modal input/review styling, structured
+  known/unknown confirmation content, running state, transcript display,
+  separated output-masking state, masked copy/export, unmasked `copy` and
+  `export` confirmation, whole-surface modal controls, exact destination
+  identity, and no additional permanent pane. Modal verification must prove
+  that `Esc` is the common cancel/close/back key; `q` quits only from the idle
+  base screen, is ordinary text only in a visible editable field, and cannot
+  close Help or action menus, mutate review-only state, or quit during execution.
+  Event handling, modal-body instructions, and footer hints must be checked as
+  one contract. Render-buffer coverage must compare adjacent list, input,
+  review, confirmation, action-menu, running, and dark/light/no-color states.
 
 Repository-managed example Sequence files are maintained implementation and
 verification inputs. Load the Quectel and SORACOM examples through the same

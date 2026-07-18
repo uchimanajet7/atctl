@@ -53,20 +53,25 @@ repository responsibilities.
 Normative owner: [INSTALL.md](INSTALL.md), [PACKAGING.md](PACKAGING.md), and the
 [SPEC.md](SPEC.md) packaging contract.
 
-## OQ-004: Direct `atctl send` Safety Policy
+## OQ-004: AT Execution Review and Confirmation Policy
 
 Status: accepted
 
-Decision: Safe reads may run directly; sensitive reads remain masked; write,
-persistent, dangerous, and unknown state-changing commands require explicit
-confirmation. Non-interactive execution requires both `--yes` and a matching
-`--risk-ack <risk>`.
+Decision: The product does not expose a scalar risk level. It derives an
+execution review from the final operation and separates assessment
+(`known`/`unknown`), effects, data handling, reversibility, consequences, and
+confirmation. Known observations without a material effect may run without
+confirmation. Known material operations require `run` interactively or
+`--yes` non-interactively. Unknown operations show what is not established and
+require `unknown` interactively or both `--yes --allow-unknown`
+non-interactively. `--allow-unknown` is rejected for known operations.
 
-Rationale and consequences: `--yes` suppresses prompting but does not identify
-the reviewed risk. A matching acknowledgement prevents stale scripts from
-silently accepting a changed risk classification.
+Rationale and consequences: safety, sensitivity, state change, persistence,
+and consequence are different dimensions and must not be compressed into one
+ordered label. Unknown means the product cannot establish complete semantics;
+it is not a promise that every harmful unknown command can be identified.
 
-Normative owner: [SPEC.md](SPEC.md) direct-send and risk requirements and
+Normative owner: [SPEC.md](SPEC.md) execution-review requirements and
 [SAFETY.md](SAFETY.md).
 
 ## OQ-005: Source Repository Release Artifacts
@@ -180,26 +185,52 @@ evidence, not universal requirements.
 Normative owner: [SPEC.md](SPEC.md) USB requirements and
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
-## OQ-012: TUI Risk Visual Differentiation
+## OQ-012: TUI Execution Review Presentation
 
 Status: accepted
 
-Decision: Each TUI command and Sequence row shows exactly one text risk label:
-`[safe]`, `[sensitive]`, `[write]`, `[persistent]`, `[dangerous]`, or
-`[unknown]`. Risk labels do not contain masking state, confirmation
-instructions, persistence descriptions, severity restatements, or review
-instructions. Output masking state, expected effect, and required
-acknowledgement are presented separately in their owning surfaces. Dark, light,
-and no-color themes preserve the text labels.
+Decision: A TUI command row uses the stable one-row shape
+`name │ AT: command`; a Sequence row uses `name │ Purpose: preview`. The
+selected row keeps the same height as every other row. Only exception states
+append warning text:
+`! Confirmation required` or
+`! Confirmation required (effects unknown)`. Normal rows omit confirmation
+status. The full applicable warning is preserved before a name or preview is
+shortened. `d Details` opens a read-only, scrollable full-identity overlay with
+complete command or purpose text, exceptional warning, applicable non-default
+source/file, and a hidden-field search match; it performs no device I/O. A
+required confirmation surface shows identity first, then
+consequence-oriented groups and the exact confirmation word. Known and unknown
+reviews use different headings so unknown effects cannot look complete.
+Compact Status remains limited to current state and execution context.
+Every Sequence modal phase shows the complete Sequence name and purpose. Long
+context scrolls in a visible upper Details region while the current value,
+candidate action, confirmation instruction, and input remain pinned and
+operable. Areas too small to show complete decision-critical content stop at a
+resize message instead of presenting partial executable or confirmation text.
+Confirmation uses structure, text markers, and emphasis that remain usable in
+dark, light, and no-color modes; color is not the only signal. Help and
+all other atctl-owned modal surfaces use `Esc` as the single close, cancel, or
+back key. Help also accepts `?` because that key opens the overlay. Lowercase
+`q` quits only from the idle base screen, remains ordinary text while a visible
+input field is active, and has no effect in a non-editable modal or while an
+operation is running. The idle base screen does not use `Esc` as a second quit
+key and does not add a routine quit confirmation.
 
-Rationale and consequences: A risk label must retain one stable meaning across
-Commands, Status, and confirmation surfaces. Mixing `MASKED`, `CONFIRM`,
-`PERSISTS`, `DANGER`, and `REVIEW` into the same label position combined state,
-instructions, effects, and severity. Risk meaning must also survive selection
-styling, terminal theme differences, and disabled color. Exact labels and
-palette values remain normative in [SPEC.md](SPEC.md).
+Rationale and consequences: a stable one-row list supports scanning many mixed
+commands and Sequences without selection changing the surrounding layout. The
+explicit `AT:` and `Purpose:` delimiters keep name and meaning separate, while
+Details provides complete information without forcing long prose into every
+row. Exception-only warnings retain the decision-relevant signal, and pinning
+phase-critical controls prevents long context from hiding the next action. The
+confirmation surface owns detailed effects and uncertainty, while Status does
+not become a second help or policy pane. One visible root quit key and one modal
+cancellation key avoid competing meanings. Keeping `q` as text only when an
+input field is visible also prevents hidden state changes in review-only modals
+and preserves commands, paths, parameters, and acknowledgements that contain
+`q`.
 
-Normative owner: [SPEC.md](SPEC.md) TUI risk and theme requirements.
+Normative owner: [SPEC.md](SPEC.md) TUI review, Status, and theme requirements.
 
 ## OQ-013: TUI Output Masking
 
@@ -237,8 +268,9 @@ Status: accepted
 
 Decision: Product presets cover vendor-neutral modem workflows;
 vendor/provider commands use explicitly loaded repository examples or user
-files; effective risk cannot be downgraded by declared metadata; one-off AT
-input remains available; prompt-required multi-step operations use Sequences.
+files; the product derives the execution review and definition metadata cannot
+override it; one-off AT input remains available; prompt-required multi-step
+operations use Sequences.
 
 Rationale and consequences: This keeps ordinary modem workflows usable while
 preserving origin, review responsibility, and safety for external executable
@@ -297,7 +329,7 @@ Status: accepted
 
 Decision: The PTY bridge resolves its target before symlink creation, protects
 existing files and symlinks, cleans up only its own symlink, handles
-line-oriented input and typed risk confirmation, and supports one bridge loop
+line-oriented input and typed execution confirmation, and supports one bridge loop
 rather than concurrent clients.
 
 Rationale and consequences: The bridge must preserve normal target-selection
@@ -469,3 +501,29 @@ obligations.
 
 Normative owner: [SPEC.md](SPEC.md) release packaging requirements and
 [PACKAGING.md](PACKAGING.md) maintainer procedure.
+
+## OQ-028: Semantic and Provenance-Based Masking
+
+Status: accepted
+
+Decision: Default masking classifies product-known sensitive fields and
+definition-declared sensitive template positions before applying a conservative
+long-identifier fallback. Known phone, MSISDN, SMS sender, and SMS recipient
+values are masked regardless of length, while unclassified short operational
+values remain visible. Bounded execution creates raw and masked forms before
+output routing; normal CLI, preset, Sequence, TUI, PTY, JSON, history, session
+log, copy, and Response-export consumers use the applicable form. Explicit
+unmasked foreground output and acknowledged raw diagnostic export keep their
+separate purposes.
+
+Rationale and consequences: A digit-count threshold cannot protect short phone
+values, but masking every short number would remove signal, index, context,
+message-reference, port, timeout, count, and result information needed for this
+product's operation and troubleshooting. Field semantics and definition
+provenance resolve the known cases without a new UI, user-authored regex system,
+phone-number dependency, remote service, or per-surface behavior fork. Unknown
+vendor fields retain an explicit limit: short values are not guessed from text
+alone, while the existing long-identifier fallback remains available.
+
+Normative owner: [SPEC.md](SPEC.md) masking requirements and
+[SAFETY.md](SAFETY.md).

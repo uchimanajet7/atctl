@@ -14,6 +14,11 @@ pub fn command_with_terminator(command: &str) -> String {
     }
 }
 
+pub fn has_embedded_command_framing(command: &str) -> bool {
+    let command = command.trim_end_matches(['\r', '\n']);
+    command.chars().any(char::is_control)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -27,5 +32,13 @@ mod tests {
     #[test]
     fn normalizes_for_classification() {
         assert_eq!(normalize_command(" at+cimi\r\n"), "AT+CIMI");
+    }
+
+    #[test]
+    fn rejects_embedded_command_framing_but_allows_a_trailing_terminator() {
+        assert!(!has_embedded_command_framing("AT+CSQ"));
+        assert!(!has_embedded_command_framing("AT+CSQ\r"));
+        assert!(has_embedded_command_framing("AT+CSQ\rAT+CFUN=1"));
+        assert!(has_embedded_command_framing("AT+CMGS=1\u{1a}"));
     }
 }

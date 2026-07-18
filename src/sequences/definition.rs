@@ -1,4 +1,3 @@
-use crate::at::risk::RiskLevel;
 use crate::sequences::model::{
     Sequence, SequenceOrigin, SequenceParam, SequenceReviewItem, SequenceStep,
 };
@@ -7,7 +6,6 @@ use crate::sequences::model::{
 pub struct SequenceDefinition {
     pub name: String,
     pub summary: String,
-    pub risk: RiskLevel,
     pub categories: Vec<String>,
     pub timeout_secs: Option<u64>,
     pub before_running: Vec<String>,
@@ -22,7 +20,6 @@ impl SequenceDefinition {
     pub fn new(
         name: impl Into<String>,
         summary: impl Into<String>,
-        risk: RiskLevel,
         categories: Vec<String>,
         timeout_secs: Option<u64>,
         params: Vec<SequenceParam>,
@@ -31,7 +28,6 @@ impl SequenceDefinition {
         Self {
             name: name.into(),
             summary: summary.into(),
-            risk,
             categories,
             timeout_secs,
             before_running: Vec::new(),
@@ -61,7 +57,6 @@ impl SequenceDefinition {
         Sequence::new(
             self.name,
             self.summary,
-            self.risk,
             self.categories,
             origin,
             self.timeout_secs,
@@ -94,7 +89,6 @@ mod tests {
         let sequence = SequenceDefinition::new(
             "sms-send-check",
             "Send an SMS.",
-            RiskLevel::Write,
             vec!["sms".to_owned()],
             Some(180),
             vec![SequenceParam {

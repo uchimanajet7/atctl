@@ -22,6 +22,10 @@ All notable project changes should be recorded in this file.
   compatible locked dependencies.
 - Standardized generated history and session logs on the XDG state directory,
   including `XDG_STATE_HOME` overrides and the `$HOME/.local/state` fallback.
+- Changed default masking to classify product-known phone/SMS fields and
+  definition-declared sensitive values by meaning and provenance rather than
+  length, while retaining short operational values and one consistent masked
+  artifact across normal output, JSON, TUI, PTY, history, and session logs.
 - Documented the complete masked-log lifecycle, including aggregate history,
   per-execution session logs, manual retention and deletion, and separate raw
   diagnostic exports.
@@ -33,10 +37,29 @@ All notable project changes should be recorded in this file.
   `preset run`, and `sequence run` accept `--export-response <PATH>` without
   changing normal stdout. Exports follow foreground masking and never overwrite
   an existing file.
-- Unified TUI risk presentation on one exact classification label per command
-  or Sequence, with masking state, expected effects, and confirmation actions
-  shown separately. Unmasked Response copy and export now require explicit
-  action-specific confirmation before clipboard or file output.
+- Replaced scalar command-risk labels across CLI, TUI, presets, Sequences, PTY,
+  JSON, and logs with product-derived execution reviews that separate
+  assessment, effects, data handling, reversibility, consequences, and
+  confirmation. Unknown operations now require distinct explicit
+  authorization. The review distinguishes SMS read-status changes, Quectel
+  receive-buffer reads, counter queries, and prompt/payload sends; one-shot
+  surfaces reject prompt-required operations before USB access. Unmasked
+  Response copy and export continue to require action-specific confirmation
+  before clipboard or file output.
+- Reworked execution-review presentation around user decisions: TUI rows now
+  prioritize item identity and show confirmation only as an exception warning;
+  known and unknown confirmations use consequence-oriented sections; Sequence
+  input, review, and warning phases use distinct focus/warning styling; and
+  modal controls now use `Esc` consistently for cancel, close, or back. Lowercase
+  `q` quits only from the idle base screen, remains ordinary text in visible
+  input fields, and has no hidden effect in non-editable modals or while an
+  operation is running.
+- Standardized executable discovery on stable one-row command and Sequence
+  shapes with explicit `AT:` and `Purpose:` delimiters, a read-only scrollable
+  `d Details` view, complete warnings that survive selection and constrained
+  widths, actionable empty states, and safe resize fallback. Every Sequence
+  modal phase now keeps complete name/purpose context while long details scroll
+  independently of pinned values, candidate actions, and confirmation input.
 - Added pre-publication release checks for Apple Silicon architecture, archive
   contents and permissions, checksums, dependency notices, and dynamic linkage
   to Homebrew `libusb`.

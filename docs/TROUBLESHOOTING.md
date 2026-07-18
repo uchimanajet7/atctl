@@ -2,6 +2,11 @@
 
 This document covers USB and modem troubleshooting for `atctl`.
 
+For preset and Sequence inventories, definition formats, loading, and complete
+execution semantics, see [Presets and Sequences Reference](PRESETS.md). For the
+cross-surface review, confirmation, masking, logging, and raw-diagnostic
+contract, see the [Safety Guide](SAFETY.md).
+
 ## USB Modem Is Not Visible in the USB Tree
 
 Run:
@@ -207,6 +212,9 @@ If a bridge command times out or the USB transport fails, restart the bridge
 before sending more commands. Running-command interruption, host-side read abort,
 USB reconnect, and AT resync are not normal bridge features.
 
+See [PTY Bridge Policy](SAFETY.md#pty-bridge-policy) for the confirmation,
+masking, raw-export, and multi-client safety boundaries.
+
 ## Timeout
 
 Timeout may mean:
@@ -285,9 +293,10 @@ atctl preset run modem-activity-status
 Source: https://users.soracom.io/ja-jp/guides/diagnostic/advanced/
 
 The commands that set operator format, operator auto-selection, or detailed
-registration reporting are write-risk commands. Run them only when you
-deliberately want to change the modem's runtime reporting or selection mode
-for troubleshooting. To return operator selection to automatic mode, use:
+registration reporting have runtime-state effects and require confirmation.
+Run them only when you deliberately want to change the modem's runtime
+reporting or selection mode for troubleshooting. To return operator selection
+to automatic mode, use:
 
 ```sh
 atctl preset run operator-auto-selection
@@ -311,6 +320,14 @@ another endpoint-aware tool for that check.
 Use Sequences for multi-step checks that cannot be represented as one command
 and one final response.
 
+This section provides the operator procedure and the result checks used during
+troubleshooting. See [Standard Sequences](PRESETS.md#standard-sequences) and
+[Repository Example Sequences](PRESETS.md#repository-example-sequences) for the
+complete definition and evidence reference, and
+[SMS Safety](SAFETY.md#sms-safety) and
+[Data-Send Sequences](SAFETY.md#data-send-sequences) for the required safety
+boundaries.
+
 Standard SMS checks:
 
 ```sh
@@ -322,14 +339,18 @@ atctl sequence run sms-reply-check --param index=<INDEX> --param message=<MESSAG
 ```
 
 In the TUI, select the `sms` category and choose a Sequence from
-`Commands / Sequences`. `Run Sequence` shows the current values and their
-sources before execution. For SMS read or reply, use the candidate action to
+`Commands / Sequences`. The list uses `name │ Purpose: preview`; press `d` to
+read the complete purpose without accessing the modem. Every `Run Sequence`
+phase shows the complete Sequence name and purpose plus the current values and
+their sources before execution. Use `PageUp` / `PageDown` for long context;
+the active value, candidate action, or confirmation input remains visible.
+For SMS read or reply, use the candidate action to
 load message indexes from an explicit SMS list operation, then select the
 required `storage=<index>` value. Opening `Run Sequence` alone does not read
 messages.
 
 Review the destination, message body, or storage index shown before USB access,
-then enter the requested risk confirmation. During execution, Status shows the
+then enter the requested `run` or `unknown` confirmation. During execution, Status shows the
 current step and Response shows command material, modem response, decoded SMS,
 analysis, notes, and the final result in separate sections. If a candidate
 action fails, read the failure detail in Response and retry the candidate action
@@ -341,8 +362,10 @@ SMS receive, sender numbers and message bodies are sensitive. Receive/list/read
 operations that change message status or unread/read flags require confirmation
 and do not silently delete messages. `REC READ` and `REC UNREAD` in modem
 output are message status values. Reading a specific SMS with `AT+CMGR` can
-change unread state to read state, so `sms-read-message` and reply-by-index are
-write-risk. Supported SMS bodies such as UCS2 hex are decoded before masking.
+change unread state to read state, so `sms-read-message` and reply-by-index
+require confirmation. Listing with `AT+CMGL` can also change received-unread
+messages to received-read. Supported SMS bodies such as UCS2 hex are decoded
+before masking.
 Normal Response shows decoded-body lines under `Decoded SMS:` with the body
 hidden and atctl-derived interpretation under `Analysis:`. `--no-mask` or TUI
 output masking off shows supported bodies as decoded text in the foreground
@@ -370,12 +393,10 @@ atctl tui --sequence-dir examples/sequences
 The Quectel data-send and ping examples are vendor-specific. The SORACOM
 examples are provider-specific reachability and endpoint checks implemented
 with Quectel TCP/IP AT commands as the modem backend. They are loaded
-explicitly, similar to repository-managed file presets.
-Loading those examples does not make them product-provided standard Sequences.
-They use the same risk aggregation, masking, confirmation, transcript, raw
-diagnostic export, and execution behavior as other Sequences.
+explicitly and remain repository-managed examples rather than product-provided
+standard Sequences.
 
-The TCP examples prefill routine modem plumbing values where a safe editable
+The TCP examples prefill routine modem plumbing values where an editable
 default is useful: PDP context ID defaults to `1`, socket connect ID defaults to
 `0`, and read length defaults to `1500`. These repository-managed add-on
 Sequences use product-known candidate assistance for standard PDP context
@@ -421,13 +442,9 @@ successful send condition; the Sequence retries the acknowledgement query
 within the step timeout and fails with the last counters visible if the payload
 is still not acknowledged.
 
-SORACOM `soracom-ping-check` uses `pong.soracom.io` for SORACOM network
-reachability. SORACOM Unified Endpoint TCP uses `unified.soracom.io:23080`;
-SORACOM also documents `uni.soracom.io` as an alias. Beam checks are not part
-of the default repository-managed basic example set because Beam TCP/TCPs
-requires SIM group entry point configuration. For SORACOM TCP forwarding, one
-TCP write can be split or merged by stream handling. Use Soracom Binary Format
-v1, an HTTP entry point, or application framing when message boundaries matter.
+For the SORACOM reachability endpoints, Beam boundary, and TCP message-framing
+reference, see
+[Repository Example Sequences](PRESETS.md#repository-example-sequences).
 
 ## Failure Reports and Verbose Errors
 
@@ -447,7 +464,7 @@ and shows whether extended mobile termination error reporting is enabled.
 unavailable, unknown, or asleep.
 
 To enable verbose `+CME ERROR` reporting for subsequent commands, use the
-write-risk preset explicitly:
+confirmation-required preset explicitly:
 
 ```sh
 atctl preset run enable-verbose-errors
@@ -469,10 +486,12 @@ atctl preset run restart-modem
 ```
 
 `modem-functionality` sends `AT+CFUN?` and reads the current functionality
-level. The other three commands change modem state and are classified as
-dangerous. They may detach from the network, restart registration, disrupt PDP
-state, drop the current USB/AT session, or require reconnecting and reselecting
-the modem. They are not ordinary diagnostic checks.
+level. The other three commands require `run` confirmation because their
+reviews show runtime-state and service/connectivity effects. `restart-modem`
+also shows reset/recovery and restart-required reversibility. They may detach
+from the network, restart registration, disrupt PDP state, drop the current
+USB/AT session, or require reconnecting and reselecting the modem. They are not
+ordinary diagnostic checks.
 
 Quectel-specific power-down is provided only by the Quectel example file preset:
 
@@ -480,8 +499,10 @@ Quectel-specific power-down is provided only by the Quectel example file preset:
 atctl preset run power-down-quectel --preset-dir examples/presets
 ```
 
-`power-down-quectel` sends `AT+QPOWD`, is classified as dangerous, and may power
-down the module. It is not a product preset because it is Quectel-specific.
+`power-down-quectel` sends `AT+QPOWD`. Its review shows runtime-state change,
+service interruption, restart-required reversibility, and required
+confirmation because it may power down the module. It is not a product preset
+because it is Quectel-specific.
 
 For Quectel-specific SIM, network, time, and MBN diagnostics, load the Quectel
 example preset set explicitly:
@@ -497,7 +518,7 @@ atctl preset run mbn-list-quectel --preset-dir examples/presets
 
 `mbn-list-quectel` sends only `AT+QMBNCFG="List"`. Other Quectel MBN operations
 that select, deactivate, add, delete, or auto-select MBN files are not ordinary
-safe troubleshooting presets.
+known no-confirmation observations.
 
 ## Review and Manage Logs
 
@@ -508,10 +529,12 @@ Normal AT execution writes masked command history and session logs by default:
 ~/.local/state/atctl/logs/<timestamp>.session.log
 ```
 
-`history.jsonl` is one append-only aggregate history file. It records masked
-command, timestamp, source, risk, status, duration, and device selection without
-the response body. Each `.session.log` is a separate masked record for one
-execution and includes its masked response.
+`history.jsonl` is one append-only aggregate history file. It records timestamp,
+the `cli` or `tui` surface, structured command/preset/Sequence identity, the
+masked execution review, status, duration, and device selection without the
+response body. Each `.session.log` is a separate masked record for one execution
+and includes its masked response. Definition origin, title, and path remain
+separate fields instead of being combined into an internal source string.
 
 List the paths of both artifact types:
 
@@ -569,7 +592,8 @@ If Response is displaying values that differ from its masked form, the actions
 are `Copy unmasked response` and `Export unmasked response...`. Copy requires
 typing `copy`. Export returns from the folder chooser to a confirmation showing
 the exact final path and requires typing `export` before creating the file.
-`Esc` or `q` cancels without copying or creating a file.
+`Esc` cancels without copying or creating a file. Because these are typed
+acknowledgement fields, `q` is entered as ordinary text.
 
 After a successful export, open Response actions again and choose `Reveal in
 Finder` to select the exact exported file. Running another command, opening
@@ -605,6 +629,11 @@ Logs pane and must be retained and removed separately.
 By default, `atctl` masks IMSI, ICCID, IMEI, MSISDN, APN credentials, and similar
 identifiers.
 
+See [Default Masking](SAFETY.md#default-masking) for the complete classification,
+short-value, saved-output, and unknown-vendor-output contract. The commands
+below are the task-oriented paths for deliberately unmasked display or raw
+diagnostic evidence.
+
 Raw output requires explicit action:
 
 ```sh
@@ -631,4 +660,6 @@ atctl send AT+CIMI --bus <BUS> --address <ADDRESS> --raw-log-file ./case-cimi.ra
 
 The raw export may contain modem, subscriber, network, APN, or PDP
 authentication values. Use a case-specific path, keep the file protected, and
-share it only with the party that needs the raw diagnostic evidence.
+share it only with the party that needs the raw diagnostic evidence. Raw JSONL
+exchange events identify the `cli`, `tui`, or `pty` surface separately from the
+structured command, preset, or Sequence operation.

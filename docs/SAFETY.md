@@ -4,53 +4,65 @@ AT commands can read sensitive identifiers and change modem state. This guide
 explains what operators must review before USB access and what `atctl` must
 confirm, mask, log, or block by default.
 
-## Risk Levels
+For preset and Sequence inventories, definition formats, loading, and execution
+semantics, see [Presets and Sequences Reference](PRESETS.md). For diagnostic,
+recovery, log-review, Response-export, and disposal procedures, see
+[Troubleshooting](TROUBLESHOOTING.md).
 
-```text
-safe:
-  Read-only or harmless command.
+## Execution Review
 
-sensitive:
-  Reads identifiers, credentials, or operationally sensitive information.
+`atctl` does not reduce an operation to one risk label. Before execution it
+derives these independent fields from the final command or Sequence:
 
-write:
-  Changes runtime configuration.
+- **Assessment**: `known` when the product has a rule for every operation
+  boundary, otherwise `unknown`.
+- **Effects**: observation, runtime-state change, persistent-state change,
+  external communication, delete/reset/recovery, and service interruption.
+- **Data handling**: sensitive input, sensitive output, and sensitive external
+  disclosure.
+- **Reversibility**: not applicable, immediately reversible, restart required,
+  persistent until changed, irreversible, or not established.
+- **Consequences**: a plain-language description of what may happen.
+- **Confirmation**: required or not required, with reasons in structured
+  output.
 
-persistent:
-  Changes persistent modem configuration.
-
-dangerous:
-  May reset modem, detach from network, change bands, break connectivity, or
-  make the device hard to recover.
-```
+`unknown` does not mean that atctl detected every possible harmful effect. It
+means complete semantics are not established. The confirmation therefore shows
+the known fields, the fields that remain unestablished, and the possible
+consequences before the operator chooses whether to proceed.
 
 ## Before USB Access
 
-- Command and Sequence rows show one risk label only: `[safe]`, `[sensitive]`,
-  `[write]`, `[persistent]`, `[dangerous]`, or `[unknown]`. Masking state,
-  expected effects, and confirmation instructions are shown separately.
-- Safe presets may execute directly.
-- Sensitive presets may execute directly but output and logs must be masked by
-  default.
-- Write presets require confirmation.
-- Persistent presets require stronger confirmation.
-- Dangerous presets are never automatic. If visible in CLI, TUI, or PTY
-  workflows, they require exact typed risk confirmation before USB access.
-- Direct `atctl send` commands use the same risk model.
-- Sequence execution uses the same risk model. Effective Sequence risk must
-  account for declared risk, step command classification, prompt/body behavior,
-  payload sensitivity, parameter sensitivity, and known side effects.
-- File preset add-ons must declare risk, but declared risk is not the only safety
-  input. Execution must use effective risk derived from declared risk and
-  command classification.
-- Sequence add-ons must declare risk, but declared risk is not the only
-  safety input. Execution must use effective risk derived from declared risk,
-  step classification, and parameter sensitivity.
-- User-declared risk must never downgrade classifier output.
+- Command rows use `name │ AT: command`; Sequence rows use
+  `name │ Purpose: preview`. The one-row list preserves the complete warning
+  before shortening the name or preview. Press `d` for complete command or
+  purpose details without contacting the modem. Only rows that need attention
+  append `! Confirmation required` or
+  `! Confirmation required (effects unknown)`. Detailed dimensions belong in
+  confirmation and structured output, not in a scalar row badge.
+- Known observations without a material effect may execute directly. Sensitive
+  output and normal logs remain masked by default.
+- Known material operations require `run` confirmation before USB access.
+- Unknown operations require `unknown` confirmation, begin with
+  `! Effects are not fully known`, and separate known information, possible
+  consequences, and what is not established.
+- Direct `atctl send`, presets, and Sequences use the same product-derived
+  execution review. Preset and Sequence files do not declare or override it.
+- `atctl preset show <NAME>` and `atctl sequence show <SEQUENCE>` expose the
+  complete definition and execution review without USB access. Human-readable
+  lists stay compact; `list --json` and `show --json` expose complete structured
+  discovery data.
+- A Sequence review covers step commands, conditional internal commands,
+  payload writes, failure cleanup, sensitive parameters, and external
+  transmission before its first USB write. After operator values and defaults
+  are bound, the confirmation uses a newly derived review of those resolved
+  operations rather than the unresolved list-row review. Values produced only
+  by an earlier modem response remain identified as runtime-derived and each
+  actual command is checked again at the write boundary.
 - The safety model applies across production AT execution surfaces. TUI, CLI
   `send`, CLI `preset run`, CLI `sequence run`, and PTY bridge may present
   different prompts or controls, but they must not weaken or silently omit
-  required risk classification, confirmation, masking, or raw diagnostic export
+  required review, confirmation, masking, or raw diagnostic export
   behavior.
 
 ## APN Commands
@@ -68,13 +80,14 @@ This command requires explicit user selection and confirmation.
 
 Before running an APN-changing command, verify the target PDP context, APN,
 authentication method, and credentials. `atctl` shows the definition source,
-classifies the command, masks credentials, and requests confirmation before the
+derives the execution review, masks credentials, and requests confirmation before the
 command reaches USB.
 
 PDP authentication commands require the same treatment. `AT+CGAUTH?` is a
 read-style diagnostic, but its response can include APN authentication
 usernames and passwords, so it is sensitive and must be masked by default.
-`AT+CGAUTH=...` changes PDP authentication settings and must remain write-risk.
+`AT+CGAUTH=...` changes stored PDP authentication settings and requires
+confirmation.
 If the command string itself includes a username or password, saved command
 history and session logs must mask those credential fields.
 
@@ -93,7 +106,7 @@ AT+CEREG=3
 AT+CEREG=5
 ```
 
-These commands must be classified as write-risk and require confirmation before
+These commands have a known runtime-state effect and require confirmation before
 USB access. They may change operator selection mode or registration reporting
 mode. They are acceptable as explicit presets because they help a human inspect
 operator identity, cell location, and registration rejection details, but they
@@ -114,28 +127,21 @@ SMS sending and other commands that require a prompt, message body, Ctrl-Z, or
 similar multi-step interaction must not be treated as ordinary one-shot
 commands. They must run through Sequence handling or through the PTY bridge's
 prompt-capable manual path.
+One-shot CLI `send`, `preset run`, and TUI AT-command input reject these
+operations before USB access. The PTY bridge supports the reviewed SMS
+command/payload/Ctrl-Z path; prompt framing it does not support, such as
+fixed-length Quectel `AT+QISEND`, is also rejected before USB access and must use
+a Sequence.
 
 Standard SMS workflows are product-provided actions. Operators do not need to
 author workflow definitions before using standard SMS checks. User-authored
 workflow definitions remain an extension point for additional, special,
-project-local, or diagnostic workflows. Standard multi-step
-operations must still keep the required risk confirmation and masking behavior.
-
-Product-provided actions, repository-managed examples, and user-authored
-extensions keep separate origins and review responsibility. After loading and
-validation, they use the same safety protections:
-risk classification cannot be downgraded by a file, confirmation requirements
-are preserved, normal output and logs stay masked by default, and raw diagnostic
-export remains an explicit acknowledged action.
-
-Repository-managed examples and user-authored extensions are external
-definitions. Provide their location with `--preset-file`, `--preset-dir`,
-`--sequence-file`, or `--sequence-dir` for the current invocation. Loading a
-definition does not send AT commands. Before running it, review the displayed
-source, steps, destination values, declared risk, and effective risk. `atctl`
-validates format and duplicate names and applies masking and risk enforcement,
-but the operator remains responsible for confirming that the definition is
-appropriate for the current device, SIM, network, and endpoint.
+project-local, or diagnostic workflows. All origins keep separate review
+responsibility while using the same product-derived review, confirmation,
+masking, logging, and raw-export protections. See
+[Sequence Workflows](PRESETS.md#sequence-workflows) for loading and origin
+details and [Sequence Add-on Files](#sequence-add-on-files) for the external
+definition safety checklist.
 
 SMS send Sequences must treat the recipient and message body as sensitive. SMS
 reply Sequences must treat the extracted sender and reply body as sensitive.
@@ -153,8 +159,10 @@ routing, storage selection, or unread/read flags, the Sequence must be
 confirmation-required and must not silently delete messages. `REC READ` and
 `REC UNREAD` values from commands such as `AT+CMGL` are modem message status
 values, not product actions. A Sequence that reads a specific SMS with
-`AT+CMGR=<index>` must be write-risk because the modem may mark an unread
-message as read. Supported SMS bodies must be decoded before masking; normal
+`AT+CMGR=<index>` requires confirmation because the modem may mark an unread
+message as read. `AT+CMGL` also changes listed received-unread messages to
+received-read according to 3GPP TS 27.005 and therefore uses the same
+state-change confirmation. Supported SMS bodies must be decoded before masking; normal
 output must hide decoded body values by default. Unmasked foreground display
 may show decoded SMS body values when the user explicitly requests it. Raw
 diagnostic export remains a separate acknowledged raw modem exchange and may
@@ -205,8 +213,8 @@ should use product-known candidate assistance only for standard values the
 product can parse generically, such as PDP contexts from `AT+CGACT?` and
 `AT+CGDCONT?`. Vendor-specific checks such as Quectel socket state must remain
 explicit add-on commands or Sequences. Selecting a candidate action must use
-the normal command or Sequence execution path; it must not bypass risk
-classification, confirmation, masking, timeout, Response transcript, or
+the normal command or Sequence execution path; it must not bypass execution
+review, confirmation, masking, timeout, Response transcript, or
 logging behavior. Candidate actions remain explicit refresh/load actions even
 after same-session candidates are visible; opening a modal must not perform
 hidden modem I/O to make candidates look current.
@@ -219,41 +227,49 @@ not hide the original failed step reason.
 `AT+QISEND=<id>,0` counters must be presented as sent/acknowledged/
 unacknowledged byte evidence, not application processing proof. `+QIRD: 0`
 means no buffered receive data and must not be presented as response evidence.
+Direct `AT+QIRD=<connectID>,<read_length>` data retrieval requires confirmation
+because it advances the module's read/unread receive-buffer state. The
+`AT+QIRD=<connectID>,0` size query and `AT+QIRD=?` capability query do not
+retrieve buffered payload data and remain known observations.
+`AT+QISEND=<connectID>,0` is likewise a known counter observation. A positive
+send length starts a prompt/payload send and belongs in a Sequence so the
+payload and its framing are reviewed before the first USB write.
 
-SORACOM-specific ping and TCP examples must stay separate from generic Quectel
-examples. The SORACOM ping example uses `pong.soracom.io` as SORACOM network
-reachability evidence only. Unified Endpoint TCP uses
-`unified.soracom.io:23080` or its documented `uni.soracom.io` alias. Beam TCP
-is configuration-dependent and must not be treated as a default basic
-connectivity check. For SORACOM TCP forwarding, one TCP write must not be
-treated as one cloud message; use Soracom Binary Format v1, an HTTP entry
-point, or application-layer framing when message boundaries matter.
+Provider-specific Sequences must remain distinct from generic vendor examples
+and must not overstate reachability, forwarding, message-boundary, or remote
+application evidence. See
+[Repository Example Sequences](PRESETS.md#repository-example-sequences) for the
+endpoint-specific reference and
+[SMS and Data-Send Sequence Checks](TROUBLESHOOTING.md#sms-and-data-send-sequence-checks)
+for the operator result checks.
 
 ## Long-Running Read/Test Commands
 
-Read/test commands may be safe even when they take longer than ordinary reads.
+Known observations may take longer than ordinary reads without gaining a
+state-changing effect.
 `AT+COPS=?` is a standard available-operator test command used during carrier
 diagnosis and may take longer because it can scan available carrier / RAT
 options.
 
-Long runtime is not by itself a write risk. Known long-running safe presets may
-carry a preset timeout hint, and users can still provide an explicit longer
-timeout when needed:
+Long runtime is not by itself an operation effect. Known long-running presets
+may carry a timeout hint, and an explicit timeout override does not change the
+operation assessment.
 
-```sh
-atctl preset run available-operators --timeout 240
-```
+See [Timeout](TROUBLESHOOTING.md#timeout) for the task-oriented recovery path
+and [Product Presets](PRESETS.md#product-presets) for the preset reference.
 
 ## Diagnostic Error Reporting Commands
 
 Diagnostic read commands such as `AT+CEER`, `AT+CMEE?`, and `AT+CPAS` may be
-ordinary safe presets when they only read the latest failure report, error
+ordinary no-confirmation presets when they only read the latest failure report, error
 reporting mode, or modem activity status.
 
 Commands that change error reporting behavior are not read-only diagnostics.
 `AT+CMEE=2` is useful because it enables verbose `+CME ERROR` reporting, but it
-changes modem command-session behavior and must remain a write-risk command
-that requires confirmation.
+changes modem command-session behavior and requires confirmation.
+
+See [Failure Reports and Verbose Errors](TROUBLESHOOTING.md#failure-reports-and-verbose-errors)
+for the diagnostic procedure.
 
 ## Modem Functionality and Power Commands
 
@@ -262,17 +278,19 @@ power-down commands are not ordinary diagnostic commands. They may detach from
 the network, restart registration, disrupt PDP state, restart the modem, power
 down the module, or drop the current USB/AT session.
 
-Built-in modem functionality presets use the `modem` category and classify
-state-changing `AT+CFUN=...` commands as dangerous. `AT+QPOWD` is
+Built-in modem functionality presets use the `modem` category and review
+state-changing `AT+CFUN=...` commands as runtime/service-interruption effects;
+`AT+CFUN=1,1` also has a reset effect. `AT+QPOWD` is
 Quectel-specific and belongs in the Quectel file preset example, not in
 vendor-neutral product presets.
 
 Select these commands only when the listed side effects are acceptable, and type
-the exact risk level before sending. They are state-changing operations, not
+`run` before sending. They are state-changing operations, not
 generic read-only diagnostics.
 
-See `docs/PRESETS.md` for the product preset list, file preset format, and
-standard/vendor command reference links.
+See [Product Presets](PRESETS.md#product-presets) for the complete preset
+reference and [Modem Functionality Changes](TROUBLESHOOTING.md#modem-functionality-changes)
+for the recovery procedure.
 
 ## User Preset Files
 
@@ -281,18 +299,19 @@ safety model:
 
 - File preset locations are provided for each invocation through
   `--preset-file` or `--preset-dir`.
-- Every preset declares risk.
-- The command classifier still runs.
-- The effective risk preserves the stricter enforcement outcome.
-- The preset set title and source path are shown in CLI listings. In the TUI,
+- A preset contains command, category, and optional timeout metadata; it does
+  not declare risk.
+- The product derives the execution review from the command.
+- The preset set title and source path are shown once for each file group in
+  human-readable CLI listings and remain structured in JSON. In the TUI,
   the same title is shown as a non-selectable source group header or
   `Source: <title>` detail when file presets are visible.
 - Duplicate preset names fail instead of silently overriding.
-- Vendor-specific commands may be loaded, but unknown or unsafe command shapes
-  must remain protected by masking and confirmation.
-- Vendor-specific read-style diagnostics may be made safe or sensitive only
-  when the exact command form is known. Adjacent configuration-changing command
-  forms must not inherit that lower risk.
+- Vendor-specific commands may be loaded, but unknown operations and known
+  material operations remain protected by masking and confirmation.
+- Vendor-specific observation forms are treated as known only when the exact
+  command form has a product rule. Adjacent configuration-changing forms do not
+  inherit that assessment.
 
 ## Sequence Add-on Files
 
@@ -300,13 +319,13 @@ Review user-authored and repository-managed Sequence files before running them:
 
 - Provide each Sequence file or directory through `--sequence-file` or
   `--sequence-dir` for the current invocation.
-- Every Sequence declares risk.
-- Every step command is classified.
-- The effective Sequence risk preserves the stricter enforcement outcome from
-  declared risk, step classification, payload sensitivity, parameter
-  sensitivity, and known side effects.
+- A Sequence does not declare risk. The product reviews every step, conditional
+  internal command, payload, and failure cleanup operation.
+- The combined review preserves every effect and data-handling dimension,
+  parameter sensitivity, reversibility, and unknown boundary.
 - Duplicate Sequence names fail instead of silently overriding.
-- The Sequence set title and source path are shown in CLI listings.
+- The Sequence set title and source path are shown once for each file group in
+  human-readable CLI listings and remain structured in JSON.
 - Sensitive Sequence parameters such as phone numbers, SMS bodies, payloads,
   APN credentials, usernames, passwords, and tokens are masked by default.
 - For required values such as SMS storage index or PDP context ID, use the
@@ -328,60 +347,64 @@ Direct arbitrary commands such as:
 atctl send 'AT+CGDCONT=1,"IP","soracom.io"'
 ```
 
-must be classified before execution.
+must be reviewed before execution.
 
 Read/test commands:
 
-- Plain read/test commands may run without confirmation and may print plain
-  output.
-- Read/test commands that expose sensitive identifiers or credentials may run
-  without confirmation, but output and logs must be masked by default.
-- Unknown read/test commands may run without confirmation, but must be treated
-  as sensitive by default.
+- Known observations may run without confirmation.
+- Known observations that expose sensitive identifiers or credentials still
+  run with normal masking enabled by default.
+- Unknown read/test syntax remains `unknown`; syntax alone does not prove that
+  the operation has no state-changing effect.
 
 Change commands:
 
-- Write, change, delete, persistent, dangerous, and non-read/test unknown
-  commands require explicit confirmation.
+- Known commands with material effects and all unknown commands require explicit
+  confirmation.
 - In an interactive terminal, direct `send` confirmation shows the normalized
-  command, classified risk, and classifier reason.
-- The user must type the exact classified risk level, such as `write`,
-  `persistent`, or `dangerous`, before the command is sent.
+  command and structured execution review.
+- The user types `run` for a known material operation or `unknown` for an
+  unknown operation before the command is sent.
 - If confirmation is required but standard input is not a terminal, the command
   fails before USB access.
-- `atctl` classifies known dangerous, persistent, write-risk, and
-  vendor-specific diagnostic command forms before execution.
+- `atctl` reviews product-known standard and vendor-specific command forms before
+  execution. Commands not covered by those rules remain unknown.
 
-For non-interactive execution, pair `--yes` with the exact classified risk:
+For non-interactive execution, use `--yes` for a known material operation:
 
 ```sh
 atctl send 'AT+CFUN=0' --yes
-
-atctl send 'AT+CFUN=0' --yes --risk-ack dangerous
 ```
 
-The first command fails before USB access because `--yes` alone does not state
-which risk was accepted. The second proceeds only when the classified risk is
-`dangerous`.
+For an unknown operation, both flags are required:
+
+```sh
+atctl send 'AT+VENDOR=1' --yes --allow-unknown
+```
+
+`--allow-unknown` without `--yes` fails, and `--allow-unknown` is rejected for a
+known operation. This makes unknown authorization explicit without claiming a
+specific effect that atctl cannot establish.
 
 ## PTY Bridge Policy
 
 `atctl bridge --symlink <PATH>` is a compatibility interface for terminal tools
 such as `screen` and `cu`. It must not become a safety bypass.
 
-- Safe and sensitive commands may run from the PTY without confirmation.
-- Sensitive output remains masked by default.
-- Write, persistent, dangerous, and unknown commands require an exact typed
-  risk acknowledgement from the PTY client before sending.
+- Known observations may run from the PTY without confirmation; sensitive output
+  remains masked by default.
+- Known material operations require `run`; unknown operations require
+  `unknown` before sending.
+- For supported prompt/body operations, the PTY bridge collects and reviews the
+  complete command and payload before sending either one.
 - Raw diagnostic export requires its own explicit destination and
   acknowledgement. Stopping or restarting the bridge is required after a USB
   transport failure or desynchronization.
 - Multiple external clients opening the same PTY symlink at the same time are
   not a supported workflow because input can interleave.
 
-`--yes` disables the interactive prompt only when paired with
-`--risk-ack <risk>`. The risk acknowledgement must match the classified command
-risk, otherwise `atctl` must fail before sending the command to the modem.
+The PTY bridge is interactive and does not use `send`'s `--yes` or
+`--allow-unknown` flags.
 
 ## Default Masking
 
@@ -393,7 +416,22 @@ The following must be masked by default:
 - MSISDN if present
 - APN username/password if present
 - PDP authentication username/password if present
+- SIM PIN/PUK and other known credential fields if present
+- SMS sender and recipient numbers, including short codes
+- SMS message bodies and Sequence values declared sensitive
+- Application tokens and sensitive payloads
 - Long numeric identifiers likely to be subscriber or device identifiers
+
+Known fields are classified by their AT-command meaning, not by digit count.
+For example, a short sender such as `901001` is masked as `******`, while an SMS
+storage index or `+CMGS` message reference remains visible. Quotes and protocol
+punctuation remain visible so the response structure is still usable.
+
+Unknown vendor output has a deliberate boundary: short tokens are not guessed
+to be phone numbers without a known field meaning. The conservative long-number
+fallback still applies. This avoids both disclosing product-known short phone
+values and hiding short signal values, indexes, context IDs, ports, counts, or
+result codes needed for troubleshooting.
 
 Masking applies to:
 
@@ -402,6 +440,10 @@ Masking applies to:
 - TUI response panes
 - Session logs
 - Command history
+
+The execution path produces one masked form for these normal consumers. Saved
+history and session logs retain that masked form; opening them later does not
+reclassify the text without its original execution context.
 
 Raw display output requires `--no-mask`. Raw diagnostic export requires an
 explicit user-selected destination and acknowledgement, such as
@@ -421,80 +463,31 @@ starts.
 
 ## Logging
 
-Logs must default to masked output.
-
-If a command string contains a credential, the sensitive part of the command
-string must also be masked in logs.
-
-Normal command history and session logs are written under the XDG state
-directory by default:
-
-```text
-~/.local/state/atctl/history.jsonl
-~/.local/state/atctl/logs/<timestamp>.session.log
-```
-
-To use another state directory for one invocation, set `XDG_STATE_HOME` to a
-non-empty absolute path. `atctl` appends its own `atctl` directory:
-
-```sh
-env XDG_STATE_HOME="$HOME/Documents" atctl send AT
-env XDG_STATE_HOME="$HOME/Documents" atctl logs list
-```
-
-Use `--no-log` to prevent creation of new masked history and session logs for
-one `send`, `preset run`, `sequence run`, or TUI invocation. Existing saved
-logs remain available for review. `--no-log` does not disable a raw diagnostic
-export that the operator explicitly starts with a selected destination and the
-required acknowledgement.
+Normal history and session logs must use masked output. If a command contains a
+credential or another known sensitive field, that field must also be masked in
+the saved command material. Generated history and session logs remain masked
+even when the foreground Response and an explicitly requested Response export
+are unmasked.
 
 Masked logs can still contain operationally sensitive metadata, including AT
-commands, timestamps, device selection, risk, duration, and result status.
-Protect the normal log directory and any copies even though response values and
-sensitive command fields are masked.
+commands, timestamps, device selection, structured execution review, duration,
+and result status. Protect the normal log directory and copies. Retain them only
+for the troubleshooting case and applicable organizational, legal,
+contractual, or security policy, then remove material that is no longer needed.
+`atctl` does not apply automatic retention, rotation, pruning, or deletion.
 
-`atctl` retains normal history and session logs until the operator removes them.
-It does not apply an automatic retention period, rotation policy, pruning, or
-deletion. Retain logs for the period required by the troubleshooting case and
-applicable organizational, legal, contractual, or security policy, then remove
-logs and copies that are no longer required. Finish the current `atctl`
-execution before moving a saved log to the Trash.
+`--no-log` prevents new normal history and session logs only for the selected
+invocation. It does not hide existing logs or disable a raw diagnostic export
+that the operator separately starts with a destination and acknowledgement.
+Response export is likewise an explicit copy operation, not a generated log.
+Unmasked Response exports require the same protection and disposal care as
+other unmasked diagnostic material.
 
-Use `atctl logs list` or the TUI Logs pane to review normal masked logs. In the
-TUI, `Reveal in Finder` on a selected log identifies that exact file without
-requiring Response review and without opening, moving, or deleting the file.
-The same action remains available after the log is opened in Response.
+Raw diagnostic exports remain outside the normal masked log lifecycle at the
+operator-selected destination. They require explicit acknowledgement, stricter
+protection, and separate disposal.
 
-Response export is an explicit copy operation, not a generated log. In the TUI,
-`Export response...` shows the Response identity, UTF-8 text format, generated
-file name, and masking state before opening a destination-folder chooser. The
-chooser is shown on every export. A successful export retains the exact file for
-`Reveal in Finder`; repeating the export creates another file and never
-overwrites an existing file.
-
-When the current Response is displaying values that differ from its masked
-form, the action labels are `Copy unmasked response` and
-`Export unmasked response...`. Copy requires exact acknowledgement `copy`.
-Export shows the exact final path after folder selection and requires exact
-acknowledgement `export`; cancellation or a mismatched acknowledgement creates
-no file. This confirmation is separate from command risk classification and
-does not add `MASKED`, `CONFIRM`, `PERSISTS`, `DANGER`, or `REVIEW` suffixes to
-command rows.
-
-`atctl send`, `atctl preset run`, and `atctl sequence run` accept
-`--export-response <PATH>`. The target is validated before USB access, an
-existing file is rejected, and normal stdout is unchanged. CLI export is masked
-by default and follows `--no-mask` when the operator explicitly selects
-unmasked foreground output. TUI export follows the Response masking mode that
-is visible when export is selected. Unmasked exports can contain identifiers,
-message bodies, payloads, or credentials and require the same protection and
-disposal care as raw diagnostic material.
-
-Generated history and session logs remain masked regardless of Response export.
-Raw diagnostic export remains a separate, explicitly acknowledged operation.
-Previously created files under `$XDG_STATE_HOME/atctl/responses/` are not
-deleted or migrated automatically.
-
-Raw diagnostic exports remain outside these normal masked lifecycles at the
-destination the operator explicitly selected and require stricter protection
-and separate disposal.
+See [Review and Manage Logs](TROUBLESHOOTING.md#review-and-manage-logs) for XDG
+paths, CLI and TUI review, Finder access, retention and deletion effects, and
+[Export a Response](TROUBLESHOOTING.md#export-a-response) for the complete copy
+and export procedures.

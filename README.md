@@ -7,12 +7,10 @@ cellular modems from macOS on Apple Silicon.
 
 ![atctl TUI showing device details, command categories, command list, response output, and saved logs](https://github.com/uchimanajet7/atctl/raw/main/docs/assets/atctl-tui-overview.png)
 
-Validated environment:
-
-- Mac: Apple Silicon Mac
-- USB modem: SORACOM Onyx LTE USB Dongle (Quectel EG25-G)
-- USB ID: `0x2c7c:0x0125`
-- Observed firmware: `EG25GGBR07A08M2G` (`ATI`, 2026-06-17)
+The validated environment is an Apple Silicon Mac with a SORACOM Onyx LTE USB
+Dongle (Quectel EG25-G, USB ID `0x2c7c:0x0125`). See the
+[installation guide](https://github.com/uchimanajet7/atctl/blob/main/docs/INSTALL.md)
+for the complete validation boundary and runtime prerequisites.
 
 Real-hardware workflows confirmed in this environment:
 
@@ -56,9 +54,10 @@ shown, run `atctl devices --all-usb` and follow the
 
 - Work interactively with `atctl tui`.
 - Send one AT command with `atctl send <COMMAND>`.
-- Run repeatable checks with `atctl preset list` and
-  `atctl preset run <NAME>`.
-- Run multi-step SMS and data-send checks with `atctl sequence list` and
+- Find repeatable checks with `atctl preset list`, inspect one completely with
+  `atctl preset show <NAME>`, and run it with `atctl preset run <NAME>`.
+- Find multi-step SMS and data-send checks with `atctl sequence list`, inspect
+  one completely with `atctl sequence show <SEQUENCE>`, and run it with
   `atctl sequence run <SEQUENCE>`.
 - Use `atctl bridge --symlink <PATH>` for a terminal-style PTY bridge.
 - Collect raw diagnostic evidence only with an explicit output path and
@@ -66,59 +65,39 @@ shown, run `atctl devices --all-usb` and follow the
 
 ## Logs
 
-`atctl send`, `atctl preset run`, `atctl sequence run`, and TUI executions
-write masked command history and session logs by default:
+Normal `send`, preset, Sequence, and TUI executions write masked command history
+and session logs by default under the XDG state directory:
 
 ```text
 ~/.local/state/atctl/history.jsonl
 ~/.local/state/atctl/logs/<timestamp>.session.log
 ```
 
-These paths follow the
-[XDG Base Directory Specification](https://specifications.freedesktop.org/basedir/latest/).
-Set `XDG_STATE_HOME` to a non-empty absolute path to use a different state
-directory for one invocation. `atctl` appends its own `atctl` directory:
-
-```sh
-env XDG_STATE_HOME="$HOME/Documents" atctl send AT
-env XDG_STATE_HOME="$HOME/Documents" atctl logs list
-```
-
-These commands use `$HOME/Documents/atctl/`. To skip new masked history and
-session logs for one command or TUI session, use `--no-log`:
-
-```sh
-atctl send AT --no-log
-atctl preset run modem-info --no-log
-atctl sequence run sms-receive-check --no-log
-atctl tui --no-log
-```
-
-`--no-log` does not hide existing logs and does not disable a raw diagnostic
-export explicitly requested with `--raw-log-file` or the TUI raw-export action.
-`atctl` retains normal masked logs in the XDG state directory until the operator
-removes them; it does not apply a retention period or automatic rotation. TUI
-log actions can reveal the selected log directly. To keep a separate copy of a
-current Response, choose `Export response...` in the TUI and select a destination
-folder, or pass `--export-response <PATH>` to `send`, `preset run`, or
-`sequence run`. Response export follows the selected foreground masking mode,
-uses a new file, and never replaces normal stdout or the generated masked logs.
-When the TUI Response is unmasked, copy requires `copy` acknowledgement and
-export requires `export` acknowledgement after destination selection.
 See
 [Review and Manage Logs](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md#review-and-manage-logs)
-for CLI and TUI review, Response export, Finder access, and deletion effects.
+for XDG path overrides, `--no-log`, CLI and TUI review, Response export, Finder
+access, retention, and deletion. See the
+[safety guide](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md#logging)
+for the masking, sensitive-metadata, and raw-diagnostic boundaries.
 
 ## Safety
 
-Command and Sequence rows use one risk label: `[safe]`, `[sensitive]`,
-`[write]`, `[persistent]`, `[dangerous]`, or `[unknown]`. Output masking state
-and required confirmation are shown separately.
+Command rows use `name │ AT: command`; Sequence rows use
+`name │ Purpose: preview`, and selection never changes row height. Only items
+needing attention append a confirmation warning. Press `d` for complete
+read-only details; no modem access occurs when Details opens. Every Sequence
+input and confirmation phase keeps the complete name and purpose visible, and
+long context scrolls without hiding the active input or confirmation action.
+When confirmation is required, the review explains what will happen and shows
+sensitive-data or recovery information only when relevant. Unknown operations
+separate what is known, possible consequences, and what atctl could not
+establish. Known material operations use the confirmation word `run`; unknown
+operations use `unknown` so uncertainty cannot be mistaken for a known effect.
 
 AT commands can read sensitive identifiers and change modem state. `atctl`
-masks sensitive output by default, requires confirmation for state-changing
-actions, and creates raw diagnostic exports only when the user chooses an
-output file and acknowledges the risk. Read the
+masks sensitive output by default, requires confirmation for state-changing or
+otherwise material actions, and creates raw diagnostic exports only when the
+operator chooses an output file and acknowledges the warning. Read the
 [safety guide](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md)
 before running unfamiliar or state-changing commands.
 
@@ -130,10 +109,17 @@ to use from the CLI and TUI.
 
 ```sh
 atctl preset list
+atctl preset show modem-info
 atctl preset run modem-info
 atctl sequence list
+atctl sequence show sms-receive-check
 atctl sequence run sms-receive-check
 ```
+
+Human-readable lists keep only the name, AT command or purpose preview, and an
+exception warning when confirmation is required. `show` provides complete
+read-only details without USB access. Add `--json` to `list` or `show` for
+complete structured data.
 
 Repository-managed examples and project-local definitions are loaded by
 providing their file or directory for the current command or TUI session:
@@ -144,12 +130,14 @@ atctl sequence list --sequence-dir examples/sequences
 atctl tui --preset-dir examples/presets --sequence-dir examples/sequences
 ```
 
-External definitions retain their source identity and use the same risk,
-confirmation, masking, logging, and raw-export protections as product-provided
-definitions. Review their source and destination values before execution. See
-the [presets and Sequences reference](https://github.com/uchimanajet7/atctl/blob/main/docs/PRESETS.md)
-for inventories, TOML formats, loading options, Sequence parameters, and
-evidence interpretation.
+Review external definition sources and destination values before execution.
+See the
+[presets and Sequences reference](https://github.com/uchimanajet7/atctl/blob/main/docs/PRESETS.md)
+for inventories, TOML formats, loading options, source identity, Sequence
+parameters, execution behavior, and evidence interpretation. The
+[safety guide](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md)
+defines the common review, confirmation, masking, logging, and raw-export
+protections.
 
 ## User Documentation
 

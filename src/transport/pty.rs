@@ -5,12 +5,15 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::at::command::command_with_terminator;
-use crate::at::mask::{mask_identifier, mask_sensitive_values};
+#[cfg(test)]
+use crate::app::operation::ExecutionSurface;
+use crate::app::operation::OperationIdentity;
+use crate::at::command::{command_with_terminator, has_embedded_command_framing};
+use crate::at::mask::{mask_declared_sensitive_value, mask_sensitive_values};
 use crate::at::parser::parse_response;
 use crate::at::response::AtStatus;
-use crate::at::risk::is_prompt_required_command;
-use crate::at::risk::{RiskClassification, classify_direct_command};
+use crate::at::review::{Assessment, ExecutionReview, review_direct_command};
+use crate::at::review::{is_prompt_required_command, is_supported_bridge_prompt_command};
 use crate::log::raw::{RawLogConfig, RawLogExchange, RawLogSink, RawLogTransportError};
 use crate::transport::traits::{AtTransport, ResponseMatcher};
 use crate::transport::usb::{UsbAtTransport, UsbAtTransportConfig};
@@ -215,13 +218,14 @@ struct BridgeCommandState {
 #[derive(Debug)]
 struct PendingConfirmation {
     command: String,
-    classification: RiskClassification,
+    payload: Option<String>,
+    review: ExecutionReview,
 }
 
 #[derive(Debug)]
 struct PendingPayload {
     command: String,
-    classification: RiskClassification,
+    review: ExecutionReview,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -243,69 +247,88 @@ where
     W: Write,
 {
     if let Some(pending) = state.pending_payload.take() {
-        return execute_bridge_payload(
-            transport,
-            writer,
-            &pending.command,
-            &line,
-            command_timeout,
-            &pending.classification,
-            raw_log,
-        );
+        if write_confirmation_prompt(writer, &pending.review, Some(&line))?
+            == BridgeLoopAction::Stop
+        {
+            return Ok(BridgeLoopAction::Stop);
+        }
+        state.pending_confirmation = Some(PendingConfirmation {
+            command: pending.command,
+            payload: Some(line),
+            review: pending.review,
+        });
+        return Ok(BridgeLoopAction::Continue);
     }
 
     if let Some(pending) = state.pending_confirmation.take() {
-        if line.trim() == pending.classification.risk.to_string() {
+        if line.trim() == confirmation_token(&pending.review) {
             return execute_bridge_command_or_prompt(
-                state,
                 transport,
                 writer,
                 &pending.command,
+                pending.payload.as_deref(),
                 command_timeout,
-                &pending.classification,
+                &pending.review,
                 raw_log,
             );
         }
 
-        return write_pty_line(
-            writer,
-            &format!(
-                "atctl: command cancelled; required confirmation risk={}\r\n",
-                pending.classification.risk
-            ),
-        );
+        return write_pty_line(writer, "atctl: operation cancelled; nothing sent\r\n");
     }
 
-    let classification = classify_direct_command(&line);
-    if classification.requires_confirmation() {
-        if write_confirmation_prompt(writer, &classification)? == BridgeLoopAction::Stop {
+    if has_embedded_command_framing(&line) {
+        return write_pty_line(
+            writer,
+            "atctl: operation rejected; embedded command framing or control characters are not allowed\r\n",
+        );
+    }
+    let review = review_direct_command(&line);
+    if is_prompt_required_command(&line) {
+        if !is_supported_bridge_prompt_command(&line) {
+            return write_pty_line(
+                writer,
+                "atctl: operation rejected; this prompt/payload command requires a Sequence so its payload framing can be handled correctly.\r\n",
+            );
+        }
+        state.pending_payload = Some(PendingPayload {
+            command: line,
+            review,
+        });
+        return write_pty_line(
+            writer,
+            "atctl: enter the complete payload line; command and payload will be reviewed before anything is sent.\r\n",
+        );
+    }
+    if review.requires_confirmation() {
+        if write_confirmation_prompt(writer, &review, None)? == BridgeLoopAction::Stop {
             return Ok(BridgeLoopAction::Stop);
         }
         state.pending_confirmation = Some(PendingConfirmation {
             command: line,
-            classification,
+            payload: None,
+            review,
         });
         return Ok(BridgeLoopAction::Continue);
     }
 
     execute_bridge_command_or_prompt(
-        state,
         transport,
         writer,
         &line,
+        None,
         command_timeout,
-        &classification,
+        &review,
         raw_log,
     )
 }
 
 fn execute_bridge_command_or_prompt<T, W>(
-    state: &mut BridgeCommandState,
     transport: &mut T,
     writer: &mut W,
     command: &str,
+    payload: Option<&str>,
     command_timeout: Duration,
-    classification: &RiskClassification,
+    review: &ExecutionReview,
     raw_log: Option<&mut RawLogSink>,
 ) -> Result<BridgeLoopAction>
 where
@@ -313,36 +336,40 @@ where
     W: Write,
 {
     if is_prompt_required_command(command) {
+        let payload = payload.ok_or_else(|| AtctlError::InvalidValue {
+            name: "PTY payload",
+            value: "missing complete payload before execution".to_owned(),
+        })?;
+        let mut raw_log = raw_log;
         let action = execute_bridge_prompt_command(
             transport,
             writer,
             command,
             command_timeout,
-            classification,
-            raw_log,
+            review,
+            raw_log.as_deref_mut(),
         )?;
-        if action == BridgeLoopAction::Continue {
-            state.pending_payload = Some(PendingPayload {
-                command: command.to_owned(),
-                classification: classification.clone(),
-            });
+        if action == BridgeLoopAction::Stop {
+            return Ok(action);
         }
-        return Ok(action);
+        return execute_bridge_payload(
+            transport,
+            writer,
+            command,
+            payload,
+            command_timeout,
+            review,
+            raw_log,
+        );
     }
 
-    execute_bridge_command(
-        transport,
-        writer,
-        command,
-        command_timeout,
-        classification,
-        raw_log,
-    )
+    execute_bridge_command(transport, writer, command, command_timeout, review, raw_log)
 }
 
 fn write_confirmation_prompt<W>(
     writer: &mut W,
-    classification: &RiskClassification,
+    review: &ExecutionReview,
+    payload: Option<&str>,
 ) -> Result<BridgeLoopAction>
 where
     W: Write,
@@ -362,21 +389,41 @@ where
     }
     if !write_prompt_line(
         writer,
-        &format!("Command: {}\r\n", classification.normalized_command),
+        &format!(
+            "AT command: {}\r\n",
+            mask_sensitive_values(&review.normalized_operation)
+        ),
     )? {
         return Ok(BridgeLoopAction::Stop);
     }
-    if !write_prompt_line(writer, &format!("Risk: {}\r\n", classification.risk))? {
+    if let Some(payload) = payload
+        && !write_prompt_line(
+            writer,
+            &format!("Payload: {}\r\n", mask_declared_sensitive_value(payload)),
+        )?
+    {
         return Ok(BridgeLoopAction::Stop);
     }
-    if !write_prompt_line(writer, &format!("Reason: {}\r\n", classification.reason))? {
+    if review.assessment == Assessment::Unknown
+        && !write_prompt_line(writer, "! Effects are not fully known\r\n")?
+    {
         return Ok(BridgeLoopAction::Stop);
+    }
+    for section in review.presentation_sections() {
+        if !write_prompt_line(writer, &format!("{}:\r\n", section.kind.heading()))? {
+            return Ok(BridgeLoopAction::Stop);
+        }
+        for item in section.items {
+            if !write_prompt_line(writer, &format!("  - {item}\r\n"))? {
+                return Ok(BridgeLoopAction::Stop);
+            }
+        }
     }
     write_pty_line(
         writer,
         &format!(
             "Type `{}` to continue, or send any other line to cancel.\r\n",
-            classification.risk
+            confirmation_token(review)
         ),
     )
 }
@@ -386,7 +433,7 @@ fn execute_bridge_command<T, W>(
     writer: &mut W,
     command: &str,
     command_timeout: Duration,
-    classification: &RiskClassification,
+    review: &ExecutionReview,
     raw_log: Option<&mut RawLogSink>,
 ) -> Result<BridgeLoopAction>
 where
@@ -394,12 +441,13 @@ where
     W: Write,
 {
     let started = Instant::now();
+    ensure_current_review(review, command)?;
     let tx = command_with_terminator(command);
     if let Err(error) = transport.write_command(&tx) {
         append_bridge_raw_error(
             raw_log,
             command,
-            classification,
+            review,
             started.elapsed(),
             "write_command",
             &error,
@@ -418,7 +466,7 @@ where
             append_bridge_raw_error(
                 raw_log,
                 command,
-                classification,
+                review,
                 started.elapsed(),
                 "read_response",
                 &error,
@@ -435,10 +483,12 @@ where
     let response = parse_response(&raw_response);
     let duration = started.elapsed();
     if let Some(raw_log) = raw_log {
+        let operation = OperationIdentity::command(command);
         raw_log.append_exchange(RawLogExchange {
+            operation: &operation,
             command_name: None,
             command,
-            risk: classification.risk,
+            review,
             status: &response.status,
             duration,
             tx_bytes: tx.as_bytes(),
@@ -453,7 +503,7 @@ fn execute_bridge_prompt_command<T, W>(
     writer: &mut W,
     command: &str,
     command_timeout: Duration,
-    classification: &RiskClassification,
+    review: &ExecutionReview,
     raw_log: Option<&mut RawLogSink>,
 ) -> Result<BridgeLoopAction>
 where
@@ -461,12 +511,13 @@ where
     W: Write,
 {
     let started = Instant::now();
+    ensure_current_review(review, command)?;
     let tx = command_with_terminator(command);
     if let Err(error) = transport.write_command(&tx) {
         append_bridge_raw_error(
             raw_log,
             command,
-            classification,
+            review,
             started.elapsed(),
             "write_command",
             &error,
@@ -486,7 +537,7 @@ where
                 append_bridge_raw_error(
                     raw_log,
                     command,
-                    classification,
+                    review,
                     started.elapsed(),
                     "read_prompt",
                     &error,
@@ -503,10 +554,12 @@ where
     let response = parse_response(&raw_response);
     let duration = started.elapsed();
     if let Some(raw_log) = raw_log {
+        let operation = OperationIdentity::command(command);
         raw_log.append_exchange(RawLogExchange {
+            operation: &operation,
             command_name: None,
             command,
-            risk: classification.risk,
+            review,
             status: &AtStatus::Ok,
             duration,
             tx_bytes: tx.as_bytes(),
@@ -518,10 +571,7 @@ where
     {
         return Ok(BridgeLoopAction::Stop);
     }
-    write_pty_line(
-        writer,
-        "atctl: enter payload line; Ctrl-Z will be appended.\r\n",
-    )
+    Ok(BridgeLoopAction::Continue)
 }
 
 fn execute_bridge_payload<T, W>(
@@ -530,7 +580,7 @@ fn execute_bridge_payload<T, W>(
     command: &str,
     payload: &str,
     command_timeout: Duration,
-    classification: &RiskClassification,
+    review: &ExecutionReview,
     raw_log: Option<&mut RawLogSink>,
 ) -> Result<BridgeLoopAction>
 where
@@ -543,7 +593,7 @@ where
         append_bridge_raw_error(
             raw_log,
             command,
-            classification,
+            review,
             started.elapsed(),
             "write_payload",
             &error,
@@ -562,7 +612,7 @@ where
             append_bridge_raw_error(
                 raw_log,
                 command,
-                classification,
+                review,
                 started.elapsed(),
                 "read_payload_response",
                 &error,
@@ -579,10 +629,12 @@ where
     let response = parse_response(&raw_response);
     let duration = started.elapsed();
     if let Some(raw_log) = raw_log {
+        let operation = OperationIdentity::command(command);
         raw_log.append_exchange(RawLogExchange {
+            operation: &operation,
             command_name: None,
             command,
-            risk: classification.risk,
+            review,
             status: &response.status,
             duration,
             tx_bytes: tx.as_bytes(),
@@ -598,14 +650,14 @@ fn mask_bridge_payload_response(text: &str, payload: &str) -> String {
     if payload.is_empty() {
         masked
     } else {
-        masked.replace(payload, &mask_identifier(payload))
+        masked.replace(payload, &mask_declared_sensitive_value(payload))
     }
 }
 
 fn append_bridge_raw_error(
     raw_log: Option<&mut RawLogSink>,
     command: &str,
-    classification: &RiskClassification,
+    review: &ExecutionReview,
     duration: Duration,
     stage: &'static str,
     error: &AtctlError,
@@ -615,16 +667,36 @@ fn append_bridge_raw_error(
         return Ok(());
     };
     let error = error.to_string();
+    let operation = OperationIdentity::command(command);
     raw_log.append_transport_error(RawLogTransportError {
+        operation: &operation,
         command_name: None,
         command,
-        risk: classification.risk,
+        review,
         duration,
         stage,
         error: &error,
         tx_bytes,
         rx_bytes: b"",
     })
+}
+
+fn confirmation_token(review: &ExecutionReview) -> &'static str {
+    if review.assessment == Assessment::Unknown {
+        "unknown"
+    } else {
+        "run"
+    }
+}
+
+fn ensure_current_review(review: &ExecutionReview, command: &str) -> Result<()> {
+    let current = review_direct_command(command);
+    if &current != review {
+        return Err(AtctlError::OperationOutsideReviewedBoundary {
+            operation: current.normalized_operation,
+        });
+    }
+    Ok(())
 }
 
 fn write_response_text<W>(writer: &mut W, text: &str) -> Result<BridgeLoopAction>
@@ -776,7 +848,7 @@ mod tests {
     }
 
     #[test]
-    fn safe_command_executes_and_masks_response() {
+    fn known_observation_executes_and_masks_response() {
         let mut state = BridgeCommandState::default();
         let mut transport =
             MockTransport::with_response(b"AT+CIMI\r\r\n295050912389644\r\n\r\nOK\r\n".to_vec());
@@ -797,6 +869,39 @@ mod tests {
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("29505091******"));
         assert!(!output.contains("295050912389644"));
+    }
+
+    #[test]
+    fn known_short_phone_field_is_masked_without_hiding_operational_values() {
+        let mut state = BridgeCommandState::default();
+        let mut transport = MockTransport::with_response(
+            b"AT+CNUM\r\r\n+CNUM: \"line\",\"901001\",129\r\n+CMGS: 7\r\nOK\r\n".to_vec(),
+        );
+        let mut output = Vec::new();
+
+        handle_bridge_line(
+            &mut state,
+            &mut transport,
+            &mut output,
+            "AT+CNUM".to_owned(),
+            Duration::from_secs(30),
+            None,
+        )
+        .unwrap();
+        handle_bridge_line(
+            &mut state,
+            &mut transport,
+            &mut output,
+            "unknown".to_owned(),
+            Duration::from_secs(30),
+            None,
+        )
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("\"******\",129"));
+        assert!(output.contains("+CMGS: 7"));
+        assert!(!output.contains("901001"));
     }
 
     #[test]
@@ -857,7 +962,7 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_required_command_waits_for_exact_risk_label() {
+    fn known_confirmation_required_command_waits_for_run_token() {
         let mut state = BridgeCommandState::default();
         let mut transport = MockTransport::with_response(b"ATE0\r\r\nOK\r\n".to_vec());
         let mut output = Vec::new();
@@ -872,18 +977,20 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            String::from_utf8(output.clone())
-                .unwrap()
-                .contains("Risk: write")
-        );
+        let prompt = String::from_utf8(output.clone()).unwrap();
+        assert!(prompt.contains("AT command: ATE0"));
+        assert!(prompt.contains("What will happen:"));
+        assert!(!prompt.contains("Assessment:"));
+        assert!(!prompt.contains("Confirmation: required"));
+        assert!(prompt.contains("Type `run`"));
+        assert!(!prompt.contains("Risk:"));
         assert!(transport.written_commands().is_empty());
 
         handle_bridge_line(
             &mut state,
             &mut transport,
             &mut output,
-            "write".to_owned(),
+            "run".to_owned(),
             Duration::from_secs(30),
             None,
         )
@@ -921,8 +1028,35 @@ mod tests {
         assert!(
             String::from_utf8(output)
                 .unwrap()
-                .contains("command cancelled")
+                .contains("operation cancelled")
         );
+    }
+
+    #[test]
+    fn unknown_confirmation_names_uncertainty_before_unknown_token() {
+        let mut state = BridgeCommandState::default();
+        let mut transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
+        let mut output = Vec::new();
+
+        handle_bridge_line(
+            &mut state,
+            &mut transport,
+            &mut output,
+            "AT+VENDOR=1".to_owned(),
+            Duration::from_secs(30),
+            None,
+        )
+        .unwrap();
+
+        let prompt = String::from_utf8(output).unwrap();
+        assert!(prompt.contains("AT command: AT+VENDOR=1"));
+        assert!(prompt.contains("! Effects are not fully known"));
+        assert!(prompt.contains("Known:"));
+        assert!(prompt.contains("Possible consequences:"));
+        assert!(prompt.contains("Not established:"));
+        assert!(prompt.contains("Type `unknown`"));
+        assert!(!prompt.contains("Assessment:"));
+        assert!(transport.written_commands().is_empty());
     }
 
     #[test]
@@ -943,34 +1077,32 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(state.pending_confirmation.is_some());
-        assert!(state.pending_payload.is_none());
+        assert!(state.pending_confirmation.is_none());
+        assert!(state.pending_payload.is_some());
         assert!(transport.written_commands().is_empty());
 
         handle_bridge_line(
             &mut state,
             &mut transport,
             &mut output,
-            "write".to_owned(),
+            "hello from atctl".to_owned(),
             Duration::from_secs(30),
             None,
         )
         .unwrap();
-        assert!(state.pending_confirmation.is_none());
-        assert!(state.pending_payload.is_some());
-        assert_eq!(
-            transport.written_commands(),
-            ["AT+CMGS=\"+819012345678\"\r"]
-        );
+        assert!(state.pending_confirmation.is_some());
+        assert!(state.pending_payload.is_none());
+        assert!(transport.written_commands().is_empty());
         let prompt_output = String::from_utf8(output.clone()).unwrap();
-        assert!(prompt_output.contains(">"));
-        assert!(prompt_output.contains("enter payload"));
+        assert!(prompt_output.contains("Payload:"));
+        assert!(prompt_output.contains("Type `run`"));
+        assert!(!prompt_output.contains("hello from atctl"));
 
         handle_bridge_line(
             &mut state,
             &mut transport,
             &mut output,
-            "hello from atctl".to_owned(),
+            "run".to_owned(),
             Duration::from_secs(30),
             None,
         )
@@ -990,19 +1122,49 @@ mod tests {
     }
 
     #[test]
-    fn prompt_payload_echo_is_masked_in_pty_output() {
-        let mut state = BridgeCommandState {
-            pending_confirmation: None,
-            pending_payload: Some(PendingPayload {
-                command: "AT+CMGS=\"+819012345678\"".to_owned(),
-                classification: classify_direct_command("AT+CMGS=\"+819012345678\""),
-            }),
-        };
-        let mut transport = MockTransport::with_response(
-            b"\r\nhello from atctl\r\n+CMGS: 12\r\n\r\nOK\r\n".to_vec(),
-        );
+    fn unsupported_fixed_length_prompt_command_is_rejected_before_transport_access() {
+        let mut state = BridgeCommandState::default();
+        let mut transport = MockTransport::with_response(b"\r\n> ".to_vec());
         let mut output = Vec::new();
 
+        handle_bridge_line(
+            &mut state,
+            &mut transport,
+            &mut output,
+            "AT+QISEND=0,4".to_owned(),
+            Duration::from_secs(30),
+            None,
+        )
+        .unwrap();
+
+        assert!(state.pending_payload.is_none());
+        assert!(state.pending_confirmation.is_none());
+        assert!(transport.written_commands().is_empty());
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("requires a Sequence")
+        );
+    }
+
+    #[test]
+    fn prompt_payload_echo_is_masked_in_pty_output() {
+        let mut state = BridgeCommandState::default();
+        let mut transport = MockTransport::with_responses([
+            b"\r\n> ".to_vec(),
+            b"\r\nhello from atctl\r\n+CMGS: 12\r\n\r\nOK\r\n".to_vec(),
+        ]);
+        let mut output = Vec::new();
+
+        handle_bridge_line(
+            &mut state,
+            &mut transport,
+            &mut output,
+            "AT+CMGS=\"+819012345678\"".to_owned(),
+            Duration::from_secs(30),
+            None,
+        )
+        .unwrap();
         handle_bridge_line(
             &mut state,
             &mut transport,
@@ -1012,9 +1174,18 @@ mod tests {
             None,
         )
         .unwrap();
+        handle_bridge_line(
+            &mut state,
+            &mut transport,
+            &mut output,
+            "run".to_owned(),
+            Duration::from_secs(30),
+            None,
+        )
+        .unwrap();
 
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("hell**********tl"));
+        assert!(output.contains("***** **** *****"));
         assert!(!output.contains("hello from atctl"));
     }
 
@@ -1027,7 +1198,7 @@ mod tests {
         let mut output = Vec::new();
         let path = unique_temp_path("atctl-bridge-rawlog");
         let mut raw_log =
-            RawLogSink::create(RawLogConfig::new(path.clone(), "bridge", "bridge")).unwrap();
+            RawLogSink::create(RawLogConfig::new(path.clone(), ExecutionSurface::Pty)).unwrap();
 
         let action = handle_bridge_line(
             &mut state,
@@ -1044,7 +1215,9 @@ mod tests {
         assert!(output.contains("29505091******"));
         assert!(!output.contains("295050912389644"));
         let raw = std::fs::read_to_string(&path).unwrap();
-        assert!(raw.contains("\"surface\":\"bridge\""));
+        assert!(raw.contains("\"surface\":\"pty\""));
+        assert!(raw.contains("\"operation\":{\"kind\":\"command\""));
+        assert!(!raw.contains("\"source\""));
         assert!(raw.contains("295050912389644"));
         let _ = std::fs::remove_file(path);
     }

@@ -12,6 +12,7 @@ Mac: Apple Silicon Mac
 USB modem: SORACOM Onyx LTE USB Dongle
 Internal modem: Quectel EG25-G
 USB ID: 0x2c7c:0x0125
+Observed firmware: EG25GGBR07A08M2G (ATI, 2026-06-17)
 ```
 
 This installation guide documents the validated environment above. Other
@@ -146,17 +147,6 @@ brew install libusb
 `rusb` crate. It allows `atctl` to communicate with USB interfaces and endpoints
 without relying on `/dev/cu.*` serial devices.
 
-## USB Device Visibility Check
-
-Check whether macOS sees the modem as a USB device:
-
-```sh
-system_profiler SPUSBHostDataType | grep -Ei -A 12 'EG25|Quectel|2c7c|0125'
-```
-
-If this command does not show the modem, try another USB port, avoid unpowered
-hubs, and confirm the modem is physically connected.
-
 ## First Commands After Installation
 
 ```sh
@@ -166,6 +156,6 @@ atctl send AT
 ```
 
 By default, `atctl devices` shows plausible AT operation targets. If it cannot
-show the expected USB modem, run `atctl devices --all-usb` to inspect all USB
-devices visible through `libusb`, then see
-[TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+show the expected USB modem, follow
+[USB Modem Is Not Visible in the USB Tree](TROUBLESHOOTING.md#usb-modem-is-not-visible-in-the-usb-tree)
+and [List Devices Through libusb](TROUBLESHOOTING.md#list-devices-through-libusb).

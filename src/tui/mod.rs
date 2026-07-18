@@ -25,9 +25,12 @@ use ratatui::symbols;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, LineGauge, List, ListItem, Paragraph, Wrap};
 
+use crate::app::operation::{ExecutionSurface, OperationIdentity};
 use crate::at::command::{command_with_terminator, normalize_command};
 use crate::at::mask::mask_sensitive_values;
-use crate::at::risk::{RiskLevel, classify_direct_command, is_prompt_required_command};
+use crate::at::review::{
+    Assessment, ExecutionReview, ReviewPresentationSectionKind, is_prompt_required_command,
+};
 use crate::cli::{
     DEFAULT_COMMAND_TIMEOUT_SECS, LoggingPaths, PresetFileLocationOptions, SendExecution,
     SequenceFileLocationOptions, TuiDeviceSelection, TuiThemeChoice, execute_tui_preset,
@@ -45,7 +48,7 @@ use crate::response_export::{response_export_path, write_response_export};
 use crate::sequences::engine::{
     SequenceExecution, SequenceParamValue, SequenceValueCandidate, SequenceValueCandidateSet,
     format_missing_sequence_param, render_sequence_review, required_param_summary,
-    value_candidate_sets_from_text,
+    review_sequence_execution, value_candidate_sets_from_text,
 };
 use crate::sequences::model::{Sequence, SequenceOrigin};
 use crate::sequences::model::{SequenceCandidateSource, SequenceParam, SequenceParamSource};
@@ -63,7 +66,7 @@ const COPY_REQUEST_SENT_FEEDBACK: &str = "Copy request sent.";
 const OUTPUT_UNMASK_ACK: &str = "unmask";
 const RESPONSE_COPY_ACK: &str = "copy";
 const RESPONSE_EXPORT_ACK: &str = "export";
-const EXTERNAL_DEFINITION_REVIEW_NOTICE: &str = "Review this external definition before running it; atctl validates format, duplicate names, masking, and effective risk, but does not certify that it is appropriate for your device, SIM, network, or endpoint.";
+const EXTERNAL_DEFINITION_REVIEW_NOTICE: &str = "Review this external definition before running it; atctl validates format, duplicate names, masking, and the execution review, but does not certify that it is appropriate for your device, SIM, network, or endpoint.";
 const EXTERNAL_DEFINITION_CONFIRMATION_NOTICE: &str = "Review external definition before running.";
 
 #[derive(Debug, Clone)]
@@ -92,11 +95,13 @@ struct TuiState {
     devices_visible_height: usize,
     categories_visible_height: usize,
     commands_visible_height: usize,
+    commands_visible_width: usize,
     controls_visible_height: usize,
     logs_visible_height: usize,
     status: String,
     status_role: TuiStyleRole,
     confirmation: Option<ConfirmationState>,
+    executable_details: Option<ExecutableDetailsState>,
     sequence_input: Option<SequenceInputState>,
     sequence_candidate_sets: Vec<TuiSequenceCandidateSet>,
     output_masking_enabled: bool,
@@ -177,6 +182,56 @@ enum TuiAction {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum ModalDismissal {
+    Cancel,
+    Close,
+    Help,
+}
+
+impl ModalDismissal {
+    fn accepts(self, key: KeyCode) -> bool {
+        match self {
+            Self::Cancel | Self::Close => key == KeyCode::Esc,
+            Self::Help => matches!(key, KeyCode::Esc | KeyCode::Char('?')),
+        }
+    }
+
+    fn instruction(self) -> &'static str {
+        match self {
+            Self::Cancel => "Esc cancels.",
+            Self::Close => "Esc closes.",
+            Self::Help => "Esc or ? closes.",
+        }
+    }
+
+    fn after(self, action: impl AsRef<str>) -> String {
+        format!("{} {}", action.as_ref(), self.instruction())
+    }
+
+    fn footer_segments(self) -> &'static [&'static str] {
+        match self {
+            Self::Cancel => &["Esc Cancel"],
+            Self::Close => &["Esc Close"],
+            Self::Help => &["Esc Close", "? Close"],
+        }
+    }
+
+    fn help_row(self) -> &'static str {
+        match self {
+            Self::Cancel => "Esc           Cancel / close / back",
+            Self::Close => "Esc           Close",
+            Self::Help => "Esc / ?       Close help",
+        }
+    }
+}
+
+fn modal_footer_segments(actions: &[&'static str], dismissal: ModalDismissal) -> Vec<&'static str> {
+    let mut segments = actions.to_vec();
+    segments.extend_from_slice(dismissal.footer_segments());
+    segments
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum ActionMenuKind {
     Response,
     Log,
@@ -232,7 +287,17 @@ struct SequenceInputState {
     confirmation_input: String,
     pending_candidate_action: Option<SequenceCandidateAction>,
     phase: SequenceInputPhase,
+    detail_scroll: usize,
+    detail_visible_height: usize,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ExecutableDetailsState {
+    item: ExecutableItem,
+    search_match: Option<String>,
+    scroll: usize,
+    visible_height: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -392,8 +457,8 @@ struct CommandStatus {
     kind: ExecutableKind,
     name: String,
     command: Option<String>,
+    raw_command: Option<String>,
     source_title: Option<String>,
-    risk: RiskLevel,
     summary: StatusSummary,
     finished_at: Option<String>,
 }
@@ -435,8 +500,8 @@ enum ExecutableKind {
 
 #[derive(Debug, Clone)]
 enum ExecutionOutput {
-    Command(SendExecution),
-    Sequence(SequenceExecution),
+    Command(Box<SendExecution>),
+    Sequence(Box<SequenceExecution>),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -473,11 +538,11 @@ impl ExecutableItem {
         }
     }
 
-    fn risk(&self) -> RiskLevel {
+    fn review(&self) -> &ExecutionReview {
         match self {
-            Self::Preset(preset) => preset.risk,
-            Self::Sequence(sequence) => sequence.risk,
-            Self::CandidateAction { preset, .. } => preset.risk,
+            Self::Preset(preset) => &preset.review,
+            Self::Sequence(sequence) => &sequence.review,
+            Self::CandidateAction { preset, .. } => &preset.review,
         }
     }
 
@@ -592,9 +657,9 @@ impl CommandStatus {
             state,
             kind: item.kind(),
             name: item.name().to_owned(),
-            command: item.command_text().map(str::to_owned),
+            command: item.command_text().map(mask_sensitive_values),
+            raw_command: item.command_text().map(str::to_owned),
             source_title: item.source_detail().map(str::to_owned),
-            risk: item.risk(),
             summary,
             finished_at: None,
         }
@@ -602,6 +667,16 @@ impl CommandStatus {
 
     fn with_finished_at(mut self, finished_at: String) -> Self {
         self.finished_at = Some(finished_at);
+        self
+    }
+
+    fn with_command_pair(
+        mut self,
+        masked_command: Option<String>,
+        raw_command: Option<String>,
+    ) -> Self {
+        self.command = masked_command;
+        self.raw_command = raw_command;
         self
     }
 
@@ -668,7 +743,7 @@ impl TuiCommandExecutor for UsbTuiCommandExecutor {
                 pending.device_selection,
                 pending.normal_logging_enabled,
             )
-            .map(ExecutionOutput::Command),
+            .map(|execution| ExecutionOutput::Command(Box::new(execution))),
             ExecutableItem::CandidateAction { preset, .. } => execute_tui_preset(
                 preset,
                 pending.confirmed,
@@ -676,7 +751,7 @@ impl TuiCommandExecutor for UsbTuiCommandExecutor {
                 pending.device_selection,
                 pending.normal_logging_enabled,
             )
-            .map(ExecutionOutput::Command),
+            .map(|execution| ExecutionOutput::Command(Box::new(execution))),
             ExecutableItem::Sequence(sequence) => execute_tui_sequence(
                 sequence,
                 &pending.sequence_params,
@@ -686,7 +761,7 @@ impl TuiCommandExecutor for UsbTuiCommandExecutor {
                 pending.normal_logging_enabled,
                 raw_log,
             )
-            .map(ExecutionOutput::Sequence),
+            .map(|execution| ExecutionOutput::Sequence(Box::new(execution))),
         }
     }
 }
@@ -1046,11 +1121,13 @@ impl TuiState {
             devices_visible_height: 6,
             categories_visible_height: 6,
             commands_visible_height: 6,
+            commands_visible_width: 80,
             controls_visible_height: 6,
             logs_visible_height: 6,
             status,
             status_role: TuiStyleRole::Status,
             confirmation: None,
+            executable_details: None,
             sequence_input: None,
             sequence_candidate_sets: Vec::new(),
             output_masking_enabled: options.output_masking_enabled,
@@ -1156,7 +1233,7 @@ fn initial_response_state(commands: &[ExecutableItem]) -> ResponseState {
 
     if sources.is_empty() {
         return ResponseState::masked(
-            "Select a command. Enter runs safe/read commands and opens confirmation for write-risk commands.",
+            "Select a command. Enter runs operations that do not require confirmation and opens confirmation when it is required.",
         );
     }
 
@@ -1382,6 +1459,10 @@ fn handle_key_code(state: &mut TuiState, key: KeyCode) -> TuiAction {
         return handle_help_key(state, key);
     }
 
+    if state.executable_details.is_some() {
+        return handle_executable_details_key(state, key);
+    }
+
     if state.action_menu.is_some() {
         return handle_action_menu_key(state, key);
     }
@@ -1426,8 +1507,10 @@ fn handle_key_code(state: &mut TuiState, key: KeyCode) -> TuiAction {
         return handle_ad_hoc_input_key(state, key);
     }
 
-    if state.running_execution.is_some() && is_blocked_while_running(key) {
-        state.status = "Command is running; wait for completion or timeout.".to_owned();
+    if (state.pending_execution.is_some() || state.running_execution.is_some())
+        && is_blocked_while_running(key)
+    {
+        state.status = "Operation is running; wait for completion or timeout.".to_owned();
         state.status_role = TuiStyleRole::Warning;
         return TuiAction::Continue;
     }
@@ -1503,6 +1586,14 @@ fn handle_key_code(state: &mut TuiState, key: KeyCode) -> TuiAction {
                     state.status_role = TuiStyleRole::Status;
                 }
                 Pane::Commands => {
+                    let commands = state.visible_commands();
+                    if executable_name_column_width(&commands, state.commands_visible_width)
+                        .is_none()
+                    {
+                        state.status = "Executable details cannot fit safely. Resize the terminal to continue.".to_owned();
+                        state.status_role = TuiStyleRole::Warning;
+                        return TuiAction::Continue;
+                    }
                     if let Some(command) = state.selected_command().cloned() {
                         begin_item_execution(state, command, "Confirmation required.");
                     }
@@ -1523,6 +1614,14 @@ fn handle_key_code(state: &mut TuiState, key: KeyCode) -> TuiAction {
             state.status_role = TuiStyleRole::Status;
             TuiAction::Continue
         }
+        KeyCode::Char('d')
+            if state.focus == Pane::Commands
+                && state.pending_execution.is_none()
+                && state.running_execution.is_none() =>
+        {
+            open_executable_details(state);
+            TuiAction::Continue
+        }
         _ => TuiAction::Continue,
     }
 }
@@ -1536,11 +1635,48 @@ fn is_blocked_while_running(key: KeyCode) -> bool {
 
 fn handle_help_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
-        KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+        key if ModalDismissal::Help.accepts(key) => {
             state.show_help = false;
             TuiAction::Continue
         }
         _ => TuiAction::Continue,
+    }
+}
+
+fn handle_executable_details_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
+    match key {
+        key if ModalDismissal::Close.accepts(key) => {
+            state.executable_details = None;
+        }
+        KeyCode::Up => scroll_executable_details(state, -1),
+        KeyCode::Down => scroll_executable_details(state, 1),
+        KeyCode::PageUp => {
+            let page = state
+                .executable_details
+                .as_ref()
+                .map_or(1, |details| details.visible_height.max(1));
+            scroll_executable_details(state, -(page as isize));
+        }
+        KeyCode::PageDown => {
+            let page = state
+                .executable_details
+                .as_ref()
+                .map_or(1, |details| details.visible_height.max(1));
+            scroll_executable_details(state, page as isize);
+        }
+        _ => {}
+    }
+    TuiAction::Continue
+}
+
+fn scroll_executable_details(state: &mut TuiState, delta: isize) {
+    let Some(details) = state.executable_details.as_mut() else {
+        return;
+    };
+    if delta.is_negative() {
+        details.scroll = details.scroll.saturating_sub(delta.unsigned_abs());
+    } else {
+        details.scroll = details.scroll.saturating_add(delta as usize);
     }
 }
 
@@ -1651,7 +1787,7 @@ fn open_log_action_menu(state: &mut TuiState) {
 
 fn handle_action_menu_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
-        KeyCode::Esc | KeyCode::Char('q') => {
+        key if ModalDismissal::Cancel.accepts(key) => {
             state.action_menu = None;
             state.status = "Action menu closed.".to_owned();
             state.status_role = TuiStyleRole::Status;
@@ -1843,6 +1979,20 @@ fn open_timeout_input(state: &mut TuiState) -> TuiAction {
     TuiAction::Continue
 }
 
+fn open_executable_details(state: &mut TuiState) {
+    let Some(item) = state.selected_command().cloned() else {
+        return;
+    };
+    let visible_row = command_row_plain_text(false, &item, state.commands_visible_width);
+    let search_match = hidden_search_match(&item, &state.search_query, &visible_row);
+    state.executable_details = Some(ExecutableDetailsState {
+        item,
+        search_match,
+        scroll: 0,
+        visible_height: 1,
+    });
+}
+
 fn open_sequence_input(state: &mut TuiState, sequence: Sequence) {
     if device_gate_message(state).is_some() {
         block_device_dependent_action(state);
@@ -1862,6 +2012,8 @@ fn open_sequence_input(state: &mut TuiState, sequence: Sequence) {
         confirmation_input: String::new(),
         pending_candidate_action: None,
         phase,
+        detail_scroll: 0,
+        detail_visible_height: 1,
         error: None,
     });
     state.status = "Run Sequence input.".to_owned();
@@ -2208,7 +2360,7 @@ fn clear_response(state: &mut TuiState) {
 
 fn handle_output_masking_confirmation_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
-        KeyCode::Esc | KeyCode::Char('q') => {
+        key if ModalDismissal::Cancel.accepts(key) => {
             state.output_masking_ack_input = None;
             state.status = "Output masking unchanged.".to_owned();
             state.status_role = TuiStyleRole::Status;
@@ -2251,7 +2403,7 @@ fn handle_output_masking_confirmation_key(state: &mut TuiState, key: KeyCode) ->
 
 fn handle_response_action_confirmation_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
-        KeyCode::Esc | KeyCode::Char('q') => {
+        key if ModalDismissal::Cancel.accepts(key) => {
             let action = state.response_action_confirmation.take();
             let message = match action.map(|confirmation| confirmation.action) {
                 Some(ResponseActionConfirmation::Copy { .. }) => "Response copy cancelled.",
@@ -2311,18 +2463,7 @@ fn response_action_confirmation_ack(action: &ResponseActionConfirmation) -> &'st
 
 fn handle_raw_log_path_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
-        KeyCode::Esc => {
-            state.raw_log_path_input = None;
-            state.status = "Raw diagnostic export cancelled.".to_owned();
-            state.status_role = TuiStyleRole::Status;
-            set_controls_feedback(state, TuiStyleRole::Status, "Raw export cancelled.");
-        }
-        KeyCode::Char('q')
-            if state
-                .raw_log_path_input
-                .as_ref()
-                .is_some_and(|input| input.input.is_empty()) =>
-        {
+        key if ModalDismissal::Cancel.accepts(key) => {
             state.raw_log_path_input = None;
             state.status = "Raw diagnostic export cancelled.".to_owned();
             state.status_role = TuiStyleRole::Status;
@@ -2381,18 +2522,7 @@ fn handle_raw_log_path_input_key(state: &mut TuiState, key: KeyCode) -> TuiActio
 
 fn handle_raw_log_ack_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
-        KeyCode::Esc => {
-            state.raw_log_ack_input = None;
-            state.status = "Raw diagnostic export cancelled.".to_owned();
-            state.status_role = TuiStyleRole::Status;
-            set_controls_feedback(state, TuiStyleRole::Status, "Raw export cancelled.");
-        }
-        KeyCode::Char('q')
-            if state
-                .raw_log_ack_input
-                .as_ref()
-                .is_some_and(|input| input.input.is_empty()) =>
-        {
+        key if ModalDismissal::Cancel.accepts(key) => {
             state.raw_log_ack_input = None;
             state.status = "Raw diagnostic export cancelled.".to_owned();
             state.status_role = TuiStyleRole::Status;
@@ -2417,7 +2547,10 @@ fn handle_raw_log_ack_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction
                 return TuiAction::Continue;
             }
 
-            match RawLogSink::create(RawLogConfig::new(input_state.path.clone(), "tui", "tui")) {
+            match RawLogSink::create(RawLogConfig::new(
+                input_state.path.clone(),
+                ExecutionSurface::Tui,
+            )) {
                 Ok(sink) => {
                     state.raw_capture = Some(sink);
                     state.status = format!(
@@ -2459,7 +2592,7 @@ fn handle_raw_log_ack_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction
 
 fn handle_search_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
-        KeyCode::Esc => {
+        key if ModalDismissal::Cancel.accepts(key) => {
             state.search_input = None;
             state.status = "Command search cancelled.".to_owned();
             state.status_role = TuiStyleRole::Status;
@@ -2484,16 +2617,6 @@ fn handle_search_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
                 input.input.pop();
             }
         }
-        KeyCode::Char('q')
-            if state
-                .search_input
-                .as_ref()
-                .is_some_and(|input| input.input.is_empty()) =>
-        {
-            state.search_input = None;
-            state.status = "Command search cancelled.".to_owned();
-            state.status_role = TuiStyleRole::Status;
-        }
         KeyCode::Char(value) => {
             if let Some(input) = state.search_input.as_mut() {
                 input.input.push(value);
@@ -2507,7 +2630,7 @@ fn handle_search_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
 
 fn handle_edit_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
-        KeyCode::Esc => {
+        key if ModalDismissal::Cancel.accepts(key) => {
             state.edit_input = None;
             state.status = "Edit-before-run cancelled.".to_owned();
             state.status_role = TuiStyleRole::Status;
@@ -2556,7 +2679,7 @@ fn handle_edit_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
 
 fn handle_timeout_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
-        KeyCode::Esc => {
+        key if ModalDismissal::Cancel.accepts(key) => {
             state.timeout_input = None;
             state.status = "Timeout change cancelled.".to_owned();
             state.status_role = TuiStyleRole::Status;
@@ -2608,7 +2731,7 @@ fn handle_timeout_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
 
 fn handle_confirmation_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
-        KeyCode::Esc => {
+        key if ModalDismissal::Cancel.accepts(key) => {
             if let Some(confirmation) = &state.confirmation {
                 let item = ExecutableItem::Preset(confirmation.preset.clone());
                 let timeout_secs = effective_timeout_secs(state, &item);
@@ -2628,7 +2751,7 @@ fn handle_confirmation_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
             let Some(confirmation) = state.confirmation.take() else {
                 return TuiAction::Continue;
             };
-            let expected = confirmation.preset.risk.to_string();
+            let expected = confirmation_token(&confirmation.preset.review);
             if confirmation.input.trim() == expected {
                 let item = ExecutableItem::Preset(confirmation.preset);
                 let timeout_secs = effective_timeout_secs(state, &item);
@@ -2646,7 +2769,7 @@ fn handle_confirmation_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
                 set_response(
                     state,
                     ResponseState::masked(format!(
-                        "Command was not sent.\nRisk confirmation did not match `{expected}`."
+                        "Command was not sent.\nExecution confirmation did not match `{expected}`."
                     )),
                 );
             }
@@ -2669,20 +2792,7 @@ fn handle_confirmation_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
 
 fn handle_sequence_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
-        KeyCode::Esc => {
-            cancel_sequence_input(state, "Sequence run cancelled.");
-        }
-        KeyCode::Char('q')
-            if state.sequence_input.as_ref().is_some_and(|input| {
-                let active_value_empty = input
-                    .values
-                    .get(input.active_param)
-                    .is_none_or(|value| value.is_empty());
-                input.phase == SequenceInputPhase::Params
-                    && active_value_empty
-                    && input.confirmation_input.is_empty()
-            }) =>
-        {
+        key if ModalDismissal::Cancel.accepts(key) => {
             cancel_sequence_input(state, "Sequence run cancelled.");
         }
         KeyCode::Enter => {
@@ -2693,6 +2803,7 @@ fn handle_sequence_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
         KeyCode::Tab if matches_sequence_phase(state, SequenceInputPhase::Params) => {
             if let Some(input) = state.sequence_input.as_mut() {
                 move_to_next_sequence_param(input);
+                input.detail_scroll = 0;
                 input.error = None;
             }
         }
@@ -2704,6 +2815,7 @@ fn handle_sequence_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
                         (input.active_candidate + 1).min(candidate_count.saturating_sub(1));
                 } else {
                     move_to_next_sequence_param(input);
+                    input.detail_scroll = 0;
                 }
                 input.error = None;
             }
@@ -2716,52 +2828,106 @@ fn handle_sequence_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
                 } else {
                     input.active_param = input.active_param.saturating_sub(1);
                     input.active_candidate = 0;
+                    input.detail_scroll = 0;
                 }
                 input.error = None;
             }
         }
-        KeyCode::Backspace => {
+        KeyCode::PageUp => {
             if let Some(input) = state.sequence_input.as_mut() {
+                input.detail_scroll = input
+                    .detail_scroll
+                    .saturating_sub(input.detail_visible_height.max(1));
+            }
+        }
+        KeyCode::PageDown => {
+            if let Some(input) = state.sequence_input.as_mut() {
+                input.detail_scroll = input
+                    .detail_scroll
+                    .saturating_add(input.detail_visible_height.max(1));
+            }
+        }
+        KeyCode::Backspace => {
+            let accepts_text = state
+                .sequence_input
+                .as_ref()
+                .is_some_and(sequence_input_has_visible_text_field);
+            if let Some(input) = state.sequence_input.as_mut() {
+                let mut edited = false;
                 match input.phase {
                     SequenceInputPhase::Params => {
                         if let Some(value) = input.values.get_mut(input.active_param) {
                             value.pop();
+                            edited = true;
                         }
                         input.active_candidate = 0;
                     }
-                    SequenceInputPhase::CandidateActionConfirmation => {
+                    SequenceInputPhase::CandidateActionConfirmation if accepts_text => {
                         input.confirmation_input.pop();
+                        edited = true;
                     }
-                    SequenceInputPhase::Confirmation => {
+                    SequenceInputPhase::Confirmation if accepts_text => {
                         input.confirmation_input.pop();
+                        edited = true;
                     }
+                    SequenceInputPhase::CandidateActionConfirmation
+                    | SequenceInputPhase::Confirmation => {}
                 }
-                input.error = None;
+                if edited {
+                    input.error = None;
+                }
             }
         }
         KeyCode::Char(value) => {
+            let accepts_text = state
+                .sequence_input
+                .as_ref()
+                .is_some_and(sequence_input_has_visible_text_field);
             if let Some(input) = state.sequence_input.as_mut() {
+                let mut edited = false;
                 match input.phase {
                     SequenceInputPhase::Params => {
                         if let Some(current) = input.values.get_mut(input.active_param) {
                             current.push(value);
+                            edited = true;
                         }
                         input.active_candidate = 0;
                     }
-                    SequenceInputPhase::CandidateActionConfirmation => {
+                    SequenceInputPhase::CandidateActionConfirmation if accepts_text => {
                         input.confirmation_input.push(value);
+                        edited = true;
                     }
-                    SequenceInputPhase::Confirmation => {
+                    SequenceInputPhase::Confirmation if accepts_text => {
                         input.confirmation_input.push(value);
+                        edited = true;
                     }
+                    SequenceInputPhase::CandidateActionConfirmation
+                    | SequenceInputPhase::Confirmation => {}
                 }
-                input.error = None;
+                if edited {
+                    input.error = None;
+                }
             }
         }
         _ => {}
     }
 
     TuiAction::Continue
+}
+
+fn sequence_input_has_visible_text_field(input: &SequenceInputState) -> bool {
+    match input.phase {
+        SequenceInputPhase::Params => true,
+        SequenceInputPhase::CandidateActionConfirmation => input
+            .pending_candidate_action
+            .map(candidate_action_item)
+            .is_some_and(|item| item.review().requires_confirmation()),
+        SequenceInputPhase::Confirmation => sequence_input_param_values(input)
+            .ok()
+            .and_then(|params| review_sequence_execution(&input.sequence, &params).ok())
+            .unwrap_or_else(|| input.sequence.review.clone())
+            .requires_confirmation(),
+    }
 }
 
 fn matches_sequence_phase(state: &TuiState, phase: SequenceInputPhase) -> bool {
@@ -2872,9 +3038,10 @@ fn run_active_sequence_candidate_action(
         return false;
     };
     let item = candidate_action_item(action);
-    if item.risk().requires_confirmation() {
+    if item.review().requires_confirmation() {
         if let Some(input) = state.sequence_input.as_mut() {
             input.phase = SequenceInputPhase::CandidateActionConfirmation;
+            input.detail_scroll = 0;
             input.pending_candidate_action = Some(action);
             input.confirmation_input.clear();
             input.error = None;
@@ -2891,7 +3058,6 @@ fn candidate_action_item(action: SequenceCandidateAction) -> ExecutableItem {
     let preset = Preset::new(
         action.label,
         action.command,
-        classify_direct_command(action.command).risk,
         action
             .categories
             .iter()
@@ -2943,17 +3109,29 @@ fn submit_sequence_input(state: &mut TuiState) {
             }
             match sequence_input_param_values(&input) {
                 Ok(params) => {
-                    if input.sequence.risk.requires_confirmation() {
-                        input.phase = SequenceInputPhase::Confirmation;
-                        input.error = None;
+                    let execution_review = match review_sequence_execution(&input.sequence, &params)
+                    {
+                        Ok(review) => review,
+                        Err(error) => {
+                            let message = error.to_string();
+                            input.error = Some(message.clone());
+                            state.status = message;
+                            state.status_role = TuiStyleRole::Error;
+                            state.sequence_input = Some(input);
+                            return;
+                        }
+                    };
+                    input.phase = SequenceInputPhase::Confirmation;
+                    input.detail_scroll = 0;
+                    input.error = None;
+                    if execution_review.requires_confirmation() {
                         state.status = "Sequence confirmation required.".to_owned();
                         state.status_role = TuiStyleRole::Warning;
-                        state.sequence_input = Some(input);
                     } else {
-                        let item = ExecutableItem::Sequence(input.sequence);
-                        let timeout_secs = effective_timeout_secs(state, &item);
-                        schedule_item_execution(state, item, false, timeout_secs, params);
+                        state.status = "Sequence ready for review.".to_owned();
+                        state.status_role = TuiStyleRole::Status;
                     }
+                    state.sequence_input = Some(input);
                 }
                 Err(message) => {
                     input.error = Some(message.clone());
@@ -2966,6 +3144,7 @@ fn submit_sequence_input(state: &mut TuiState) {
         SequenceInputPhase::CandidateActionConfirmation => {
             let Some(action) = input.pending_candidate_action else {
                 input.phase = SequenceInputPhase::Params;
+                input.detail_scroll = 0;
                 input.error = Some("No candidate action is selected.".to_owned());
                 state.status = "No candidate action selected.".to_owned();
                 state.status_role = TuiStyleRole::Error;
@@ -2973,8 +3152,9 @@ fn submit_sequence_input(state: &mut TuiState) {
                 return;
             };
             let item = candidate_action_item(action);
-            let expected = item.risk().to_string();
-            if item.risk().requires_confirmation() && input.confirmation_input.trim() != expected {
+            let expected = confirmation_token(item.review());
+            if item.review().requires_confirmation() && input.confirmation_input.trim() != expected
+            {
                 input.error = Some(format!("Type `{expected}` exactly."));
                 state.status = "Action confirmation rejected.".to_owned();
                 state.status_role = TuiStyleRole::Error;
@@ -2982,38 +3162,57 @@ fn submit_sequence_input(state: &mut TuiState) {
                 return;
             }
             input.phase = SequenceInputPhase::Params;
+            input.detail_scroll = 0;
             input.pending_candidate_action = None;
             input.confirmation_input.clear();
             input.error = None;
             state.sequence_input = Some(input);
             schedule_item_execution(state, item, true, DEFAULT_COMMAND_TIMEOUT_SECS, Vec::new());
         }
-        SequenceInputPhase::Confirmation => {
-            let expected = input.sequence.risk.to_string();
-            if input.sequence.risk.requires_confirmation()
-                && input.confirmation_input.trim() != expected
-            {
-                input.error = Some(format!("Type `{expected}` exactly."));
-                state.status = "Sequence confirmation rejected.".to_owned();
-                state.status_role = TuiStyleRole::Error;
-                state.sequence_input = Some(input);
-                return;
-            }
-            match sequence_input_param_values(&input) {
-                Ok(params) => {
-                    let item = ExecutableItem::Sequence(input.sequence);
-                    let timeout_secs = effective_timeout_secs(state, &item);
-                    schedule_item_execution(state, item, true, timeout_secs, params);
-                }
-                Err(message) => {
-                    input.phase = SequenceInputPhase::Params;
-                    input.error = Some(message.clone());
-                    state.status = message;
+        SequenceInputPhase::Confirmation => match sequence_input_param_values(&input) {
+            Ok(params) => {
+                let execution_review = match review_sequence_execution(&input.sequence, &params) {
+                    Ok(review) => review,
+                    Err(error) => {
+                        let message = error.to_string();
+                        input.phase = SequenceInputPhase::Params;
+                        input.detail_scroll = 0;
+                        input.error = Some(message.clone());
+                        state.status = message;
+                        state.status_role = TuiStyleRole::Error;
+                        state.sequence_input = Some(input);
+                        return;
+                    }
+                };
+                let expected = confirmation_token(&execution_review);
+                if execution_review.requires_confirmation()
+                    && input.confirmation_input.trim() != expected
+                {
+                    input.error = Some(format!("Type `{expected}` exactly."));
+                    state.status = "Sequence confirmation rejected.".to_owned();
                     state.status_role = TuiStyleRole::Error;
                     state.sequence_input = Some(input);
+                    return;
                 }
+                let item = ExecutableItem::Sequence(input.sequence);
+                let timeout_secs = effective_timeout_secs(state, &item);
+                schedule_item_execution(
+                    state,
+                    item,
+                    execution_review.requires_confirmation(),
+                    timeout_secs,
+                    params,
+                );
             }
-        }
+            Err(message) => {
+                input.phase = SequenceInputPhase::Params;
+                input.detail_scroll = 0;
+                input.error = Some(message.clone());
+                state.status = message;
+                state.status_role = TuiStyleRole::Error;
+                state.sequence_input = Some(input);
+            }
+        },
     }
 }
 
@@ -3052,7 +3251,7 @@ fn sequence_input_param_values(
 
 fn handle_ad_hoc_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
-        KeyCode::Esc => {
+        key if ModalDismissal::Cancel.accepts(key) => {
             state.ad_hoc_input = None;
             state.status = "AT command input cancelled.".to_owned();
             state.status_role = TuiStyleRole::Status;
@@ -3086,16 +3285,6 @@ fn handle_ad_hoc_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
                 input.input.pop();
                 input.error = None;
             }
-        }
-        KeyCode::Char('q')
-            if state
-                .ad_hoc_input
-                .as_ref()
-                .is_some_and(|input| input.input.is_empty()) =>
-        {
-            state.ad_hoc_input = None;
-            state.status = "AT command input cancelled.".to_owned();
-            state.status_role = TuiStyleRole::Status;
         }
         KeyCode::Char(value) => {
             if let Some(input) = state.ad_hoc_input.as_mut() {
@@ -3132,7 +3321,6 @@ fn one_shot_preset(name: &str, preset_set: &str, category: &str, command: &str) 
     Preset::new(
         name,
         command,
-        classify_direct_command(command).risk,
         vec![category.to_owned()],
         PresetOrigin::runtime(preset_set),
     )
@@ -3147,7 +3335,7 @@ fn begin_item_execution(state: &mut TuiState, command: ExecutableItem, confirmat
 
     let timeout_secs = effective_timeout_secs(state, &command);
     if let ExecutableItem::Sequence(sequence) = &command {
-        if !sequence.params.is_empty() || sequence.risk.requires_confirmation() {
+        if !sequence.params.is_empty() || sequence.review.requires_confirmation() {
             open_sequence_input(state, sequence.clone());
         } else {
             schedule_item_execution(state, command, false, timeout_secs, Vec::new());
@@ -3160,7 +3348,7 @@ fn begin_item_execution(state: &mut TuiState, command: ExecutableItem, confirmat
         state.status_role = TuiStyleRole::Warning;
         return;
     };
-    if preset.risk.requires_confirmation() {
+    if preset.review.requires_confirmation() {
         set_response(
             state,
             ResponseState::masked(format_confirmation_summary(preset)),
@@ -3251,8 +3439,8 @@ fn toggle_raw_capture(state: &mut TuiState) {
     state.raw_log_path_input = Some(RawLogPathInputState::default());
     state.raw_log_ack_input = None;
     state.status = "Raw diagnostic export path input.".to_owned();
-    state.status_role = TuiStyleRole::Warning;
-    set_controls_feedback(state, TuiStyleRole::Warning, "Choose raw export file.");
+    state.status_role = TuiStyleRole::Status;
+    set_controls_feedback(state, TuiStyleRole::Status, "Choose raw export file.");
 }
 
 fn response_export_request(state: &TuiState) -> Option<ResponseExportRequest> {
@@ -3338,8 +3526,7 @@ fn open_log_entry(state: &mut TuiState, log: Option<LogEntry>) {
 
     match fs::read_to_string(&log.path) {
         Ok(content) => {
-            let masked_content = mask_sensitive_values(&content);
-            set_response(state, ResponseState::masked(masked_content));
+            set_response(state, ResponseState::masked(content));
             state.output_masking_ack_input = None;
             state.active_command = None;
             state.viewed_log = Some(ViewedLog {
@@ -3409,18 +3596,23 @@ fn finish_execution_result(
 
     match result {
         Ok(execution) => {
-            let (status, duration, masked_text, raw_text) = match &execution {
+            let (status, duration, masked_text, raw_text, command_pair) = match &execution {
                 ExecutionOutput::Command(execution) => (
                     execution.status.clone(),
                     execution.duration,
                     format_successful_execution(execution, false),
                     format_successful_execution(execution, true),
+                    (
+                        execution.masked_operation.command.clone(),
+                        execution.operation.command.clone(),
+                    ),
                 ),
                 ExecutionOutput::Sequence(execution) => (
                     execution.status.clone(),
                     execution.duration,
                     execution.masked_transcript.clone(),
                     execution.raw_transcript.clone(),
+                    (None, None),
                 ),
             };
             set_response(state, ResponseState::with_raw(masked_text, raw_text));
@@ -3450,6 +3642,7 @@ fn finish_execution_result(
                 && let Some(input) = state.sequence_input.as_mut()
             {
                 input.phase = SequenceInputPhase::Params;
+                input.detail_scroll = 0;
                 input.pending_candidate_action = None;
                 input.confirmation_input.clear();
                 input.error = None;
@@ -3483,24 +3676,27 @@ fn finish_execution_result(
                         duration_ms: duration.as_millis(),
                     },
                 )
-                .with_finished_at(finished_at),
+                .with_finished_at(finished_at)
+                .with_command_pair(command_pair.0, command_pair.1),
             );
         }
         Err(error) => {
             let detail = error.to_string();
             let raw_log_error =
                 append_tui_raw_error_for_item(state, &item, failed_duration, &detail);
+            let raw_failure = format!(
+                "Result: failed\n\n{} failed before response.\n{detail}",
+                item.kind().noun()
+            );
             set_response(
                 state,
-                ResponseState::masked(format!(
-                    "Result: failed\n\n{} failed before response.\n{detail}",
-                    item.kind().noun()
-                )),
+                ResponseState::with_raw(mask_sensitive_values(&raw_failure), raw_failure),
             );
             if matches!(item, ExecutableItem::CandidateAction { .. })
                 && let Some(input) = state.sequence_input.as_mut()
             {
                 input.phase = SequenceInputPhase::Params;
+                input.detail_scroll = 0;
                 input.pending_candidate_action = None;
                 input.confirmation_input.clear();
                 input.error = Some("Candidate action failed.".to_owned());
@@ -3601,10 +3797,12 @@ fn append_tui_raw_capture(
         return Ok(());
     };
     let tx = command_with_terminator(&preset.command);
+    let operation = OperationIdentity::preset(preset);
     capture.append_exchange(RawLogExchange {
+        operation: &operation,
         command_name: Some(&preset.name),
         command: &preset.command,
-        risk: execution.risk,
+        review: &execution.review,
         status: &execution.status,
         duration: execution.duration,
         tx_bytes: tx.as_bytes(),
@@ -3637,10 +3835,12 @@ fn append_tui_raw_error(
         return Ok(());
     };
     let tx = command_with_terminator(&preset.command);
+    let operation = OperationIdentity::preset(preset);
     capture.append_transport_error(RawLogTransportError {
+        operation: &operation,
         command_name: Some(&preset.name),
         command: &preset.command,
-        risk: preset.risk,
+        review: &preset.review,
         duration,
         stage: "execute",
         error,
@@ -3653,7 +3853,7 @@ fn format_successful_execution(execution: &SendExecution, raw: bool) -> String {
     let response_text = if raw {
         &execution.raw_text
     } else {
-        &execution.text
+        &execution.masked_text
     };
 
     if response_text.is_empty() {
@@ -3675,29 +3875,65 @@ fn format_confirmation_summary(command: &Preset) -> String {
             lines.push(EXTERNAL_DEFINITION_CONFIRMATION_NOTICE.to_owned());
         }
     }
+    lines.extend([format!("Command: {}", command.command)]);
+    append_execution_review_text(&mut lines, &command.review);
     lines.extend([
-        format!("Command: {}", command.command),
-        format!("Risk: {}", risk_label_text(command.risk)),
-        format!("Expected effect: {}", risk_expected_effect(command.risk)),
         String::new(),
-        format!("Type `{}` to send, or press Esc to cancel.", command.risk),
+        format!(
+            "Type `{}` to send, or press Esc to cancel.",
+            confirmation_token(&command.review)
+        ),
     ]);
     lines.join("\n")
 }
 
-fn risk_label_text(risk: crate::at::risk::RiskLevel) -> String {
-    format!("[{risk}]")
+fn confirmation_token(review: &ExecutionReview) -> &'static str {
+    if review.assessment == Assessment::Unknown {
+        "unknown"
+    } else {
+        "run"
+    }
 }
 
-fn risk_expected_effect(risk: crate::at::risk::RiskLevel) -> &'static str {
-    match risk {
-        crate::at::risk::RiskLevel::Safe => "read-only or harmless command",
-        crate::at::risk::RiskLevel::Sensitive => "reads sensitive modem or subscriber data",
-        crate::at::risk::RiskLevel::Write => "may change modem runtime state",
-        crate::at::risk::RiskLevel::Persistent => "may change persistent modem configuration",
-        crate::at::risk::RiskLevel::Dangerous => "may disrupt connectivity or modem operation",
-        crate::at::risk::RiskLevel::Unknown => "effect is not known; treat as potentially unsafe",
+fn append_execution_review_text(lines: &mut Vec<String>, review: &ExecutionReview) {
+    if review.assessment == Assessment::Unknown {
+        lines.push("! Effects are not fully known".to_owned());
     }
+    for section in review.presentation_sections() {
+        lines.push(format!("{}:", section.kind.heading()));
+        lines.extend(section.items.into_iter().map(|item| format!("  • {item}")));
+    }
+}
+
+fn execution_review_lines(review: &ExecutionReview, theme: &TuiTheme) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if review.assessment == Assessment::Unknown {
+        lines.push(Line::from(Span::styled(
+            "! Effects are not fully known",
+            theme.style(TuiStyleRole::Warning),
+        )));
+    }
+    for section in review.presentation_sections() {
+        let role = match section.kind {
+            ReviewPresentationSectionKind::WhatWillHappen
+            | ReviewPresentationSectionKind::Known => TuiStyleRole::Emphasis,
+            ReviewPresentationSectionKind::PossibleConsequences
+            | ReviewPresentationSectionKind::SensitiveData
+            | ReviewPresentationSectionKind::PersistsRecovery
+            | ReviewPresentationSectionKind::NotEstablished => TuiStyleRole::Warning,
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{}:", section.kind.heading()),
+            theme.style(role),
+        )));
+        lines.extend(section.items.into_iter().map(|item| {
+            Line::from(Span::styled(
+                format!("  • {item}"),
+                theme.style(TuiStyleRole::Text),
+            ))
+        }));
+    }
+    lines
 }
 
 fn move_selection(state: &mut TuiState, delta: isize) {
@@ -3972,6 +4208,7 @@ fn render_frame(frame: &mut Frame<'_>, state: &mut TuiState) {
     state.devices_visible_height = pane_inner_height(top_left[0]);
     state.categories_visible_height = pane_inner_height(top[1]);
     state.commands_visible_height = pane_inner_height(top[2]);
+    state.commands_visible_width = top[2].width.saturating_sub(2) as usize;
     state.controls_visible_height = pane_inner_height(bottom[0]);
     state.logs_visible_height = pane_inner_height(bottom_main[1]);
     render_devices(frame, top_left[0], state, &theme);
@@ -4004,8 +4241,11 @@ fn render_frame(frame: &mut Frame<'_>, state: &mut TuiState) {
     if state.edit_input.is_some() {
         render_edit_input(frame, centered_rect(76, 42, area), state, &theme);
     }
+    if state.executable_details.is_some() {
+        render_executable_details(frame, centered_rect(76, 70, area), state, &theme);
+    }
     if state.sequence_input.is_some() {
-        render_sequence_input(frame, centered_rect(76, 76, area), state, &theme);
+        render_sequence_input(frame, centered_rect(76, 86, area), state, &theme);
     }
     if state.ad_hoc_input.is_some() {
         render_ad_hoc_input(frame, centered_rect(76, 42, area), state, &theme);
@@ -4591,6 +4831,56 @@ fn action_menu_row(
 
 fn render_commands(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &TuiTheme) {
     let commands = state.visible_commands();
+    let title = if state.search_query.is_empty() {
+        Pane::Commands.title().to_owned()
+    } else {
+        format!("Commands / Sequences search: {}", state.search_query)
+    };
+    let row_width = area.width.saturating_sub(2) as usize;
+    if commands.is_empty() {
+        let lines = if state.search_query.is_empty() {
+            vec![
+                Line::from("No commands or Sequences are available in this category."),
+                Line::from("Press Left to choose another category, or / to search."),
+            ]
+        } else {
+            vec![
+                Line::from(format!(
+                    "No commands or Sequences match `{}`.",
+                    state.search_query
+                )),
+                Line::from("Press / to change or clear the search."),
+            ]
+        };
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(pane_block_with_title(
+                    Pane::Commands,
+                    state.focus,
+                    theme,
+                    title,
+                ))
+                .style(theme.style(TuiStyleRole::Text))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
+    let Some(name_width) = executable_name_column_width(&commands, row_width) else {
+        frame.render_widget(
+            Paragraph::new(safe_resize_lines())
+                .block(pane_block_with_title(
+                    Pane::Commands,
+                    state.focus,
+                    theme,
+                    title,
+                ))
+                .style(theme.style(TuiStyleRole::Warning))
+                .wrap(Wrap { trim: false }),
+            area,
+        );
+        return;
+    };
     let rows = command_list_rows(&commands);
     let visible_slots = pane_inner_height(area).max(1);
     let selected_row = selected_command_row_index(&rows, state.selected_command);
@@ -4599,13 +4889,8 @@ fn render_commands(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &
         .iter()
         .skip(start)
         .take(visible_slots)
-        .map(|row| command_row_item(row, state.selected_command, theme))
+        .map(|row| command_row_item(row, state.selected_command, row_width, name_width, theme))
         .collect::<Vec<_>>();
-    let title = if state.search_query.is_empty() {
-        Pane::Commands.title().to_owned()
-    } else {
-        format!("Commands / Sequences search: {}", state.search_query)
-    };
     frame.render_widget(
         List::new(items)
             .block(pane_block_with_title(
@@ -4617,6 +4902,254 @@ fn render_commands(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &
             .style(theme.style(TuiStyleRole::Text)),
         area,
     );
+}
+
+fn render_executable_details(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &mut TuiState,
+    theme: &TuiTheme,
+) {
+    let Some(details) = state.executable_details.as_ref() else {
+        return;
+    };
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = area.height.saturating_sub(2) as usize;
+    if inner_width < 20 || inner_height < 2 {
+        render_safe_resize_modal(frame, area, "Details", TuiStyleRole::Focus, theme);
+        return;
+    }
+
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Type: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(details.item.kind().noun()),
+        ]),
+        Line::from(vec![
+            Span::styled("Name: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(details.item.name().to_owned()),
+        ]),
+    ];
+    if let Some(command) = details.item.command_text() {
+        lines.push(Line::from(vec![
+            Span::styled("AT command: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(command.to_owned()),
+        ]));
+    }
+    if let Some(purpose) = details.item.summary() {
+        lines.push(Line::from(vec![
+            Span::styled("Purpose: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(purpose.to_owned()),
+        ]));
+    }
+    if let Some(warning) = confirmation_exception_label(details.item.review()) {
+        lines.push(Line::from(Span::styled(
+            warning,
+            theme.style(TuiStyleRole::Warning),
+        )));
+    }
+    if let Some(source) = details.item.source_detail() {
+        lines.push(Line::from(vec![
+            Span::styled("Source: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(source.to_owned()),
+        ]));
+    }
+    if let Some(path) = details.item.source_file_path() {
+        lines.push(Line::from(vec![
+            Span::styled("File: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(path.to_owned()),
+        ]));
+    }
+    if let Some(search_match) = &details.search_match {
+        lines.push(Line::from(vec![
+            Span::styled("Search match: ", theme.style(TuiStyleRole::Focus)),
+            Span::raw(search_match.clone()),
+        ]));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("Categories: ", theme.style(TuiStyleRole::Emphasis)),
+        Span::raw(if details.item.categories().is_empty() {
+            "none".to_owned()
+        } else {
+            details.item.categories().join(", ")
+        }),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("Timeout: ", theme.style(TuiStyleRole::Emphasis)),
+        Span::raw(format!(
+            "{} seconds{}",
+            details
+                .item
+                .timeout_secs()
+                .unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS),
+            if details.item.timeout_secs().is_some() {
+                ""
+            } else {
+                " (default)"
+            }
+        )),
+    ]));
+    if let Some(sequence) = details.item.as_sequence() {
+        if !sequence.before_running.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "Before running:",
+                theme.style(TuiStyleRole::Emphasis),
+            )));
+            lines.extend(
+                sequence
+                    .before_running
+                    .iter()
+                    .map(|item| Line::from(format!("  - {item}"))),
+            );
+        }
+        if sequence.params.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("Parameters: ", theme.style(TuiStyleRole::Emphasis)),
+                Span::raw("none"),
+            ]));
+        } else {
+            lines.push(Line::from(Span::styled(
+                "Parameters:",
+                theme.style(TuiStyleRole::Emphasis),
+            )));
+            for param in &sequence.params {
+                lines.push(Line::from(format!(
+                    "  - {} ({}){}{}",
+                    param.name,
+                    param.label,
+                    if param.required {
+                        "; required"
+                    } else {
+                        "; optional"
+                    },
+                    if param.sensitive { "; sensitive" } else { "" }
+                )));
+                lines.push(Line::from(format!("    Source: {}", param.source.label())));
+                if let Some(default) = &param.default_value {
+                    lines.push(Line::from(format!("    Default: {default}")));
+                }
+                if let Some(candidate) = param.candidate {
+                    lines.push(Line::from(format!("    Candidates: {}", candidate.label())));
+                }
+                if let Some(hint) = &param.hint {
+                    lines.push(Line::from(format!("    Hint: {hint}")));
+                }
+            }
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "Execution review:",
+        theme.style(TuiStyleRole::Emphasis),
+    )));
+    lines.push(Line::from(format!(
+        "Assessment: {}",
+        details.item.review().assessment
+    )));
+    for section in details.item.review().presentation_sections() {
+        lines.push(Line::from(Span::styled(
+            format!("{}:", section.kind.heading()),
+            theme.style(TuiStyleRole::Emphasis),
+        )));
+        lines.extend(
+            section
+                .items
+                .into_iter()
+                .map(|item| Line::from(format!("  - {item}"))),
+        );
+    }
+    lines.push(Line::from(format!(
+        "Confirmation: {}",
+        if details.item.review().requires_confirmation() {
+            "required"
+        } else {
+            "not required"
+        }
+    )));
+    let wrapped = wrap_lines_to_width(lines, inner_width);
+    let total = wrapped.len().max(1);
+    let max_scroll = total.saturating_sub(inner_height.max(1));
+    let scroll = details.scroll.min(max_scroll);
+    let end = (scroll + inner_height).min(total);
+    if let Some(details) = state.executable_details.as_mut() {
+        details.scroll = scroll;
+        details.visible_height = inner_height.max(1);
+    }
+
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(wrapped[scroll..end].to_vec())
+            .block(
+                Block::default()
+                    .title(format!("Details {}-{}/{}", scroll + 1, end, total))
+                    .borders(Borders::ALL)
+                    .border_style(theme.style(TuiStyleRole::Focus)),
+            )
+            .style(theme.style(TuiStyleRole::Text)),
+        area,
+    );
+}
+
+fn render_safe_resize_modal(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    title: &str,
+    border_role: TuiStyleRole,
+    theme: &TuiTheme,
+) {
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(safe_resize_lines())
+            .block(
+                Block::default()
+                    .title(title.to_owned())
+                    .borders(Borders::ALL)
+                    .border_style(theme.style(border_role)),
+            )
+            .style(theme.style(TuiStyleRole::Warning))
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn wrap_lines_to_width(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
+    let width = width.max(1);
+    let mut wrapped = Vec::new();
+    for line in lines {
+        if line.spans.is_empty() || line.width() == 0 {
+            wrapped.push(Line::from(""));
+            continue;
+        }
+        let line_style = line.style;
+        let line_alignment = line.alignment;
+        let mut current = Vec::<Span<'static>>::new();
+        let mut current_width = 0usize;
+        for span in line.spans {
+            for character in span.content.chars() {
+                let character_width = Line::from(character.to_string()).width().max(1);
+                if current_width > 0 && current_width + character_width > width {
+                    let mut output = Line::from(std::mem::take(&mut current));
+                    output.style = line_style;
+                    output.alignment = line_alignment;
+                    wrapped.push(output);
+                    current_width = 0;
+                }
+                if let Some(last) = current.last_mut()
+                    && last.style == span.style
+                {
+                    last.content.to_mut().push(character);
+                } else {
+                    current.push(Span::styled(character.to_string(), span.style));
+                }
+                current_width += character_width;
+            }
+        }
+        let mut output = Line::from(current);
+        output.style = line_style;
+        output.alignment = line_alignment;
+        wrapped.push(output);
+    }
+    wrapped
 }
 
 fn command_list_rows<'a>(commands: &[&'a ExecutableItem]) -> Vec<CommandListRow<'a>> {
@@ -4843,9 +5376,9 @@ fn render_action_menu(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme
         )));
     }
     if rows.is_empty() {
-        lines.push(Line::from("Esc or q closes."));
+        lines.push(Line::from(ModalDismissal::Close.instruction()));
     } else {
-        lines.push(Line::from("Enter selects. Esc or q cancels."));
+        lines.push(Line::from(ModalDismissal::Cancel.after("Enter selects.")));
     }
 
     frame.render_widget(Clear, area);
@@ -4960,15 +5493,15 @@ fn copyable_response_text_for_masking(
     let Some(active) = &state.active_command else {
         return Some(body.to_owned());
     };
-    let Some(command) = active.command.as_deref() else {
+    let command = if output_masking_enabled {
+        active.command.as_deref()
+    } else {
+        active.raw_command.as_deref()
+    };
+    let Some(command) = command else {
         return Some(body.to_owned());
     };
-    let command = if output_masking_enabled {
-        mask_sensitive_values(command)
-    } else {
-        command.to_owned()
-    };
-    if body_starts_with_command_echo(body, &command) {
+    if body_starts_with_command_echo(body, command) {
         Some(body.to_owned())
     } else {
         Some(format!("{command}\n{body}"))
@@ -5016,7 +5549,6 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &Tu
             if let Some(command) = &active.command {
                 lines.push(Line::from(format!("AT command: {command}")));
             }
-            lines.push(risk_line("Risk: ", active.risk, theme));
         } else {
             if let (Some(finished_at), Some(label)) =
                 (active.finished_at.as_deref(), active.terminal_event_label())
@@ -5049,7 +5581,6 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &Tu
             if let Some(summary) = active.status_summary_line() {
                 lines.push(Line::from(summary));
             }
-            lines.push(risk_line("Risk: ", active.risk, theme));
         }
         if should_show_output_masking_context(state) {
             lines.push(Line::from(format!(
@@ -5073,7 +5604,6 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &Tu
         if let Some(command) = selected.command_text() {
             lines.push(Line::from(format!("AT command: {command}")));
         }
-        lines.push(risk_line("Risk: ", selected.risk(), theme));
         lines.push(Line::from(format!(
             "Timeout: {}s",
             effective_timeout_secs(state, selected)
@@ -5183,43 +5713,107 @@ fn footer_text(state: &TuiState, width: usize) -> String {
 
 fn footer_segments(state: &TuiState) -> Vec<&'static str> {
     if state.show_help {
-        return vec!["Esc Close", "? Close", "q Close"];
+        return ModalDismissal::Help.footer_segments().to_vec();
     }
-    if state.action_menu.is_some() {
-        return vec!["Enter Select", "Up/Down Move", "Esc Cancel"];
+    if state.executable_details.is_some() {
+        return modal_footer_segments(&["Up/Down Scroll", "PgUp/PgDn Page"], ModalDismissal::Close);
     }
-    if state.confirmation.is_some() {
-        return vec!["type risk Confirm", "Esc Cancel"];
+    if let Some(menu) = &state.action_menu {
+        return if action_menu_rows(state, menu.kind).is_empty() {
+            ModalDismissal::Close.footer_segments().to_vec()
+        } else {
+            modal_footer_segments(&["Enter Select", "Up/Down Move"], ModalDismissal::Cancel)
+        };
+    }
+    if let Some(confirmation) = &state.confirmation {
+        return if confirmation.preset.review.assessment == Assessment::Unknown {
+            modal_footer_segments(&["type unknown Confirm"], ModalDismissal::Cancel)
+        } else {
+            modal_footer_segments(&["type run Confirm"], ModalDismissal::Cancel)
+        };
     }
     if state.output_masking_ack_input.is_some() {
-        return vec!["type unmask Disable", "Esc Cancel"];
+        return modal_footer_segments(&["type unmask Disable"], ModalDismissal::Cancel);
+    }
+    if let Some(confirmation) = &state.response_action_confirmation {
+        return match confirmation.action {
+            ResponseActionConfirmation::Copy { .. } => {
+                modal_footer_segments(&["type copy Continue"], ModalDismissal::Cancel)
+            }
+            ResponseActionConfirmation::Export { .. } => {
+                modal_footer_segments(&["type export Continue"], ModalDismissal::Cancel)
+            }
+        };
     }
     if state.raw_log_path_input.is_some() {
-        return vec!["Enter Continue", "Esc Cancel"];
+        return modal_footer_segments(&["Enter Continue"], ModalDismissal::Cancel);
     }
     if state.raw_log_ack_input.is_some() {
-        return vec!["type raw-log Start", "Esc Cancel"];
+        return modal_footer_segments(&["type raw-log Start"], ModalDismissal::Cancel);
     }
     if state.search_input.is_some() {
-        return vec!["Enter Apply", "Esc Cancel"];
+        return modal_footer_segments(&["Enter Apply"], ModalDismissal::Cancel);
     }
     if state.edit_input.is_some() {
-        return vec!["Enter Run", "Esc Cancel"];
+        return modal_footer_segments(&["Enter Run"], ModalDismissal::Cancel);
     }
     if let Some(input) = &state.sequence_input {
         return match input.phase {
-            SequenceInputPhase::Params => vec!["Enter Next/Run", "Up/Down Param", "Esc Cancel"],
+            SequenceInputPhase::Params => modal_footer_segments(
+                &["Enter Next/Run", "Up/Down Param", "PgUp/PgDn Details"],
+                ModalDismissal::Cancel,
+            ),
             SequenceInputPhase::CandidateActionConfirmation => {
-                vec!["type risk Run", "Esc Cancel"]
+                let unknown = input
+                    .pending_candidate_action
+                    .map(candidate_action_item)
+                    .is_some_and(|item| item.review().assessment == Assessment::Unknown);
+                if unknown {
+                    modal_footer_segments(
+                        &["type unknown Run", "PgUp/PgDn Details"],
+                        ModalDismissal::Cancel,
+                    )
+                } else {
+                    modal_footer_segments(
+                        &["type run Run", "PgUp/PgDn Details"],
+                        ModalDismissal::Cancel,
+                    )
+                }
             }
-            SequenceInputPhase::Confirmation => vec!["type risk Run", "Esc Cancel"],
+            SequenceInputPhase::Confirmation => {
+                let review = sequence_input_param_values(input)
+                    .ok()
+                    .and_then(|params| review_sequence_execution(&input.sequence, &params).ok());
+                if review
+                    .as_ref()
+                    .is_some_and(|review| !review.requires_confirmation())
+                {
+                    modal_footer_segments(
+                        &["Enter Run", "PgUp/PgDn Details"],
+                        ModalDismissal::Cancel,
+                    )
+                } else if review
+                    .as_ref()
+                    .is_some_and(|review| review.assessment == Assessment::Unknown)
+                {
+                    modal_footer_segments(
+                        &["type unknown Run", "PgUp/PgDn Details"],
+                        ModalDismissal::Cancel,
+                    )
+                } else {
+                    modal_footer_segments(
+                        &["type run Run", "PgUp/PgDn Details"],
+                        ModalDismissal::Cancel,
+                    )
+                }
+            }
         };
     }
     if state.ad_hoc_input.is_some() {
-        return vec!["Enter Send", "Esc Cancel"];
+        return modal_footer_segments(&["Enter Send"], ModalDismissal::Cancel);
     }
     if state.timeout_input.is_some() {
-        return vec!["Enter Set", "default Reset", "Esc Cancel"];
+        return modal_footer_segments(&["Enter Set", "default Reset"], ModalDismissal::Cancel);
     }
     if state.running_execution.is_some() {
         return vec!["Running", "? Help"];
@@ -5234,7 +5828,14 @@ fn footer_segments(state: &TuiState) -> Vec<&'static str> {
             "? Help",
             "q Quit",
         ],
-        Pane::Commands => vec!["Enter Run", "/ Search", "Tab Next", "? Help", "q Quit"],
+        Pane::Commands => vec![
+            "Enter Run",
+            "d Details",
+            "/ Search",
+            "Tab Next",
+            "? Help",
+            "q Quit",
+        ],
         Pane::Controls => vec!["Enter Use", "Up/Down Move", "Tab Next", "? Help", "q Quit"],
         Pane::Response => vec![
             "Enter Actions",
@@ -5447,7 +6048,7 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, theme: &TuiTheme) {
     let text = vec![
         Line::from("atctl TUI"),
         Line::from(""),
-        Line::from("Close help: Esc / ? / q"),
+        Line::from(ModalDismissal::Help.instruction()),
         Line::from(""),
         Line::from("Tab / Right   Next pane"),
         Line::from("Left          Previous pane"),
@@ -5455,14 +6056,15 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, theme: &TuiTheme) {
         Line::from("PageUp/Down   Page move"),
         Line::from("Home / End    First or last"),
         Line::from("Enter         Use focused pane action"),
-        Line::from("Esc           Cancel input/dialog"),
+        Line::from("d             Details for selected executable"),
+        Line::from(ModalDismissal::Cancel.help_row()),
         Line::from("/             Search commands"),
-        Line::from("?             Open help"),
-        Line::from("q             Quit"),
+        Line::from("?             Open / close help"),
+        Line::from("q             Quit (idle base screen)"),
         Line::from(""),
-        Line::from("Risk labels: [safe] [sensitive] [write]"),
-        Line::from("             [persistent] [dangerous] [unknown]"),
-        Line::from("Confirm: write / persistent / dangerous / unknown"),
+        Line::from("Rows: confirmation warnings appear only when required"),
+        Line::from("Confirm known operation: run"),
+        Line::from("Confirm unknown operation: unknown"),
         Line::from("Unmasked Response: copy / export confirmation"),
     ];
     frame.render_widget(Clear, area);
@@ -5491,42 +6093,57 @@ fn render_confirmation(
     } else {
         confirmation.input.clone()
     };
-    let mut text = vec![
-        Line::from("Command requires confirmation before sending."),
-        Line::from(""),
-        Line::from(format!("Name: {}", confirmation.preset.name)),
-    ];
+    let review = &confirmation.preset.review;
+    let mut text = vec![Line::from(Span::styled(
+        format!("Name: {}", confirmation.preset.name),
+        theme.style(TuiStyleRole::Emphasis),
+    ))];
     if should_show_preset_source_detail(&confirmation.preset.origin) {
-        text.push(Line::from(format!(
-            "Source: {}",
-            confirmation.preset.origin.label()
+        text.push(Line::from(Span::styled(
+            format!("Source: {}", confirmation.preset.origin.label()),
+            theme.style(TuiStyleRole::Muted),
         )));
         if let Some(path) = confirmation.preset.origin.file_path() {
-            text.push(Line::from(format!("File: {path}")));
-            text.push(Line::from(EXTERNAL_DEFINITION_CONFIRMATION_NOTICE));
+            text.push(Line::from(Span::styled(
+                format!("File: {path}"),
+                theme.style(TuiStyleRole::Muted),
+            )));
+            text.push(Line::from(Span::styled(
+                EXTERNAL_DEFINITION_CONFIRMATION_NOTICE,
+                theme.style(TuiStyleRole::Warning),
+            )));
         }
     }
+    text.push(Line::from(Span::styled(
+        format!("Command: {}", confirmation.preset.command),
+        theme.style(TuiStyleRole::Emphasis),
+    )));
+    text.push(Line::from(""));
+    text.extend(execution_review_lines(review, theme));
     text.extend([
-        Line::from(format!("Command: {}", confirmation.preset.command)),
-        risk_line("Risk: ", confirmation.preset.risk, theme),
-        Line::from(format!(
-            "Expected effect: {}",
-            risk_expected_effect(confirmation.preset.risk)
-        )),
         Line::from(""),
-        Line::from(format!(
-            "Type `{}` to send. Esc cancels.",
-            confirmation.preset.risk
+        Line::from(Span::styled(
+            ModalDismissal::Cancel.after(format!("Type `{}` to send.", confirmation_token(review))),
+            theme.style(TuiStyleRole::Warning),
         )),
-        Line::from(format!("Input: {input}")),
+        Line::from(Span::styled(
+            format!("Input: {input}"),
+            theme.style(TuiStyleRole::Focus),
+        )),
     ]);
+
+    let title = if review.assessment == Assessment::Unknown {
+        "! Confirm unknown command"
+    } else {
+        "Confirm command"
+    };
 
     frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(text)
             .block(
                 Block::default()
-                    .title("Confirm")
+                    .title(title)
                     .borders(Borders::ALL)
                     .border_style(theme.style(TuiStyleRole::Warning)),
             )
@@ -5548,9 +6165,10 @@ fn render_output_masking_confirmation(
         _ => "<empty>".to_owned(),
     };
     let mut text = vec![
-        Line::from(
+        Line::from(Span::styled(
             "This will show unmasked sensitive modem, subscriber, payload, message, credential, or TCP response values in the TUI Response display.",
-        ),
+            theme.style(TuiStyleRole::Warning),
+        )),
         Line::from("Response copy and explicit export follow the visible Response display."),
         Line::from("Unmasked copy requires `copy`; unmasked export requires `export`."),
         Line::from("Generated history and session logs remain masked."),
@@ -5562,10 +6180,16 @@ fn render_output_masking_confirmation(
     ];
     text.extend([
         Line::from(""),
-        Line::from(format!(
-            "Type `{OUTPUT_UNMASK_ACK}` to disable output masking. Esc or q cancels."
+        Line::from(Span::styled(
+            ModalDismissal::Cancel.after(format!(
+                "Type `{OUTPUT_UNMASK_ACK}` to disable output masking."
+            )),
+            theme.style(TuiStyleRole::Warning),
         )),
-        Line::from(format!("Input: {input}")),
+        Line::from(Span::styled(
+            format!("Input: {input}"),
+            theme.style(TuiStyleRole::Focus),
+        )),
     ]);
 
     frame.render_widget(Clear, area);
@@ -5627,10 +6251,14 @@ fn render_response_action_confirmation(
     }
     text.extend([
         Line::from(""),
-        Line::from(format!(
-            "Type `{acknowledgement}` to continue. Esc or q cancels."
+        Line::from(Span::styled(
+            ModalDismissal::Cancel.after(format!("Type `{acknowledgement}` to continue.")),
+            theme.style(TuiStyleRole::Warning),
         )),
-        Line::from(format!("Input: {input}")),
+        Line::from(Span::styled(
+            format!("Input: {input}"),
+            theme.style(TuiStyleRole::Focus),
+        )),
     ]);
     if let Some(error) = &confirmation.error {
         text.push(Line::from(""));
@@ -5674,7 +6302,10 @@ fn render_raw_log_path_input(
         Line::from("Raw diagnostic export writes modem exchange bytes to a file."),
         Line::from("Choose a case-specific path. Existing files are refused."),
         Line::from(""),
-        Line::from(format!("Path: {input}")),
+        Line::from(Span::styled(
+            format!("Path: {input}"),
+            theme.style(TuiStyleRole::Focus),
+        )),
     ];
     if let Some(error) = &input_state.error {
         text.push(Line::from(""));
@@ -5684,7 +6315,9 @@ fn render_raw_log_path_input(
         )]));
     }
     text.push(Line::from(""));
-    text.push(Line::from("Press Enter to continue. Esc or q cancels."));
+    text.push(Line::from(
+        ModalDismissal::Cancel.after("Press Enter to continue."),
+    ));
 
     frame.render_widget(Clear, area);
     frame.render_widget(
@@ -5693,7 +6326,7 @@ fn render_raw_log_path_input(
                 Block::default()
                     .title("Raw diagnostic export path")
                     .borders(Borders::ALL)
-                    .border_style(theme.style(TuiStyleRole::Warning)),
+                    .border_style(theme.style(TuiStyleRole::Focus)),
             )
             .alignment(Alignment::Left)
             .style(theme.style(TuiStyleRole::Text))
@@ -5712,9 +6345,10 @@ fn render_raw_log_ack_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
         input_state.input.clone()
     };
     let mut text = vec![
-        Line::from(
+        Line::from(Span::styled(
             "This file may contain sensitive modem, subscriber, network, APN, or PDP authentication values.",
-        ),
+            theme.style(TuiStyleRole::Warning),
+        )),
         Line::from(
             "Generated history and session logs remain masked; Response export follows the visible masking state.",
         ),
@@ -5722,10 +6356,16 @@ fn render_raw_log_ack_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
         Line::from(""),
         Line::from(format!("File: {}", input_state.path.display())),
         Line::from(""),
-        Line::from(format!(
-            "Type `{RAW_LOG_ACK}` to start raw diagnostic export. Esc or q cancels."
+        Line::from(Span::styled(
+            ModalDismissal::Cancel.after(format!(
+                "Type `{RAW_LOG_ACK}` to start raw diagnostic export."
+            )),
+            theme.style(TuiStyleRole::Warning),
         )),
-        Line::from(format!("Input: {input}")),
+        Line::from(Span::styled(
+            format!("Input: {input}"),
+            theme.style(TuiStyleRole::Focus),
+        )),
     ];
     if let Some(error) = &input_state.error {
         text.push(Line::from(""));
@@ -5771,7 +6411,7 @@ fn render_search_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState, them
         Line::from(""),
         Line::from(format!("Search: {input}")),
         Line::from(""),
-        Line::from("Enter applies. Esc cancels."),
+        Line::from(ModalDismissal::Cancel.after("Enter applies.")),
     ];
 
     frame.render_widget(Clear, area);
@@ -5801,11 +6441,11 @@ fn render_edit_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme:
     };
     let mut text = vec![
         Line::from("Edit the selected command before execution."),
-        Line::from("The edited command will be classified before USB access."),
+        Line::from("The edited command will be reviewed before USB access."),
         Line::from(""),
         Line::from(format!("Command: {input}")),
         Line::from(""),
-        Line::from("Enter sends or opens confirmation. Esc cancels."),
+        Line::from(ModalDismissal::Cancel.after("Enter sends or opens confirmation.")),
     ];
     if let Some(error) = &input_state.error {
         text.push(Line::from(""));
@@ -5831,173 +6471,293 @@ fn render_edit_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme:
     );
 }
 
-fn render_sequence_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &TuiTheme) {
+fn render_sequence_input(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &mut TuiState,
+    theme: &TuiTheme,
+) {
     let Some(input_state) = &state.sequence_input else {
         return;
     };
     let sequence = &input_state.sequence;
-    let mut text = Vec::new();
-
-    match input_state.phase {
-        SequenceInputPhase::Params => {
-            text.extend([
-                Line::from("Run Sequence."),
-                Line::from(""),
-                Line::from(format!("Name: {}", sequence.name)),
-                Line::from(format!("Summary: {}", sequence.summary)),
-            ]);
-            if should_show_sequence_source_detail(&sequence.origin) {
-                text.push(Line::from(format!("Source: {}", sequence.origin.label())));
-            }
-            text.push(risk_line("Risk: ", sequence.risk, theme));
-            text.push(Line::from(format!(
-                "Required: {}",
-                required_param_summary(sequence)
-            )));
-            text.push(Line::from(""));
-            text.push(Line::from("Values:"));
-            for (index, param) in sequence.params.iter().enumerate() {
-                let marker = if index == input_state.active_param {
-                    "> "
-                } else {
-                    "  "
-                };
-                let value = input_state
-                    .values
-                    .get(index)
-                    .map(String::as_str)
-                    .unwrap_or("");
-                text.push(Line::from(format!(
-                    "{marker}{}: {}  {}",
-                    sequence_param_label(param),
-                    sequence_param_value_display(param, value),
-                    sequence_param_state_label(param, value)
-                )));
-                if index == input_state.active_param
-                    && let Some(hint) = sequence_param_resolution_hint(param)
-                {
-                    text.push(Line::from(format!("    {hint}")));
-                }
-                if index == input_state.active_param
-                    && let Some(candidate) =
-                        sequence_param_candidate_source(&input_state.sequence, param)
-                {
-                    push_sequence_resolution_lines(
-                        &mut text,
-                        input_state,
-                        state,
-                        candidate,
-                        state.output_masking_enabled,
-                    );
-                }
-            }
-            if !sequence.before_running.is_empty() {
-                text.push(Line::from(""));
-                text.push(Line::from("Before running:"));
-                for item in &sequence.before_running {
-                    text.push(Line::from(format!("  {item}")));
-                }
-            }
-            text.push(Line::from(""));
-            text.push(Line::from(sequence_input_footer(input_state, state)));
-        }
+    let (title, border_role) = match input_state.phase {
+        SequenceInputPhase::Params => ("Run Sequence", TuiStyleRole::Focus),
         SequenceInputPhase::CandidateActionConfirmation => {
-            text = sequence_candidate_action_confirmation_lines(input_state, theme);
+            let unknown = input_state
+                .pending_candidate_action
+                .map(candidate_action_item)
+                .is_some_and(|item| item.review().assessment == Assessment::Unknown);
+            if unknown {
+                ("! Confirm unknown action", TuiStyleRole::Warning)
+            } else {
+                ("Confirm action", TuiStyleRole::Warning)
+            }
         }
         SequenceInputPhase::Confirmation => {
-            text = sequence_confirmation_lines(input_state, theme, area);
+            let review = sequence_input_param_values(input_state)
+                .ok()
+                .and_then(|params| review_sequence_execution(sequence, &params).ok())
+                .unwrap_or_else(|| sequence.review.clone());
+            if !review.requires_confirmation() {
+                ("Review Sequence", TuiStyleRole::Focus)
+            } else if review.assessment == Assessment::Unknown {
+                ("! Confirm unknown Sequence", TuiStyleRole::Warning)
+            } else {
+                ("Confirm Sequence", TuiStyleRole::Warning)
+            }
         }
+    };
+    let (context, pinned) = sequence_phase_lines(input_state, state, theme);
+    let inner_width = area.width.saturating_sub(2) as usize;
+    let inner_height = area.height.saturating_sub(2) as usize;
+    if inner_width < 20 || inner_height < 4 {
+        render_safe_resize_modal(frame, area, title, border_role, theme);
+        return;
+    }
+    let context = wrap_lines_to_width(context, inner_width);
+    let pinned = wrap_lines_to_width(pinned, inner_width);
+    if pinned.len() + 2 > inner_height {
+        render_safe_resize_modal(frame, area, title, border_role, theme);
+        return;
     }
 
-    if let Some(error) = &input_state.error {
-        text.push(Line::from(""));
-        text.push(Line::from(vec![
-            Span::styled("Error: ", theme.style(TuiStyleRole::Error)),
-            Span::raw(error.clone()),
-        ]));
+    let visible_height = inner_height - pinned.len() - 1;
+    let total = context.len().max(1);
+    let max_scroll = total.saturating_sub(visible_height.max(1));
+    let scroll = input_state.detail_scroll.min(max_scroll);
+    let end = (scroll + visible_height).min(total);
+    if let Some(input) = state.sequence_input.as_mut() {
+        input.detail_scroll = scroll;
+        input.detail_visible_height = visible_height.max(1);
     }
 
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(text)
-            .block(
-                Block::default()
-                    .title("Run Sequence")
-                    .borders(Borders::ALL)
-                    .border_style(theme.style(TuiStyleRole::Focus)),
-            )
-            .alignment(Alignment::Left)
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
+        Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(theme.style(border_role)),
         area,
+    );
+    let inner = Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    );
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(visible_height as u16),
+            Constraint::Length(pinned.len() as u16),
+        ])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(format!("Details {}-{}/{}", scroll + 1, end, total))
+            .style(theme.style(TuiStyleRole::Muted)),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new(context[scroll..end].to_vec()).style(theme.style(TuiStyleRole::Text)),
+        sections[1],
+    );
+    frame.render_widget(
+        Paragraph::new(pinned).style(theme.style(TuiStyleRole::Text)),
+        sections[2],
     );
 }
 
-fn sequence_candidate_action_confirmation_lines(
-    input_state: &SequenceInputState,
+fn sequence_phase_lines(
+    input: &SequenceInputState,
+    state: &TuiState,
     theme: &TuiTheme,
-) -> Vec<Line<'static>> {
-    let Some(action) = input_state.pending_candidate_action else {
-        return vec![
-            Line::from("Run Sequence."),
-            Line::from(""),
-            Line::from("No candidate action is selected."),
-        ];
-    };
-    let item = candidate_action_item(action);
-    let risk = item.risk();
-    let input = if input_state.confirmation_input.is_empty() {
-        "<empty>".to_owned()
-    } else {
-        input_state.confirmation_input.clone()
-    };
-    vec![
-        Line::from("Run Sequence."),
-        Line::from(""),
-        Line::from(format!("Name: {}", input_state.sequence.name)),
-        Line::from(""),
-        Line::from("Confirm action."),
-        Line::from(format!("Action: {}", action.label)),
-        Line::from(format!("Command: {}", action.command)),
-        risk_line("Risk: ", risk, theme),
-        Line::from(format!("Expected effect: {}", risk_expected_effect(risk))),
-        Line::from(""),
-        Line::from(format!("Type `{risk}` to run.")),
-        Line::from("Esc cancels."),
-        Line::from(format!("Input: {input}")),
-    ]
+) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    match input.phase {
+        SequenceInputPhase::Params => sequence_params_phase_lines(input, state, theme),
+        SequenceInputPhase::CandidateActionConfirmation => {
+            sequence_candidate_action_phase_lines(input, theme)
+        }
+        SequenceInputPhase::Confirmation => sequence_confirmation_phase_lines(input, theme),
+    }
 }
 
-fn sequence_confirmation_lines(
-    input_state: &SequenceInputState,
-    theme: &TuiTheme,
-    area: Rect,
-) -> Vec<Line<'static>> {
-    let sequence = &input_state.sequence;
-    let mut detail = vec![
-        Line::from("Run Sequence."),
-        Line::from(""),
-        Line::from(format!("Name: {}", sequence.name)),
+fn sequence_identity_lines(sequence: &Sequence, theme: &TuiTheme) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Name: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(sequence.name.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("Purpose: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(sequence.summary.clone()),
+        ]),
     ];
     if should_show_sequence_source_detail(&sequence.origin) {
-        detail.push(Line::from(format!("Source: {}", sequence.origin.label())));
+        lines.push(Line::from(vec![
+            Span::styled("Source: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::styled(
+                sequence.origin.label().to_owned(),
+                theme.style(TuiStyleRole::Muted),
+            ),
+        ]));
         if let Some(path) = sequence.origin.file_path() {
-            detail.push(Line::from(format!("File: {path}")));
-            detail.push(Line::from(EXTERNAL_DEFINITION_CONFIRMATION_NOTICE));
+            lines.push(Line::from(vec![
+                Span::styled("File: ", theme.style(TuiStyleRole::Emphasis)),
+                Span::styled(path.to_owned(), theme.style(TuiStyleRole::Muted)),
+            ]));
+            lines.push(Line::from(Span::styled(
+                EXTERNAL_DEFINITION_CONFIRMATION_NOTICE,
+                theme.style(TuiStyleRole::Warning),
+            )));
         }
     }
-    detail.push(risk_line("Risk: ", sequence.risk, theme));
+    lines
+}
 
+fn sequence_params_phase_lines(
+    input: &SequenceInputState,
+    state: &TuiState,
+    theme: &TuiTheme,
+) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    let sequence = &input.sequence;
+    let mut context = sequence_identity_lines(sequence, theme);
+    context.push(Line::from(format!(
+        "Required: {}",
+        required_param_summary(sequence)
+    )));
+    context.push(Line::from(""));
+    context.push(Line::from(Span::styled(
+        "Values overview:",
+        theme.style(TuiStyleRole::Emphasis),
+    )));
+    for (index, param) in sequence.params.iter().enumerate() {
+        let value = input.values.get(index).map(String::as_str).unwrap_or("");
+        context.push(Line::from(format!(
+            "  {}: {}  {}",
+            sequence_param_label(param),
+            sequence_param_value_display(param, value),
+            sequence_param_state_label(param, value)
+        )));
+    }
+    if !sequence.before_running.is_empty() {
+        context.push(Line::from(""));
+        context.push(Line::from(Span::styled(
+            "Before running:",
+            theme.style(TuiStyleRole::Emphasis),
+        )));
+        context.extend(
+            sequence
+                .before_running
+                .iter()
+                .map(|item| Line::from(format!("  {item}"))),
+        );
+    }
+
+    let mut pinned = vec![Line::from(Span::styled(
+        "Current value:",
+        theme.style(TuiStyleRole::Emphasis),
+    ))];
+    if let Some(param) = sequence.params.get(input.active_param) {
+        let value = input
+            .values
+            .get(input.active_param)
+            .map(String::as_str)
+            .unwrap_or("");
+        pinned.push(Line::from(Span::styled(
+            format!(
+                "> {}: {}  {}",
+                sequence_param_label(param),
+                sequence_param_value_display(param, value),
+                sequence_param_state_label(param, value)
+            ),
+            theme.style(TuiStyleRole::Selected),
+        )));
+        if let Some(hint) = sequence_param_resolution_hint(param) {
+            pinned.push(Line::from(format!("  {hint}")));
+        }
+        if let Some(candidate) = sequence_param_candidate_source(sequence, param) {
+            push_sequence_resolution_lines(
+                &mut pinned,
+                input,
+                state,
+                candidate,
+                state.output_masking_enabled,
+            );
+        }
+    }
+    push_sequence_error(&mut pinned, input, theme);
+    pinned.push(Line::from(Span::styled(
+        sequence_input_footer(input, state),
+        theme.style(TuiStyleRole::Focus),
+    )));
+    (context, pinned)
+}
+
+fn sequence_candidate_action_phase_lines(
+    input: &SequenceInputState,
+    theme: &TuiTheme,
+) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    let mut context = sequence_identity_lines(&input.sequence, theme);
+    let Some(action) = input.pending_candidate_action else {
+        let mut pinned = vec![Line::from("No candidate action is selected.")];
+        push_sequence_error(&mut pinned, input, theme);
+        return (context, pinned);
+    };
+    let item = candidate_action_item(action);
+    let review = item.review();
+    context.extend([
+        Line::from(vec![
+            Span::styled("Action: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(action.label),
+        ]),
+        Line::from(vec![
+            Span::styled("AT command: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(action.command),
+        ]),
+        Line::from(""),
+    ]);
+    context.extend(execution_review_lines(review, theme));
+
+    let displayed_input = if input.confirmation_input.is_empty() {
+        "<empty>".to_owned()
+    } else {
+        input.confirmation_input.clone()
+    };
+    let mut pinned = Vec::new();
+    push_sequence_error(&mut pinned, input, theme);
+    pinned.extend([
+        Line::from(Span::styled(
+            ModalDismissal::Cancel.after(format!("Type `{}` to run.", confirmation_token(review))),
+            theme.style(TuiStyleRole::Warning),
+        )),
+        Line::from(Span::styled(
+            format!("Input: {displayed_input}"),
+            theme.style(TuiStyleRole::Focus),
+        )),
+    ]);
+    (context, pinned)
+}
+
+fn sequence_confirmation_phase_lines(
+    input: &SequenceInputState,
+    theme: &TuiTheme,
+) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+    let sequence = &input.sequence;
+    let execution_review = sequence_input_param_values(input)
+        .ok()
+        .and_then(|params| review_sequence_execution(sequence, &params).ok())
+        .unwrap_or_else(|| sequence.review.clone());
+    let mut context = sequence_identity_lines(sequence, theme);
     if !sequence.params.is_empty() {
-        detail.push(Line::from(""));
-        detail.push(Line::from("Values:"));
+        context.push(Line::from(Span::styled(
+            "Values:",
+            theme.style(TuiStyleRole::Emphasis),
+        )));
         for (index, param) in sequence.params.iter().enumerate() {
-            let value = input_state
-                .values
-                .get(index)
-                .map(String::as_str)
-                .unwrap_or("");
-            detail.push(Line::from(format!(
+            let value = input.values.get(index).map(String::as_str).unwrap_or("");
+            context.push(Line::from(format!(
                 "  {}: {}  {}",
                 sequence_param_label(param),
                 sequence_param_value_display(param, value),
@@ -6005,68 +6765,69 @@ fn sequence_confirmation_lines(
             )));
         }
     }
-
-    if let Ok(values) = sequence_input_param_values(input_state)
+    if let Ok(values) = sequence_input_param_values(input)
         && let Ok(review) = render_sequence_review(sequence, &values)
         && !review.is_empty()
     {
-        detail.push(Line::from(""));
-        detail.push(Line::from("Review:"));
+        context.push(Line::from(Span::styled(
+            "Review:",
+            theme.style(TuiStyleRole::Emphasis),
+        )));
         for item in review {
             let sensitive = if item.sensitive { " (sensitive)" } else { "" };
-            detail.push(Line::from(format!(
+            context.push(Line::from(format!(
                 "  {}{}: {}",
                 item.label, sensitive, item.value
             )));
         }
     }
+    context.push(Line::from(""));
+    context.extend(execution_review_lines(&execution_review, theme));
 
-    let input = if input_state.confirmation_input.is_empty() {
+    let displayed_input = if input.confirmation_input.is_empty() {
         "<empty>".to_owned()
     } else {
-        input_state.confirmation_input.clone()
+        input.confirmation_input.clone()
     };
-    let mut pinned = vec![
-        Line::from(""),
-        Line::from(format!(
-            "Expected effect: {}",
-            risk_expected_effect(sequence.risk)
-        )),
-        Line::from(""),
-    ];
-    if sequence.risk.requires_confirmation() {
-        pinned.push(Line::from(format!("Type `{}` to run.", sequence.risk)));
+    let mut pinned = Vec::new();
+    push_sequence_error(&mut pinned, input, theme);
+    if execution_review.requires_confirmation() {
+        let token = confirmation_token(&execution_review);
+        let instruction = if execution_review.assessment == Assessment::Unknown {
+            format!("Type `{token}` to run unknown operation.")
+        } else {
+            format!("Type `{token}` to run.")
+        };
+        pinned.extend([
+            Line::from(Span::styled(
+                ModalDismissal::Cancel.after(instruction),
+                theme.style(TuiStyleRole::Warning),
+            )),
+            Line::from(Span::styled(
+                format!("Input: {displayed_input}"),
+                theme.style(TuiStyleRole::Focus),
+            )),
+        ]);
     } else {
-        pinned.push(Line::from("Press Enter to run."));
+        pinned.push(Line::from(Span::styled(
+            ModalDismissal::Cancel.after("Press Enter to run."),
+            theme.style(TuiStyleRole::Focus),
+        )));
     }
-    pinned.push(Line::from("Esc cancels."));
-    pinned.push(Line::from(format!("Input: {input}")));
-
-    fit_sequence_confirmation_lines(detail, pinned, area.height.saturating_sub(2) as usize)
+    (context, pinned)
 }
 
-fn fit_sequence_confirmation_lines(
-    mut detail: Vec<Line<'static>>,
-    pinned: Vec<Line<'static>>,
-    visible_rows: usize,
-) -> Vec<Line<'static>> {
-    if visible_rows == 0 {
-        return Vec::new();
+fn push_sequence_error(
+    lines: &mut Vec<Line<'static>>,
+    input: &SequenceInputState,
+    theme: &TuiTheme,
+) {
+    if let Some(error) = &input.error {
+        lines.push(Line::from(vec![
+            Span::styled("Error: ", theme.style(TuiStyleRole::Error)),
+            Span::raw(error.clone()),
+        ]));
     }
-    if detail.len() + pinned.len() <= visible_rows {
-        detail.extend(pinned);
-        return detail;
-    }
-    if pinned.len() >= visible_rows {
-        return pinned.into_iter().take(visible_rows).collect();
-    }
-
-    let omission = Line::from("  ... detail omitted to keep confirmation input visible.");
-    let detail_rows = visible_rows.saturating_sub(pinned.len() + 1);
-    detail.truncate(detail_rows);
-    detail.push(omission);
-    detail.extend(pinned);
-    detail
 }
 
 fn sequence_param_label(param: &SequenceParam) -> String {
@@ -6077,21 +6838,27 @@ fn sequence_param_label(param: &SequenceParam) -> String {
     }
 }
 
-fn sequence_input_footer(input: &SequenceInputState, state: &TuiState) -> &'static str {
+fn sequence_input_footer(input: &SequenceInputState, state: &TuiState) -> String {
     if let Some(candidate) = active_sequence_candidate_source_for_input(input)
         && candidate_set_for_source(state, candidate).is_some_and(|set| !set.is_empty())
     {
         if candidate_actions(candidate).is_empty() {
-            "Enter selects or advances. Up/Down selects candidate. Tab changes value. Type edits. Esc cancels."
+            ModalDismissal::Cancel.after(
+                "Enter selects or advances. Up/Down selects candidate. Tab changes value. Type edits.",
+            )
         } else {
-            "Enter selects or runs action. Up/Down selects candidate/action. Tab changes value. Type edits. Esc cancels."
+            ModalDismissal::Cancel.after(
+                "Enter selects or runs action. Up/Down selects candidate/action. Tab changes value. Type edits.",
+            )
         }
     } else if active_sequence_candidate_source_for_input(input)
         .is_some_and(|candidate| !candidate_actions(candidate).is_empty())
     {
-        "Enter advances or runs selected action. Up/Down selects action. Tab changes value. Type edits. Esc cancels."
+        ModalDismissal::Cancel.after(
+            "Enter advances or runs selected action. Up/Down selects action. Tab changes value. Type edits.",
+        )
     } else {
-        "Enter advances or runs. Up/Down changes value. Esc cancels."
+        ModalDismissal::Cancel.after("Enter advances or runs. Up/Down changes value.")
     }
 }
 
@@ -6324,11 +7091,11 @@ fn render_ad_hoc_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState, them
     };
     let mut text = vec![
         Line::from("Enter a one-shot AT command."),
-        Line::from("The command will be classified before USB access."),
+        Line::from("The command will be reviewed before USB access."),
         Line::from(""),
         Line::from(format!("Command: {input}")),
         Line::from(""),
-        Line::from("Enter sends or opens confirmation. Esc cancels."),
+        Line::from(ModalDismissal::Cancel.after("Enter sends or opens confirmation.")),
     ];
     if let Some(error) = &input_state.error {
         text.push(Line::from(""));
@@ -6369,7 +7136,7 @@ fn render_timeout_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState, the
         Line::from(""),
         Line::from(format!("Timeout: {input}")),
         Line::from(""),
-        Line::from("Enter applies. Esc cancels."),
+        Line::from(ModalDismissal::Cancel.after("Enter applies.")),
     ];
     if let Some(error) = &input_state.error {
         text.push(Line::from(""));
@@ -6428,6 +7195,8 @@ fn selected_item(selected: bool, value: &str, theme: &TuiTheme) -> ListItem<'sta
 fn command_row_item(
     row: &CommandListRow<'_>,
     selected_command: usize,
+    row_width: usize,
+    name_width: usize,
     theme: &TuiTheme,
 ) -> ListItem<'static> {
     match row {
@@ -6443,47 +7212,225 @@ fn command_row_item(
         CommandListRow::Command {
             command_index,
             command,
-        } => command_item(*command_index == selected_command, command, theme),
+        } => command_item(
+            *command_index == selected_command,
+            command,
+            row_width,
+            name_width,
+            theme,
+        ),
     }
 }
 
-fn command_item(selected: bool, command: &ExecutableItem, theme: &TuiTheme) -> ListItem<'static> {
-    let prefix = if selected { "> " } else { "  " };
+fn command_item(
+    selected: bool,
+    command: &ExecutableItem,
+    row_width: usize,
+    name_width: usize,
+    theme: &TuiTheme,
+) -> ListItem<'static> {
+    let Some(mut layout) = executable_row_layout(command, row_width, name_width) else {
+        return ListItem::new(Line::from(Span::styled(
+            "Executable details cannot fit safely.",
+            theme.style(TuiStyleRole::Warning),
+        )));
+    };
+    layout.prefix = if selected { "> " } else { "  " };
     let name_style = if selected {
         theme.style(TuiStyleRole::Selected)
     } else {
         theme.style(TuiStyleRole::Text)
     };
-    let mut spans = vec![Span::styled(
-        format!("{prefix}{}", command.name()),
-        name_style,
-    )];
-    spans.push(Span::raw(" "));
-    spans.push(risk_span(command.risk(), theme));
-    if let Some(command_text) = command.command_text() {
+    let mut spans = vec![
+        Span::styled(format!("{}{}", layout.prefix, layout.name), name_style),
+        Span::styled(layout.kind_label, theme.style(TuiStyleRole::Muted)),
+    ];
+    if let Some(detail) = layout.detail {
         spans.push(Span::styled(
-            format!(" {command_text}"),
+            format!(" {detail}"),
             theme.style(TuiStyleRole::Text),
         ));
-    } else if let Some(summary) = command.summary() {
-        spans.push(Span::styled(
-            format!(" {summary}"),
-            theme.style(TuiStyleRole::Text),
-        ));
+    }
+    if let Some(warning) = layout.warning {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(warning, theme.style(TuiStyleRole::Warning)));
     }
     ListItem::new(Line::from(spans))
 }
 
-fn risk_line(
+#[derive(Debug)]
+struct ExecutableRowLayout {
     prefix: &'static str,
-    risk: crate::at::risk::RiskLevel,
-    theme: &TuiTheme,
-) -> Line<'static> {
-    Line::from(vec![Span::raw(prefix), risk_span(risk, theme)])
+    name: String,
+    kind_label: &'static str,
+    detail: Option<String>,
+    warning: Option<&'static str>,
 }
 
-fn risk_span(risk: crate::at::risk::RiskLevel, theme: &TuiTheme) -> Span<'static> {
-    Span::styled(format!("[{risk}]"), theme.risk_style(risk))
+fn executable_row_layout(
+    command: &ExecutableItem,
+    row_width: usize,
+    name_width: usize,
+) -> Option<ExecutableRowLayout> {
+    let prefix = "  ";
+    let kind_label = match command.kind() {
+        ExecutableKind::Command | ExecutableKind::CandidateAction => " │ AT:",
+        ExecutableKind::Sequence => " │ Purpose:",
+    };
+    let warning = confirmation_exception_label(command.review());
+    let warning_width = warning.map_or(0, |value| display_cell_width(value) + 1);
+    let mandatory_width =
+        display_cell_width(prefix) + name_width + display_cell_width(kind_label) + warning_width;
+    if row_width < mandatory_width {
+        return None;
+    }
+
+    let name = pad_to_display_width(
+        &truncate_with_ellipsis(command.name(), name_width),
+        name_width,
+    );
+    let remaining = row_width.saturating_sub(mandatory_width);
+    let detail = command
+        .command_text()
+        .or_else(|| command.summary())
+        .filter(|_| remaining > 1)
+        .map(|value| truncate_with_ellipsis(value, remaining - 1));
+    Some(ExecutableRowLayout {
+        prefix,
+        name,
+        kind_label,
+        detail,
+        warning,
+    })
+}
+
+fn command_row_plain_text(selected: bool, command: &ExecutableItem, row_width: usize) -> String {
+    let commands = [command];
+    let Some(name_width) = executable_name_column_width(&commands, row_width) else {
+        return "Executable details cannot fit safely. Resize the terminal to continue.".to_owned();
+    };
+    let Some(mut layout) = executable_row_layout(command, row_width, name_width) else {
+        return "Executable details cannot fit safely. Resize the terminal to continue.".to_owned();
+    };
+    layout.prefix = if selected { "> " } else { "  " };
+    let mut text = format!("{}{}{}", layout.prefix, layout.name, layout.kind_label);
+    if let Some(detail) = layout.detail {
+        text.push(' ');
+        text.push_str(&detail);
+    }
+    if let Some(warning) = layout.warning {
+        text.push(' ');
+        text.push_str(warning);
+    }
+    text
+}
+
+fn executable_name_column_width(commands: &[&ExecutableItem], row_width: usize) -> Option<usize> {
+    let max_warning_width = commands
+        .iter()
+        .filter_map(|command| confirmation_exception_label(command.review()))
+        .map(|warning| display_cell_width(warning) + 1)
+        .max()
+        .unwrap_or(0);
+    let max_kind_width = commands
+        .iter()
+        .map(|command| match command.kind() {
+            ExecutableKind::Command | ExecutableKind::CandidateAction => " │ AT:",
+            ExecutableKind::Sequence => " │ Purpose:",
+        })
+        .map(display_cell_width)
+        .max()
+        .unwrap_or(0);
+    let available =
+        row_width.saturating_sub(display_cell_width("  ") + max_kind_width + max_warning_width);
+    if available == 0 {
+        return None;
+    }
+    let max_name_width = commands
+        .iter()
+        .map(|command| display_cell_width(command.name()))
+        .max()
+        .unwrap_or(1);
+    let name_width = max_name_width.min(28).min(available).max(1);
+    commands
+        .iter()
+        .all(|command| executable_row_layout(command, row_width, name_width).is_some())
+        .then_some(name_width)
+}
+
+fn hidden_search_match(command: &ExecutableItem, query: &str, visible_row: &str) -> Option<String> {
+    let query = query.trim().to_ascii_lowercase();
+    if query.is_empty() || visible_row.to_ascii_lowercase().contains(&query) {
+        return None;
+    }
+    let mut fields = vec![("Name", command.name().to_owned())];
+    if let Some(value) = command.command_text() {
+        fields.push(("AT command", value.to_owned()));
+    }
+    if let Some(value) = command.summary() {
+        fields.push(("Purpose", value.to_owned()));
+    }
+    fields.push(("Source", command.source_label().to_owned()));
+    fields.extend(
+        command
+            .categories()
+            .iter()
+            .cloned()
+            .map(|category| ("Category", category)),
+    );
+    fields
+        .into_iter()
+        .find(|(_, value)| value.to_ascii_lowercase().contains(&query))
+        .map(|(label, value)| format!("{label}: {value}"))
+}
+
+fn safe_resize_lines() -> Vec<Line<'static>> {
+    vec![
+        Line::from("Executable details cannot fit safely."),
+        Line::from("Resize the terminal to continue."),
+    ]
+}
+
+fn confirmation_exception_label(review: &ExecutionReview) -> Option<&'static str> {
+    if !review.requires_confirmation() {
+        None
+    } else if review.assessment == Assessment::Unknown {
+        Some("! Confirmation required (effects unknown)")
+    } else {
+        Some("! Confirmation required")
+    }
+}
+
+fn truncate_with_ellipsis(value: &str, width: usize) -> String {
+    if display_cell_width(value) <= width {
+        value.to_owned()
+    } else if width == 0 {
+        String::new()
+    } else if width == 1 {
+        "…".to_owned()
+    } else {
+        let mut truncated = String::new();
+        for character in value.chars() {
+            let candidate = format!("{truncated}{character}");
+            if display_cell_width(&candidate) > width - 1 {
+                break;
+            }
+            truncated.push(character);
+        }
+        truncated.push('…');
+        truncated
+    }
+}
+
+fn display_cell_width(value: &str) -> usize {
+    Line::from(value.to_owned()).width()
+}
+
+fn pad_to_display_width(value: &str, width: usize) -> String {
+    format!(
+        "{value}{}",
+        " ".repeat(width.saturating_sub(display_cell_width(value)))
+    )
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

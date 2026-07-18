@@ -4,7 +4,6 @@ description = "SORACOM-specific network reachability and TCP endpoint checks usi
 [[sequences]]
 name = "soracom-ping-check"
 summary = "Ping the SORACOM Ping Response service through a Quectel PDP context and report received replies."
-risk = "write"
 categories = ["data", "network", "diagnostics"]
 timeout_secs = 120
 before_running = [
@@ -77,7 +76,6 @@ evidence = "AT+QPING checks IP reachability through the selected Quectel PDP con
 [[sequences]]
 name = "soracom-unified-endpoint-tcp-send-check"
 summary = "Send a payload to SORACOM Unified Endpoint over a Quectel TCP socket and read any buffered response."
-risk = "write"
 categories = ["data", "network"]
 timeout_secs = 300
 before_running = [

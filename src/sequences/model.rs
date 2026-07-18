@@ -1,11 +1,10 @@
-use crate::at::risk::{RiskLevel, classify_direct_command};
+use crate::at::review::{ExecutionReview, review_direct_command};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sequence {
     pub name: String,
     pub summary: String,
-    pub declared_risk: RiskLevel,
-    pub risk: RiskLevel,
+    pub review: ExecutionReview,
     pub origin: SequenceOrigin,
     pub categories: Vec<String>,
     pub timeout_secs: Option<u64>,
@@ -173,19 +172,18 @@ impl Sequence {
     pub fn new(
         name: impl Into<String>,
         summary: impl Into<String>,
-        declared_risk: RiskLevel,
         categories: Vec<String>,
         origin: SequenceOrigin,
         timeout_secs: Option<u64>,
         params: Vec<SequenceParam>,
         steps: Vec<SequenceStep>,
     ) -> Self {
-        let risk = aggregate_sequence_risk(declared_risk, &params, &steps);
+        let name = name.into();
+        let review = review_sequence(&name, &params, &steps);
         Self {
-            name: name.into(),
+            name,
             summary: summary.into(),
-            declared_risk,
-            risk,
+            review,
             origin,
             categories,
             timeout_secs,
@@ -201,7 +199,6 @@ impl Sequence {
     pub(crate) fn built_in(
         name: impl Into<String>,
         summary: impl Into<String>,
-        declared_risk: RiskLevel,
         categories: Vec<String>,
         timeout_secs: Option<u64>,
         params: Vec<SequenceParam>,
@@ -210,7 +207,6 @@ impl Sequence {
         Self::new(
             name,
             summary,
-            declared_risk,
             categories,
             SequenceOrigin::BuiltIn,
             timeout_secs,
@@ -235,26 +231,28 @@ impl Sequence {
     }
 }
 
-pub fn aggregate_sequence_risk(
-    declared_risk: RiskLevel,
+pub fn review_sequence(
+    name: &str,
     params: &[SequenceParam],
     steps: &[SequenceStep],
-) -> RiskLevel {
-    let mut risk = declared_risk;
-    if params.iter().any(|param| param.sensitive) || steps.iter().any(|step| step.payload.is_some())
-    {
-        risk = risk.stricter(RiskLevel::Sensitive);
-    }
+) -> ExecutionReview {
+    let mut components = Vec::new();
     for step in steps {
         if step.ensure_pdp_context_active.is_some() {
-            risk = risk.stricter(RiskLevel::Write);
+            components.push(review_direct_command("AT+QIACT?"));
+            components.push(review_direct_command("AT+QIACT=1"));
         }
         if let Some(command) = &step.send {
-            risk = risk.stricter(classify_direct_command(command).risk);
+            components.push(review_direct_command(command));
         }
         if let Some(command) = &step.cleanup_on_failure {
-            risk = risk.stricter(classify_direct_command(command).risk);
+            components.push(review_direct_command(command));
         }
     }
-    risk
+    ExecutionReview::sequence(
+        name,
+        components,
+        params.iter().any(|param| param.sensitive),
+        steps.iter().any(|step| step.payload.is_some()),
+    )
 }

@@ -1,11 +1,10 @@
-use crate::at::risk::{RiskLevel, classify_direct_command};
+use crate::at::review::{ExecutionReview, review_direct_command};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Preset {
     pub name: String,
     pub command: String,
-    pub declared_risk: RiskLevel,
-    pub risk: RiskLevel,
+    pub review: ExecutionReview,
     pub origin: PresetOrigin,
     pub categories: Vec<String>,
     pub timeout_secs: Option<u64>,
@@ -91,28 +90,25 @@ impl Preset {
     pub fn new(
         name: impl Into<String>,
         command: impl Into<String>,
-        declared_risk: RiskLevel,
         categories: Vec<String>,
         origin: PresetOrigin,
     ) -> Self {
-        Self::new_with_timeout(name, command, declared_risk, categories, origin, None)
+        Self::new_with_timeout(name, command, categories, origin, None)
     }
 
     pub fn new_with_timeout(
         name: impl Into<String>,
         command: impl Into<String>,
-        declared_risk: RiskLevel,
         categories: Vec<String>,
         origin: PresetOrigin,
         timeout_secs: Option<u64>,
     ) -> Self {
         let command = command.into();
-        let classified_risk = classify_direct_command(&command).risk;
+        let review = review_direct_command(&command);
         Self {
             name: name.into(),
             command,
-            declared_risk,
-            risk: declared_risk.stricter(classified_risk),
+            review,
             origin,
             categories,
             timeout_secs,
@@ -123,7 +119,6 @@ impl Preset {
     pub(crate) fn built_in<I, S>(
         name: impl Into<String>,
         command: impl Into<String>,
-        declared_risk: RiskLevel,
         categories: I,
     ) -> Self
     where
@@ -133,7 +128,6 @@ impl Preset {
         Self::new(
             name,
             command,
-            declared_risk,
             categories.into_iter().map(Into::into).collect(),
             PresetOrigin::BuiltIn,
         )
@@ -141,11 +135,9 @@ impl Preset {
 
     pub fn ad_hoc(command: impl Into<String>) -> Self {
         let command = command.into();
-        let declared_risk = classify_direct_command(&command).risk;
         Self::new(
             "ad-hoc",
             command,
-            declared_risk,
             vec!["ad-hoc".to_owned()],
             PresetOrigin::runtime("ad-hoc"),
         )
@@ -155,31 +147,37 @@ impl Preset {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::at::review::{Assessment, Effect};
 
     #[test]
-    fn effective_risk_cannot_downgrade_classifier() {
+    fn definition_metadata_cannot_override_product_review() {
         let preset = Preset::new(
-            "unsafe-toml",
+            "file-preset",
             "AT+CGDCONT=1,\"IP\",\"example\"",
-            RiskLevel::Safe,
             Vec::new(),
             PresetOrigin::file("Test presets", "presets.toml", None),
         );
 
-        assert_eq!(preset.declared_risk, RiskLevel::Safe);
-        assert_eq!(preset.risk, RiskLevel::Write);
+        assert_eq!(preset.review.assessment, Assessment::Known);
+        assert!(
+            preset
+                .review
+                .effects
+                .contains(&Effect::ChangePersistentState)
+        );
+        assert!(preset.review.confirmation_required);
     }
 
     #[test]
-    fn declared_stricter_risk_is_preserved() {
+    fn ad_hoc_preset_uses_the_same_unknown_review_contract() {
         let preset = Preset::new(
-            "write-labelled-at",
-            "AT",
-            RiskLevel::Write,
+            "unknown-file-command",
+            "AT+VENDOR=1",
             Vec::new(),
             PresetOrigin::file("Test presets", "presets.toml", None),
         );
 
-        assert_eq!(preset.risk, RiskLevel::Write);
+        assert_eq!(preset.review.assessment, Assessment::Unknown);
+        assert!(preset.review.confirmation_required);
     }
 }

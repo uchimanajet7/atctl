@@ -4,7 +4,6 @@ description = "Quectel-specific TCP/IP ping and data-send checks."
 [[sequences]]
 name = "quectel-tcp-send-check"
 summary = "Open a Quectel TCP socket, send a payload, query send acknowledgement, read buffered data, and close the socket."
-risk = "write"
 categories = ["data", "network"]
 timeout_secs = 300
 before_running = [
@@ -143,7 +142,6 @@ timeout_secs = 10
 [[sequences]]
 name = "quectel-ping-check"
 summary = "Ping a host through a Quectel PDP context and report received replies."
-risk = "write"
 categories = ["data", "network", "diagnostics"]
 timeout_secs = 120
 before_running = [

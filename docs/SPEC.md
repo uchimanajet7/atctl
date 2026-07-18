@@ -1,7 +1,7 @@
 # atctl Product and Technical Specification
 
-- Document version: 0.4.116
-- Date: 2026-07-12
+- Document version: 0.4.118
+- Date: 2026-07-16
 - Implementation language: Rust
 - Product name: `atctl`
 - Repository name: `atctl`
@@ -131,7 +131,7 @@ atctl bridge --symlink <PATH>
 Surface interaction details MAY differ. For example, the TUI can use forms and
 dialogs, CLI commands can use flags and standard output, and PTY bridge can use
 terminal-compatible prompts. Those interaction differences MUST NOT be used to
-silently omit a required product capability, risk control, masking behavior, raw
+silently omit a required product capability, execution-review control, masking behavior, raw
 export behavior, or diagnostic workflow from a relevant surface.
 
 Implementation artifacts, internal data structures, file formats, execution
@@ -147,7 +147,7 @@ Product-provided standard definitions, repository-managed example definitions,
 and user-authored extension definitions MUST preserve their origin and review
 responsibility. Loading them into one executable item set MUST NOT erase that
 responsibility boundary. Once loaded and validated, they MUST use the applicable
-shared product contract for listing, selection, risk handling, confirmation,
+shared product contract for listing, selection, execution review, confirmation,
 masking, logging, raw diagnostic export, and execution so equivalent user
 actions do not drift into separate product semantics.
 
@@ -191,8 +191,8 @@ The product scope includes:
 - Standard workflow AT command presets
 - Repository-managed vendor and carrier file preset examples
 - User-defined presets through TOML single-file and drop-in configuration
-- Command risk classification
-- Confirmation flow for write, persistent, and dangerous presets
+- Structured command execution review
+- Confirmation flow for known material and unknown operations
 - TUI AT command input
 - TUI current response copy
 - Sensitive value masking
@@ -415,7 +415,7 @@ REQ-ARCH-001: The AT command engine MUST depend on a transport trait, not on
 REQ-ARCH-002: USB descriptor inspection MUST be implemented in a USB module,
 not inside CLI rendering code.
 
-REQ-ARCH-003: Preset loading, risk classification, masking, and logging MUST be
+REQ-ARCH-003: Preset loading, execution review, masking, and logging MUST be
 usable by both CLI and TUI code paths.
 
 REQ-ARCH-004: PTY bridge behavior MUST build on the same core USB transport and
@@ -430,7 +430,7 @@ surface layer when practical, so TUI, CLI, and PTY bridge behavior do not drift
 into separate product semantics.
 
 REQ-ARCH-007: Loaded product-provided, repository-managed, and user-authored
-execution definitions MUST converge before user-facing listing, selection, risk,
+execution definitions MUST converge before user-facing listing, selection, review,
 masking, logging, raw diagnostic export, and execution logic where the behavior
 is applicable. The shared representation MUST carry origin metadata so source
 labels, explicit-loading boundaries, duplicate-name errors, and review
@@ -497,7 +497,7 @@ atctl/
       command.rs
       parser.rs
       response.rs
-      risk.rs
+      review.rs
       mask.rs
     presets/
       mod.rs
@@ -605,8 +605,9 @@ that detach behavior works on every macOS environment.
 
 REQ-USB-009: Device reset MUST NOT be performed automatically. Modem
 functionality changes, modem restart commands, and vendor-specific power-down
-commands MAY exist only as explicit user-selected dangerous actions with typed
-confirmation.
+commands MAY exist only as explicit user-selected confirmation-required
+operations whose reviews show the applicable state, interruption,
+reset/recovery, consequence, and reversibility fields.
 
 ### 13.1 Endpoint Auto-Detection
 
@@ -617,12 +618,13 @@ Auto-detection MUST be conservative:
 3. Prefer candidates whose class/subclass/protocol and endpoint layout match
    known AT-command interfaces when that metadata is available.
 4. Claim one candidate at a time.
-5. Probe with the safe command `AT\r`.
+5. Probe with the known observation command `AT\r`.
 6. Read until `OK`, `ERROR`, or timeout.
 7. Release failed candidates before trying the next candidate.
 8. Report the selected interface and endpoints.
 
-REQ-USB-010: Auto-detection MUST NOT use write/configuration commands as probes.
+REQ-USB-010: Auto-detection MUST NOT use state-changing, externally
+communicating, delete/reset/recovery, or unknown commands as probes.
 
 REQ-USB-011: Auto-detection MUST stop after the first candidate that returns a
 valid AT final result unless the user requested a diagnostic mode that reports
@@ -680,10 +682,10 @@ Preset definitions MAY declare a recommended per-command timeout. A preset
 timeout is not a transport default; it is a command-specific time budget for
 known long-running commands.
 
-REQ-AT-008: Write, persistent, and dangerous commands MUST NOT be automatically
-retried.
+REQ-AT-008: Commands with material effects and unknown commands MUST NOT be
+automatically retried.
 
-REQ-AT-009: Optional retry for safe read-only commands MAY be added later, but
+REQ-AT-009: Optional retry for known observation commands MAY be added later, but
 it MUST be disabled by default until explicitly specified.
 
 ### 14.1 Multi-Step AT Sequence Handling
@@ -695,7 +697,7 @@ delayed URCs, and data-send checks that need a request plus a received response.
 
 REQ-SEQ-ENGINE-001: The Sequence engine MUST execute inside one shared AT
 transport session. It MUST preserve step order, masking context, raw diagnostic
-export context, risk enforcement, and timeout accounting across the entire
+export context, execution-review enforcement, and timeout accounting across the entire
 Sequence.
 
 REQ-SEQ-ENGINE-002: The Sequence engine MUST support these step primitives:
@@ -738,10 +740,13 @@ defined origin. Verification MUST cover the required origin labels and the
 absence of `Evidence:` text and JSON `evidence`. CLI JSON Sequence output MUST
 expose derived interpretation as `analysis`, not `evidence`.
 
-REQ-SEQ-ENGINE-005: Sequence risk MUST be computed from declared Sequence risk,
-step command classification, payload sensitivity, parameter sensitivity, and
-known side effects. A Sequence definition MUST NOT be able to downgrade the risk
-required by any step.
+REQ-SEQ-ENGINE-005: A Sequence execution review MUST aggregate every step
+command, conditional internal command, payload, failure cleanup command,
+parameter sensitivity, external transmission, and known or unestablished effect
+before the first USB write. A Sequence definition MUST NOT declare or override
+the product-derived review. Each actual command and payload MUST be checked
+again at its write boundary and execution MUST stop if it exceeds the reviewed
+boundary.
 
 REQ-SEQ-ENGINE-006: Sequence timeout handling MUST support a total Sequence
 timeout and per-step timeout hints. A user-supplied command timeout is an
@@ -796,7 +801,7 @@ timeout, and fail the Sequence rather than closing the socket and reporting
 `Result: OK` if the payload is still not acknowledged.
 
 REQ-SEQ-ENGINE-011: If a Sequence changes modem state only to perform a check,
-the state change MUST be explicit in the Sequence summary and risk. Optional
+the state change MUST be explicit in the Sequence summary and execution review. Optional
 restore steps MAY be supported, but restore behavior MUST be visible and MUST
 not be described as guaranteed if the modem or transport can fail before the
 restore step runs.
@@ -936,43 +941,45 @@ timeouts.
 REQ-CLI-SEND-007: JSON output MUST preserve the same masking defaults as text
 output.
 
-REQ-CLI-SEND-008: Plain read/test direct commands MAY run without confirmation
-and MAY print plain output.
+REQ-CLI-SEND-008: Product-known observation commands MAY run without
+confirmation.
 
 REQ-CLI-SEND-009: Read/test direct commands that expose sensitive identifiers or
 credentials MAY run without confirmation, but output and logs MUST be masked by
 default.
 
-REQ-CLI-SEND-010: Unknown read/test direct commands MAY run without
-confirmation, but MUST be treated as sensitive by default.
+REQ-CLI-SEND-010: Unknown read/test syntax MUST remain assessed as `unknown` and
+MUST require confirmation. Read/test syntax alone MUST NOT be treated as proof
+that an unfamiliar command is observation-only.
 
-REQ-CLI-SEND-011: Write, change, delete, persistent, dangerous, and non-read/test
-unknown direct commands MUST require explicit confirmation.
+REQ-CLI-SEND-011: Product-known commands with material effects and all unknown
+direct commands MUST require explicit confirmation.
 
 REQ-CLI-SEND-011A: Interactive confirmation for direct `send` MUST show the
-normalized command, classified risk level, and classifier reason before any USB
-access.
+normalized command, known/unknown assessment, effects, data handling,
+reversibility, consequences, confirmation requirement, and unestablished fields
+before any USB access.
 
-REQ-CLI-SEND-011B: Interactive confirmation for direct `send` MUST require the
-user to type the exact classified risk level, such as `write`, `persistent`, or
-`dangerous`.
+REQ-CLI-SEND-011B: Interactive confirmation for direct `send` MUST require
+`run` for a known material operation and `unknown` for an unknown operation.
 
 REQ-CLI-SEND-011C: If interactive confirmation is required but standard input
 is not a terminal, direct `send` MUST fail before USB access.
 
-REQ-CLI-SEND-012: For direct `send`, `--yes` alone MUST NOT bypass confirmation
-for commands that require confirmation.
+REQ-CLI-SEND-012: For direct `send`, `--yes` MUST authorize a known
+confirmation-required operation non-interactively.
 
-REQ-CLI-SEND-013: For direct `send`, non-interactive confirmation bypass MUST
-require both `--yes` and `--risk-ack <risk>`.
+REQ-CLI-SEND-013: For an unknown direct operation, non-interactive authorization
+MUST require both `--yes` and `--allow-unknown`.
 
-REQ-CLI-SEND-014: `--risk-ack <risk>` MUST match the implementation's classified
-command risk. If it does not match, `atctl` MUST fail before sending anything to
-the modem.
+REQ-CLI-SEND-014: `--allow-unknown` without `--yes` MUST fail before USB access.
+It MUST also fail when the operation assessment is known.
 
-REQ-CLI-SEND-015: Direct-send implementation MUST include a maintained
-risk-pattern table for known dangerous and persistent command families before
-direct write/change behavior is considered complete.
+REQ-CLI-SEND-015: Direct-send implementation MUST include maintained
+product-known command rules for observation, material effects, data handling,
+and reversibility. Commands outside those rules MUST remain unknown; the
+implementation and documentation MUST NOT claim universal recognition of
+unknown command effects.
 
 REQ-CLI-SEND-016: `--raw-log-file <PATH>` MUST write the modem exchange to the
 specified file while preserving normal terminal output behavior. Masked terminal
@@ -980,10 +987,17 @@ output remains masked by default. `--no-mask` affects terminal output only and
 MUST NOT affect command history, session logs, or raw-export acknowledgement.
 
 REQ-CLI-SEND-017: Raw diagnostic export acknowledgement MUST be separate from
-command risk acknowledgement. Non-interactive direct send, and direct send with
+execution authorization. Non-interactive direct send, and direct send with
 `--yes`, MUST require `--raw-log-ack raw-log` before USB access when
 `--raw-log-file <PATH>` is used. Interactive direct send MAY prompt the user to
 type `raw-log`.
+
+REQ-CLI-SEND-018: One-shot `send` and `preset run` MUST reject a known
+prompt/payload operation before USB access because the complete operation is
+not available at their authorization boundary. The error MUST direct the user
+to a Sequence or a PTY bridge prompt/payload path supported for that command.
+`AT+QISEND=<connectID>,0` is a counter query, not a payload prompt, and MUST NOT
+be rejected by this rule.
 
 Required options:
 
@@ -1002,24 +1016,33 @@ Required options:
 --json
 --ignore-at-error
 --yes
---risk-ack <RISK>
+--allow-unknown
 ```
 
-### 15.5 `atctl preset list`
+### 15.5 `atctl preset list` and `atctl preset show <NAME>`
 
 REQ-CLI-PRESET-001: `atctl preset list` MUST list loaded product presets and
 loaded file presets.
 
-REQ-CLI-PRESET-002: The list MUST show preset name, command, preset set label,
-declared risk, effective risk, timeout hint when present, and categories.
-Categories MUST serve as discovery metadata in list output and as workflow
-filters in the TUI.
+REQ-CLI-PRESET-002: Human-readable list output MUST be a concise scan surface
+with `NAME`, `AT COMMAND`, and `ATTENTION` columns. `ATTENTION` MUST be empty
+when confirmation is not required and MUST show the complete applicable
+confirmation warning otherwise. Rows MUST remain one line, reserve the complete
+warning before truncating other content, use terminal display-cell width, and
+ellipsize the AT command preview before the name. Categories remain workflow
+filters in the TUI and complete discovery metadata in `show` and JSON output.
 
-REQ-CLI-PRESET-003: `atctl preset list` MUST distinguish standard workflow
-product presets from file presets without requiring color. The standard set
-label shown by CLI list output MUST be `Product presets`. The CLI list output
-MUST also include a trailing `source-path` column. Product-provided rows MUST
-show `-`; file preset rows MUST show the file path that supplied the preset.
+REQ-CLI-PRESET-003: `atctl preset list` MUST distinguish file preset sets from
+the unheaded product baseline without requiring color. A file set MUST be
+introduced once by its user-facing title and file path; source metadata MUST
+not be repeated on every human-readable row. `--json` MUST return complete,
+untruncated preset records with structured definition origin.
+
+REQ-CLI-PRESET-003A: `atctl preset show <NAME>` MUST be read-only and MUST NOT
+access USB, the modem, or the network. Human-readable output MUST show complete
+name, AT command, definition origin and file metadata when applicable,
+categories, effective timeout hint, and the product-derived execution review.
+`--json` MUST expose the same information as structured, untruncated data.
 
 REQ-CLI-PRESET-004: Normal startup MUST load product-provided presets. File
 preset locations MUST be supplied for each invocation through `--preset-file`
@@ -1064,13 +1087,14 @@ boundary.
 ### 15.6 `atctl preset run <NAME>`
 
 REQ-CLI-PRESET-RUN-001: `<NAME>` MUST resolve one loaded preset by exact name
-and execute that preset's single AT command once. Safe presets MAY run directly.
+and execute that preset's single AT command once. Known observation presets MAY
+run directly.
 
-REQ-CLI-PRESET-RUN-002: Sensitive presets MAY run directly but output and logs
+REQ-CLI-PRESET-RUN-002: Known observations with sensitive output MAY run directly but output and logs
 MUST be masked by default.
 
-REQ-CLI-PRESET-RUN-003: Write, persistent, and dangerous presets MUST require
-confirmation.
+REQ-CLI-PRESET-RUN-003: Known material and unknown presets MUST require
+confirmation under the same authorization contract as direct `send`.
 
 REQ-CLI-PRESET-RUN-006: `atctl preset run <NAME>` MUST support the same raw
 diagnostic export behavior as direct `atctl send`: explicit
@@ -1088,25 +1112,32 @@ Response export contract in REQ-CLI-RESPONSE-EXPORT-001 through 006.
 REQ-CLI-PRESET-RUN-007: When a file preset is executed, CLI and TUI execution
 surfaces MUST show the file preset source label, file path, and a concise
 notice that `atctl` validates file format, duplicate names, masking, and
-effective risk but does not certify the loaded definition for the current
+the product-derived execution review but does not certify the loaded definition for the current
 device, SIM, network, or endpoint. CLI `preset run` MUST show this notice
-before USB access even when `--yes --risk-ack <risk>` satisfies the risk
-confirmation non-interactively. When an interactive risk confirmation is shown,
+before USB access even when `--yes` or `--yes --allow-unknown` satisfies
+authorization non-interactively. When an interactive execution confirmation is shown,
 the notice MUST be integrated into that existing confirmation rather than
 creating an additional per-command confirmation prompt.
 
-### 15.7 `atctl sequence list` and `atctl sequence run <SEQUENCE>`
+### 15.7 `atctl sequence list`, `show`, and `run`
 
 Sequences are production CLI actions for named multi-step AT operations. They
 are not a replacement for direct `send` or one-shot `preset run`.
 
 REQ-CLI-SEQ-001: `atctl sequence list` MUST list loaded product-provided
 standard Sequences and loaded user or repository-managed Sequence definitions.
-The list MUST show Sequence name, Sequence set label when relevant, declared
-risk, effective risk, timeout hint when present, categories, required
-parameters, a concise human-readable summary, and a trailing `source-path`
-column. Product-provided rows MUST show `-`; file Sequence rows MUST show the
-file path that supplied the Sequence.
+Human-readable output MUST be a concise one-line scan surface with `NAME`,
+`PURPOSE`, and `ATTENTION` columns and the same warning reservation,
+display-cell-width, grouping, and truncation rules as preset list output.
+`--json` MUST return complete, untruncated Sequence records with structured
+definition origin, categories, timeout, parameters, and execution review.
+
+REQ-CLI-SEQ-001A: `atctl sequence show <NAME>` MUST be read-only and MUST NOT
+access USB, the modem, or the network. Human-readable output MUST show complete
+name, purpose, definition origin and file metadata when applicable, categories,
+timeout, before-running notes, parameter requirements/defaults/hints/sources/
+candidate sources, and the product-derived definition-boundary execution review.
+`--json` MUST expose the same information as structured, untruncated data.
 
 REQ-CLI-SEQ-002: `atctl sequence run <SEQUENCE>` MUST execute a named Sequence
 through the shared Sequence engine. It MUST NOT be implemented as repeated
@@ -1176,13 +1207,19 @@ when that distinction affects how the user obtains the value.
 
 REQ-CLI-SEQ-008C: When a file Sequence is executed, CLI and TUI execution
 surfaces MUST show the Sequence source label, file path, and a concise notice
-that `atctl` validates file format, duplicate names, masking, and effective
-risk but does not certify the loaded definition for the current device, SIM,
+that `atctl` validates file format, duplicate names, masking, and the
+product-derived execution review but does not certify the loaded definition for the current device, SIM,
 network, or endpoint. CLI `sequence run` MUST show this notice before USB
-access even when `--yes --risk-ack <risk>` satisfies the risk confirmation
-non-interactively. When an interactive risk confirmation is shown, the notice
+access even when `--yes` or `--yes --allow-unknown` satisfies authorization
+non-interactively. When an interactive execution confirmation is shown, the notice
 MUST be integrated into that existing confirmation rather than creating an
 additional per-command confirmation prompt.
+
+REQ-CLI-SEQ-008C1: Before any CLI USB access, the confirmation or authorized
+non-interactive notice MUST identify the selected operation and show its masked
+execution-review summary. Interactive confirmation MAY show resolved values for
+operator review. A `--yes` or `--yes --allow-unknown` notice MUST NOT repeat
+resolved Sequence inputs or payload values on stderr.
 
 REQ-CLI-SEQ-008D: `atctl sequence run <SEQUENCE> --no-log` MUST prevent
 creation of new masked command history and session logs for that invocation.
@@ -1285,10 +1322,11 @@ be ignored. USB command termination MUST continue to be handled by the existing
 AT command terminator path.
 
 REQ-CLI-BRIDGE-014: PTY bridge execution MUST NOT bypass the direct command
-risk policy. Safe and sensitive commands MAY execute without confirmation.
-Sensitive output MUST be masked by default. Write, persistent, dangerous, and
-unknown commands MUST require an explicit typed risk acknowledgement from the
-PTY client before sending to USB.
+execution-review policy. A known observation with no material effect MAY
+execute without confirmation. A known operation with a material effect MUST
+require the exact `run` acknowledgement. An operation whose effects cannot be
+established MUST require the exact `unknown` acknowledgement. Sensitive output
+MUST be masked by default.
 
 REQ-CLI-BRIDGE-015: The bridge supports one external PTY client. Multiple
 external clients opening the same PTY symlink at the same time are not a
@@ -1328,13 +1366,18 @@ as broken pipe, disconnected slave, or platform EIO MUST NOT be reported as USB
 transport errors. USB transport errors while the PTY client remains connected
 MUST still stop the bridge.
 
-REQ-CLI-BRIDGE-019: Prompt-required AT commands, such as SMS submit commands
-that wait for `>`, MUST NOT be treated as completed one-shot commands in PTY
-bridge mode. After the required risk confirmation, the bridge MUST send the
-command, wait for the prompt, relay the prompt text to the PTY client, accept
-the next PTY line as payload, append the required control terminator such as
-Ctrl-Z, then read and return the final modem response. PTY output remains
-masked by default, and raw diagnostic export remains explicit.
+REQ-CLI-BRIDGE-019: Supported prompt-required SMS commands that wait for `>`
+MUST NOT be treated as completed one-shot commands in PTY bridge mode. The
+bridge MUST collect the command and payload before the first USB write, derive
+one review covering both parts, show the review, and obtain the applicable
+`run` or `unknown` acknowledgement. It MUST then send the command, wait for the
+prompt, relay the prompt text to the PTY client, send the already collected
+payload with the required Ctrl-Z terminator, then read and return the final
+modem response. It MUST repeat the authorization boundary check before the
+payload write. PTY output remains masked by default, and raw diagnostic export
+remains explicit. A known prompt/payload command whose framing is not supported,
+including fixed-length `AT+QISEND=<connectID>,<length>`, MUST be rejected before
+USB access and directed to a Sequence that implements the required framing.
 
 PTY bridge runtime contract:
 
@@ -1350,10 +1393,17 @@ PTY bridge runtime contract:
 - Cleanup removes only the still-matching symlink created by the active bridge.
 - Signal handling attempts cleanup for SIGINT, SIGTERM, and SIGHUP.
 - PTY input is CR/LF line-oriented and empty lines are ignored.
-- Confirmation-required commands prompt on the PTY and require the exact risk
-  label on the next line before sending.
-- Prompt-required manual multi-step commands wait for the prompt, collect the
-  next PTY line as payload, append Ctrl-Z, and return the final response.
+- Confirmation-required commands show the operation first, followed by a
+  consequence-oriented review. Known operations group relevant information as
+  `What will happen`, `Sensitive data`, and `Persists / Recovery`; empty
+  optional groups are omitted. Unknown operations begin with
+  `! Effects are not fully known` and separate `Known`, `Possible consequences`,
+  and `Not established`. Known material operations require `run`; unknown
+  operations require `unknown`.
+- Supported SMS prompt commands collect the command and payload before sending,
+  review them together, wait for the modem prompt after authorization, append
+  Ctrl-Z to the collected payload, and return the final response. Other known
+  prompt framing is rejected before USB access and directed to a Sequence.
 - `screen /tmp/atctl 115200` and equivalent clients use the speed argument as a
   serial-tool compatibility value only.
 - A terminal client owns optional normal session-transcript recording. With GNU
@@ -1385,14 +1435,50 @@ Left / Right  Move between panes
 PageUp/Down   Move or scroll the focused pane by one page
 Home / End    Jump to the first or last item/line in the focused pane
 Enter         Execute the focused pane's primary action: select a device in Devices, move from Categories into Commands / Sequences, run or open input for the selected command/Sequence in Commands / Sequences, use a Controls row, open Response actions, or open Log actions
+d             Open complete details for the selected command or Sequence
 /             Search commands and Sequences
 Esc           Cancel the active input, dialog, or help overlay
-q             Quit
+q             Quit from the idle base screen
 ?             Help
 ```
 
+The TUI MUST use the following whole-surface keyboard grammar. It applies to
+every atctl-owned modal and overlay; an operating-system-owned chooser keeps the
+operating system's controls.
+
+| Active context | lowercase `q` | `Esc` | `Enter` and navigation |
+| --- | --- | --- | --- |
+| Idle base screen | Quit the TUI | No action | Perform the focused pane's visible primary action; navigation follows the visible panes |
+| Help overlay | No action | Close Help | `?` also closes Help; all other keys are blocked from the underlying screen |
+| Non-editable modal or action menu | No action and no state change | Cancel, close, or go back | `Enter` performs the visible primary action; `Up`/`Down`, `Tab`, or other navigation keys act only when the modal visibly offers that movement |
+| Modal with a visible editable field | Insert `q` as ordinary text | Cancel the modal | `Enter` validates or performs the visible primary action; field-specific navigation acts only when visibly offered |
+| Command, Sequence, or candidate action running | Do not quit or terminate the operation | Do not claim modem-side cancellation | New execution actions remain blocked until completion or timeout |
+
+REQ-TUI-MODAL-001: `Esc` MUST be the sole generic cancel, close, or back key for
+atctl-owned modals and overlays. Help MAY also close with `?`, matching its open
+key. Lowercase `q` MUST quit only from the idle base screen. The base screen
+MUST NOT treat `Esc` as a second quit key and MUST NOT show a routine quit
+confirmation. In Help, action menus, review-only dialogs, and every other
+non-editable modal, `q` MUST have no effect and MUST NOT mutate hidden input or
+selection state. During command, Sequence, or candidate-action execution, `q`
+MUST NOT terminate the operation or the TUI.
+
+REQ-TUI-MODAL-002: When a visible editable field is active, including command,
+search, path, timeout, parameter, `run`, `unknown`, `unmask`, `copy`, `export`,
+and `raw-log` fields, `q` MUST be inserted as ordinary text and field validation
+MUST occur only on `Enter`. This preserves AT commands such as `AT+QCFG` and
+`AT+QIOPEN`, file paths, Sequence values, and acknowledgements containing `q`.
+The same modal-control descriptor MUST own event dismissal, modal-body
+instructions, and footer hints so those three user-visible representations
+cannot assign different meanings to the same key.
+
+REQ-TUI-MODAL-003: `Enter`, `Up`/`Down`, `Tab`, and other modal navigation keys
+MUST be advertised and handled only when the active modal visibly exposes the
+corresponding action or selection. A non-editable review phase MUST NOT accept
+typing or backspace into a hidden confirmation buffer.
+
 REQ-TUI-001: TUI command and Sequence execution MUST use the same transport,
-masking, logging, and risk policy as CLI execution.
+masking, logging, and execution-review policy as CLI execution.
 
 REQ-TUI-002: USB I/O MUST NOT permanently block terminal rendering or terminal
 restoration. TUI command execution MUST be performed through an execution path
@@ -1420,23 +1506,82 @@ commands executed after capture starts. Stopping capture MUST leave existing
 masked Response, history, session log, and explicit Response export behavior
 unchanged.
 
-REQ-TUI-005: Dangerous commands MUST NOT be presented as ordinary diagnostic or
-read-only commands. If a dangerous preset is visible in the TUI, the command row
-MUST show the `[dangerous]` risk label and execution MUST require the exact typed
-risk confirmation before USB access.
+REQ-TUI-005: Every executable command row MUST use one physical row and show
+identity in this order: selection marker, command name, `│ AT:`, then the AT
+command string. A Sequence row MUST use the same physical height and show the
+selection marker, Sequence name, `│ Purpose:`, then a concise purpose preview.
+A row MUST append warning text only for an exception that requires operator
+attention:
+`! Confirmation required` for a known material operation or
+`! Confirmation required (effects unknown)` for an unknown operation. A row
+that does not require confirmation MUST NOT repeat a normal-state confirmation
+label. Rows MUST NOT use scalar safety, sensitivity, or write badges.
+Selection MUST NOT change row height or replace warning styling with selection
+styling. When available width cannot fit the full row, the implementation MUST
+reserve the complete applicable exception warning first, then the structural
+label and at least one visible character of the name. It MAY ellipsize the name
+and then shorten or omit the AT command or purpose preview. It MUST NOT show a
+partial warning.
 
-REQ-TUI-006: TUI confirmation dialogs MUST show the command, risk level, and
-expected effect before execution.
+REQ-TUI-005A: With `Commands / Sequences` focused and the TUI idle, `d` MUST
+open a read-only `Details` overlay for the selected executable item without USB,
+modem, or network I/O. The overlay MUST work when no device is selected or
+visible and MUST show:
 
-REQ-TUI-007: TUI confirmation dialogs MUST require typing the exact displayed
-risk level before sending a confirmation-required command.
+- `Type: Command` or `Type: Sequence`;
+- the complete `Name:`;
+- the complete `AT command:` for a command or complete `Purpose:` for a
+  Sequence;
+- an exception warning only when confirmation is required;
+- `Source:` and `File:` only for a non-default loaded definition; and
+- `Search match:` when the active query matched a field whose matching text is
+  not fully visible in the list row.
+
+The overlay MUST wrap complete text. When its body exceeds the viewport, it
+MUST show the visible range as `Details <first>-<last>/<total>`, accept
+`Up`/`Down` for one-line scrolling and `PageUp`/`PageDown` for page scrolling,
+and keep `Esc` as its only close key. Lowercase `q` MUST have no effect. Closing
+MUST restore the same category, search query, selection, and list viewport.
+
+For a command, Details MUST also show categories, effective timeout, and the
+complete product-derived execution review. For a Sequence, Details MUST also
+show categories, timeout, before-running notes, parameter requirements,
+defaults, hints, value sources and candidate sources, and the complete
+definition-boundary execution review. These fields MUST use the same meanings as
+CLI `preset show` and `sequence show`; Details remains read-only.
+
+REQ-TUI-005B: Empty category and search results MUST replace the executable rows
+with a concise explanation and an available recovery action. Empty-state
+rendering MUST NOT perform hidden device or network I/O. If the available area
+cannot safely show an executable row's complete exception warning, a complete
+Details viewport, or phase-critical confirmation content, the affected surface
+MUST show `Executable details cannot fit safely.` and
+`Resize the terminal to continue.` instead of rendering partial actionable
+content. While this safe-resize state is visible, `Enter` MUST NOT execute the
+selected item; resizing until a complete actionable row can be represented is
+the only way to restore list execution.
+
+REQ-TUI-006: TUI confirmation dialogs MUST show the target command or Sequence
+identity before review detail. Known reviews MUST group information as
+`What will happen`, optional `Sensitive data`, and optional
+`Persists / Recovery`. Unknown reviews MUST begin with
+`! Effects are not fully known` and separate `Known`,
+`Possible consequences`, optional `Sensitive data`, optional
+`Persists / Recovery`, and `Not established`. Empty optional groups MUST be
+omitted. The exact acknowledgement instruction and current `Input:` value MUST
+remain visually distinct and visible before execution. The dialog MUST NOT
+repeat `Confirmation: required` after the warning title and acknowledgement
+instruction already establish that state.
+
+REQ-TUI-007: TUI confirmation dialogs MUST require typing `run` for a known
+material operation or `unknown` for an operation whose effects cannot be
+established. Cancel MUST be the default action.
 
 REQ-TUI-008: During command execution, the TUI MUST show that an AT command is
-running and MUST show the preset name, raw AT command string, risk level, and
-expected effect. During Sequence execution, the TUI MUST show that a Sequence is
-running, the Sequence name, current step, risk level, timeout budget, and
-expected effect of the current step without duplicating the full transcript in
-Status.
+running and MUST show the command identity, raw AT command string, and timeout
+budget. During Sequence execution, the TUI MUST show that a Sequence is
+running, the Sequence name, current step, and timeout budget without duplicating
+the full review or transcript in compact Status.
 
 REQ-TUI-008A: During command execution, the TUI MUST show elapsed time,
 configured timeout, remaining time, and a visible timeout-budget progress
@@ -1515,13 +1660,17 @@ to communicate this failed before normal response state.
 
 REQ-TUI-014: The compact Status area MUST show the current state, active or
 selected command or Sequence name, AT command string when relevant, current
-Sequence step when relevant, risk level, output masking state only when
-meaningful, and completion or failure summary. It MUST avoid repeating the full
-response body, Sequence transcript, or log content. Status content SHOULD use
-readable key-value lines instead of packing unrelated values into a single
-pipe-delimited line when vertical space is available. Status MUST NOT contain
-generic keyboard shortcut boilerplate such as `Keys: ...`; keyboard hints are a
-navigation aid, not command or transport state.
+Sequence step when relevant, output masking state only when meaningful, and
+completion or failure summary. It MUST NOT duplicate the execution review,
+confirmation rationale, response body, Sequence transcript, or log content.
+It MUST NOT show confirmation requirement, Assessment, Effects, Data handling,
+Reversibility, or Consequences; warning exceptions belong in executable-item
+rows and detailed review belongs in confirmation/review surfaces.
+Status content SHOULD use readable key-value lines instead of packing unrelated
+values into a single pipe-delimited line when vertical space is available.
+Status MUST NOT contain generic keyboard shortcut boilerplate such as
+`Keys: ...`; keyboard hints are a navigation aid, not command or transport
+state.
 
 REQ-TUI-014L: The TUI Status Content Gate MUST be applied before changing
 compact Status wording. Status is current state and execution context only.
@@ -1570,7 +1719,7 @@ timestamp. When a saved log is being viewed, Status MUST show concise log-view
 state and log identity instead of selected-item or execution-result labels.
 Because Status is a compact sidebar context surface, long target labels MAY be
 clipped horizontally instead of wrapped when wrapping would displace
-higher-priority state, terminal-time, result, risk, masking, or progress rows.
+higher-priority state, terminal-time, result, masking, or progress rows.
 Full command names, command text, response bodies, and log content remain
 available in the Commands / Sequences, Response, Logs, exported Response, or
 session-log surfaces as applicable.
@@ -1591,11 +1740,11 @@ the year, omit the time zone marker, or invent a separate local-time display
 format for this context. Completed, failed, or cancelled active execution
 Status rows MUST be ordered by the user's post-execution confirmation task:
 state, terminal time, target identity, source when present, `AT command:` when
-relevant and when it fits, concise result, risk, then output masking when
-shown. If the normal compact Status width cannot fit the full terminal-time
-row, the TUI MUST first preserve lifecycle state, terminal time, result, risk,
-and masking by widening the Status content area or omitting lower-priority rows
-such as `Source:` or `AT command:`. Label/value splitting of the terminal-time
+relevant and when it fits, concise result, then output masking when shown. If
+the normal compact Status width cannot fit the full terminal-time row, the TUI
+MUST first preserve lifecycle state, terminal time, result, and masking by
+widening the Status content area or omitting lower-priority rows such as
+`Source:` or `AT command:`. Label/value splitting of the terminal-time
 row is only an exceptional degraded rendering for unsupported very narrow
 layouts; it is not the normal Status grammar. The Response, Commands /
 Sequences list, and persisted logs remain the detailed command surfaces.
@@ -1612,8 +1761,8 @@ REQ-TUI-014I: Running-command timeout progress MUST be presented as temporary
 execution feedback inside Status, not as persistent selected-command metadata.
 Running execution Status rows MUST be ordered by the user's in-progress
 monitoring task: state, target identity, source when present, `AT command:`
-when relevant, risk, output masking when meaningful, then the timeout progress
-block. The same Status context MUST NOT also render a separate static
+when relevant, output masking when meaningful, then the timeout progress block.
+The same Status context MUST NOT also render a separate static
 `Timeout: Ns` selected-item row, because timeout budget and elapsed/left
 progress are represented by the progress block while the command is running.
 When the Status pane has enough height, the running-progress block MUST be
@@ -1642,13 +1791,13 @@ operation reference.
 REQ-TUI-014H: The `?` help overlay MUST behave as a modal overlay. While help
 is visible, the TUI MUST NOT pass `Enter`, letter keys, device selection, command
 execution, raw export, response save/copy/clear, or quit actions to the
-underlying panes. `Esc`, `?`, and `q` MUST close the help overlay and return to
-the previous TUI state without changing the selected command, selected device,
-current input, or current response. Help content MUST stay focused on concise
-keyboard operation and close instructions. It MUST NOT include pane-architecture
-explanations, implementation rationale, abstract flow labels such as
-`Primary flow`, or descriptive inventories of what the Controls, Devices, or
-Logs panes are for.
+underlying panes. `Esc` and `?` MUST close the help overlay and return to the
+previous TUI state without changing the selected command, selected device,
+current input, or current response. Lowercase `q` MUST leave Help open and MUST
+NOT quit the TUI. Help content MUST stay focused on concise keyboard operation
+and close instructions. It MUST NOT include pane-architecture explanations,
+implementation rationale, abstract flow labels such as `Primary flow`, or
+descriptive inventories of what the Controls, Devices, or Logs panes are for.
 
 REQ-TUI-014A: The Devices pane MUST show USB device candidates currently visible
 through `libusb` and narrowed only by explicit selectors. If no matching device
@@ -1889,8 +2038,10 @@ TUI executable-item display basis:
 
 - The primary user task in the `Commands / Sequences` pane is selecting an
   executable item within the current workflow category.
-- The primary list row information is item name, effective risk label, and the
-  AT command string or concise Sequence summary.
+- The primary list row information is item name, confirmation requirement, and
+  the AT command string or concise Sequence purpose preview. The list is a
+  stable one-row scan surface; complete content belongs in `Details` and the
+  relevant execution phase.
 - Default product-provided items are the baseline path and MUST NOT carry
   default-only source metadata in the normal list.
 - Non-default file or repository-managed items MAY show their user-facing
@@ -1912,9 +2063,10 @@ or unspecified prefixes. Required label shape is:
 <file preset title from top-level TOML title>
 ```
 
-REQ-TUI-CMD-SET-003: Command rows MUST keep the same shape regardless of
-preset set: command name, one risk label, and AT command string. Command rows MUST
-NOT use inline preset set badges such as `[built-in]`,
+REQ-TUI-CMD-SET-003: Command rows MUST keep the same shape regardless of preset
+set: command name, `│ AT:`, AT command string, and an exception warning only
+when confirmation is required.
+Command rows MUST NOT use inline preset set badges such as `[built-in]`,
 `[Quectel commands]`, or a file-path badge in the normal TUI command list.
 
 REQ-TUI-CMD-SET-004: Source group headers are not commands. They MUST NOT be
@@ -1996,12 +2148,14 @@ Sequences
 These group headers are not executable rows and MUST follow the same
 non-selectable navigation rules as source group headers.
 
-REQ-TUI-SEQ-004: One-shot command rows MUST keep the existing command-row shape:
-command name, one risk label, and AT command string. Sequence rows MUST show the
-Sequence name, one effective risk label, and a concise human-readable summary or
-purpose. A Sequence row MUST NOT try to show every step's AT command inline.
-That Sequence summary MUST NOT be duplicated into the compact Status area as
-normal active or selected context.
+REQ-TUI-SEQ-004: One-shot command rows MUST keep the command-row shape defined
+by REQ-TUI-005: command name, `│ AT:`, AT command string, then the applicable
+exception warning. Sequence rows MUST use the same one-row height: Sequence
+name, `│ Purpose:`, concise purpose preview, then the applicable exception
+warning. A Sequence row MUST NOT try to show every step's AT command inline.
+The complete purpose MUST be available through `d Details` and every Sequence
+modal phase. It MUST NOT be duplicated into compact Status as normal active or
+selected context.
 
 REQ-TUI-SEQ-005: Sequence source grouping MUST follow the same user-facing
 principles as preset source grouping. Product-provided standard Sequences MUST
@@ -2013,13 +2167,18 @@ badges, or invented `Add-on:` prefixes in normal TUI rows.
 
 REQ-TUI-SEQ-006: Selecting a Sequence with operator-supplied, defaulted, or
 resolvable values MUST open a `Run Sequence` modal before Sequence execution.
-The modal MUST show the Sequence name, effective risk, required values,
-sensitive-input masking state, current value, value source, and the confirmation
-requirement for the Sequence. It MUST NOT reduce the experience to bare
-`required <empty>` rows when a value has a Sequence default, a known modem check,
-a selectable prior/current result, a derived value, or an external prerequisite
-that can be explained. It MUST NOT run a Sequence with unresolved required
-values.
+Every phase, including value input, candidate selection, candidate-action
+confirmation, no-confirmation review, known confirmation, unknown confirmation,
+and error feedback, MUST show the complete Sequence `Name:` and `Purpose:`.
+The value-input phase MUST also show required values, sensitive-input masking
+state, current value, and value source without a stale pre-resolution
+confirmation label. The final review phase MUST show the resolved Sequence
+identity and the consequence-oriented groups defined by REQ-TUI-006. It MUST
+NOT reduce the
+experience to bare `required <empty>` rows when a value has a Sequence default,
+a known modem check, a selectable prior/current result, a derived value, or an
+external prerequisite that can be explained. It MUST NOT run a Sequence with
+unresolved required values.
 
 REQ-TUI-SEQ-006A: The `Run Sequence` modal MUST use a compact value-resolution
 grammar for Sequence values:
@@ -2069,7 +2228,7 @@ REQ-TUI-SEQ-006A.2: A candidate source MUST define its candidate acquisition
 actions as explicit product actions. The TUI MAY render those actions inside
 the `Run Sequence` modal, but selecting an action MUST execute the
 corresponding command or Sequence through the normal execution path, including
-risk classification, confirmation when required, timeout, output masking,
+execution review, confirmation when required, timeout, output masking,
 Response transcript, history/session logging, and raw diagnostic export
 behavior where applicable. Opening the modal MUST NOT execute candidate actions.
 
@@ -2086,14 +2245,16 @@ confirmation, and error feedback. In every phase, the visible content MUST make
 the current phase, next required action, and current input state clear without
 requiring the user to infer hidden continuation below the visible modal.
 
-REQ-TUI-SEQ-006B.2: If modal content exceeds the available area, the
-implementation MUST either keep all phase-critical controls visible by
-compressing lower-priority detail, or provide an explicit scrollable content
-region with visible scroll affordance and working scroll keys. It MUST NOT show
-content that appears to continue below the modal when there is no corresponding
-scroll interaction. Phase-critical controls include the active value row during
-input, highlighted candidate during selection, and risk confirmation instruction
-plus current confirmation input during confirmation.
+REQ-TUI-SEQ-006B.2: If modal context exceeds the available area, the modal MUST
+use an upper scrollable context region labelled
+`Details <first>-<last>/<total>` and a lower pinned interaction region.
+`PageUp` and `PageDown` MUST scroll only the context region by one visible page.
+`Up` and `Down` MUST retain parameter or candidate navigation where that phase
+offers it. The pinned region MUST keep the active value and candidate action,
+or the execution-confirmation instruction and current `Input:`, visible and
+operable. The modal MUST NOT silently omit context or show a visual continuation
+without working scrolling. When even the pinned region cannot fit safely,
+REQ-TUI-005B applies.
 
 REQ-TUI-SEQ-006C: A value whose state is `select`, or whose parameter declares
 a product-known `candidate`, MUST NOT be treated as resolved by a hint line
@@ -2121,7 +2282,7 @@ REQ-TUI-SEQ-006C.1: Opening a `Run Sequence` modal MUST NOT implicitly execute
 AT commands, Sequences, TCP/socket operations, PDP checks, or other modem or
 network I/O to obtain candidate values. Candidate acquisition must happen only
 through the normal execution flow for the command or Sequence that obtains the
-data, including the applicable risk classification, confirmation, timeout,
+data, including the applicable execution review, confirmation, timeout,
 masking, and transcript behavior. This applies to SMS candidates, PDP context
 IDs, TCP read data, provider endpoint checks, and any future `source=select`
 value source.
@@ -2223,9 +2384,9 @@ current value option advances the normal Sequence input flow. `Enter` on a
 candidate row selects that value. `Enter` on a candidate action runs that
 action through the normal execution path and keeps the `Run Sequence` modal
 available so parsed candidates can be selected after the action completes. If
-the action requires typed risk confirmation, that confirmation happens inside
-the same `Run Sequence` modal before USB access and MUST use the same risk word
-as the normal command/Sequence confirmation policy.
+the action requires typed confirmation, that confirmation happens inside the
+same `Run Sequence` modal before USB access and MUST use the same `run` or
+`unknown` token as the normal command/Sequence execution-review policy.
 
 REQ-TUI-SEQ-006E.3: Candidate acquisition action execution is part of Sequence
 input assistance, not execution of the selected Sequence body. While a
@@ -2258,15 +2419,24 @@ surface and must not consult TUI session candidates automatically. Any
 cross-surface candidate sharing requires an explicit user action defined by
 this specification.
 
-REQ-TUI-SEQ-006H: During Sequence confirmation, the risk action instruction and
-current confirmation input MUST remain visible at all supported modal sizes. For
-confirmation-required Sequences, the modal MUST show `Type <risk> to run` and
+REQ-TUI-SEQ-006H: During Sequence confirmation, the acknowledgement instruction
+and current confirmation input MUST remain visible at all supported modal
+sizes. A known material Sequence MUST show `Type run to execute`; an unknown
+Sequence MUST show `Type unknown to execute`. Both MUST show
 `Input: <current input>` as phase-critical content. For Sequences that do not
 require typed confirmation, the modal MUST show the Enter-to-run instruction.
 Long `Values` or `Review` sections MUST be summarized, clipped, or placed in a
 scrollable detail region before they are allowed to push the confirmation
 instruction or input field out of view. The footer alone is not sufficient
 confirmation input visibility.
+
+REQ-TUI-SEQ-006I: Sequence value input and ordinary review are focus phases and
+MUST use the focus/cyan visual role. A resolved Sequence that does not require
+typed confirmation MUST stop at a `Review Sequence` phase before execution and
+use `Press Enter to run`; it MUST NOT use a warning title, warning border,
+typed acknowledgement, or an empty `Input:` row. A known or unknown Sequence
+that requires confirmation MUST use a warning/yellow `Confirm Sequence` title
+and border. Candidate-action confirmation follows the same warning grammar.
 
 REQ-TUI-SEQ-007: The `Run Sequence` modal MUST keep keyboard focus inside the
 modal until the user confirms, cancels, or completes required input. `Esc`
@@ -2276,8 +2446,8 @@ operation-focused.
 
 REQ-TUI-SEQ-008: During Sequence execution, Status MUST show compact current
 execution context such as Sequence name, current step number, step label,
-timeout budget, and risk. Status MUST NOT become a scrollable transcript or a
-step table.
+and timeout budget. Status MUST NOT show the full execution review or become a
+scrollable transcript or step table.
 
 REQ-TUI-SEQ-009: Response MUST be the primary place for Sequence execution
 results. It MUST show a readable step transcript with each sent AT command or
@@ -2298,21 +2468,23 @@ one-shot command wording for Sequence parameters.
 REQ-TUI-SEQ-011: Search MUST match both one-shot command rows and Sequence rows
 by name, category, summary, and where appropriate underlying AT command tokens.
 Search result ordering MUST preserve deterministic preset/Sequence ordering and
-must not interleave rows by incidental loader order.
+must not interleave rows by incidental loader order. When a match comes from a
+field that is hidden or truncated in the list row, `d Details` MUST identify the
+matching field and text without changing the one-row list grammar.
 
 REQ-TUI-016: The TUI MUST provide an `AT command` input route for sending a
 one-shot command that is not saved as a preset.
 
 REQ-TUI-017: TUI AT command input execution MUST use the same transport, masking,
-logging, and risk policy as preset execution.
+logging, and execution-review policy as preset execution.
 
 REQ-TUI-018: TUI AT command input MUST allow valid AT command-line
 characters such as quotes, commas, semicolons, equals signs, question marks,
 and command parameters. Input validation MUST protect the execution model and
 terminal rendering without rejecting ordinary AT command syntax.
 
-REQ-TUI-019: TUI AT command input MUST classify the entered command before
-USB access. Confirmation-required classifications MUST open the same risk
+REQ-TUI-019: TUI AT command input MUST derive its execution review before USB
+access. Confirmation-required reviews MUST open the same structured
 confirmation flow used by presets.
 
 REQ-TUI-020: SMS send and other prompt-required multi-step commands MUST NOT be
@@ -2376,13 +2548,15 @@ the operator selects a destination folder. Unmasked export MUST NOT write after
 folder selection alone: it MUST return to a dedicated TUI confirmation that
 shows the exact final file path, warns that the file may contain unmasked
 identifiers, messages, payloads, or credentials, and requires exact typed
-acknowledgement `export`. `Esc` and `q` MUST cancel without creating a file.
+acknowledgement `export`. `Esc` MUST cancel without creating a file; `q` is
+ordinary acknowledgement input.
 
 Selecting `Copy unmasked response` MUST open a dedicated confirmation that
 states the terminal clipboard request will contain the unmasked Response and
-requires exact typed acknowledgement `copy`. `Esc` and `q` MUST cancel without
-sending an OSC 52 request. Masked `Copy response` MAY send the request
-immediately. Export MUST create a new file exclusively and MUST NOT
+requires exact typed acknowledgement `copy`. `Esc` MUST cancel without sending
+an OSC 52 request; `q` is ordinary acknowledgement input. Masked
+`Copy response` MAY send the request immediately. Export MUST create a new file
+exclusively and MUST NOT
 overwrite, append to, or silently rename an existing file. Export success
 feedback MUST name the exact created file and retain that path as the exported
 file associated with the currently displayed Response. A repeated export MUST
@@ -2432,7 +2606,7 @@ substitutes for this visible target context.
 ### 16.1 TUI Visual Accessibility and Theme Requirements
 
 TUI styling is product behavior, not incidental implementation detail. Color,
-contrast, focus, selection, and risk styling MUST be specified before
+contrast, focus, selection, and confirmation styling MUST be specified before
 implementation when they affect user-visible behavior.
 
 Reference basis:
@@ -2463,17 +2637,17 @@ Reference basis:
   non-web software, including text and terminal interfaces.
 
 REQ-TUI-A11Y-001: The TUI MUST NOT rely on color as the only indicator for
-focus, selection, risk level, command category, confirmation state, masking
-state, or error state.
+focus, selection, command category, confirmation requirement, masking state, or
+error state.
 
 REQ-TUI-A11Y-002: The TUI MUST preserve non-color affordances such as selection
-markers, text labels, risk labels, borders, dialog text, and emphasis when color
-is added, changed, disabled, or unavailable.
+markers, `!` warning markers, text labels, borders, dialog structure,
+acknowledgement instructions, and emphasis when color is added, changed,
+disabled, or unavailable.
 
 REQ-TUI-A11Y-003: TUI colors MUST be assigned through semantic roles, not
-scattered raw color choices. Required roles include at least focus, selected,
-status, muted text, safe risk, sensitive risk, write risk, dangerous risk,
-warning, and error.
+scattered raw color choices. Required roles are background, text, emphasis,
+focus, selected, status, muted text, warning, and error.
 
 REQ-TUI-A11Y-004: The current cyan/yellow styling is the colored baseline for
 the documented dark-terminal presentation. It MUST NOT be claimed as verified
@@ -2504,66 +2678,69 @@ REQ-TUI-A11Y-010: Any change to TUI palette, emphasis, or visual state
 representation MUST define the concrete replacement in this specification
 before implementation.
 
-REQ-TUI-A11Y-011: TUI risk levels MUST be visually distinguishable for at
-least `safe`, `sensitive`, `write`, `persistent`, `dangerous`, and `unknown`.
-The distinction MUST use semantic roles and MUST NOT rely on color alone.
+REQ-TUI-A11Y-011: Confirmation-required rows and dialogs MUST remain
+distinguishable through text and structure when color is disabled or
+unavailable. Warning color MAY reinforce that state, but it MUST NOT replace
+the confirmation label, acknowledgement instruction, or cancel-default
+behavior.
 
-REQ-TUI-A11Y-012: The TUI risk palette and emphasis design MUST preserve the
+REQ-TUI-A11Y-012: The TUI palette and emphasis design MUST preserve the
 specified cyan/yellow direction unless this specification defines a concrete
 replacement.
 
-REQ-TUI-A11Y-013: TUI risk styling MUST keep text labels such as `[safe]`,
-`[sensitive]`, and `[write]` visible even when colors are disabled or
-unavailable.
+REQ-TUI-A11Y-013: Selected-row styling MUST preserve an appended exception
+warning and MUST NOT erase warning emphasis from a confirmation-required token.
+Selection, item kind, warning state, truncation, and scrolling MUST also remain
+understandable without color through `>`, `│ AT:`, `│ Purpose:`, `!`, `...` or
+`…`, and visible range text respectively.
 
-OQ-012 risk-display contract:
+OQ-012 execution-review display contract:
 
-- Commands and Sequences MUST display exactly one risk-classification label:
-  - `safe` -> `[safe]`
-  - `sensitive` -> `[sensitive]`
-  - `write` -> `[write]`
-  - `persistent` -> `[persistent]`
-  - `dangerous` -> `[dangerous]`
-  - `unknown` -> `[unknown]`
-- The command or Sequence row MUST NOT append masking state, confirmation
-  instruction, persistence description, severity restatement, or review
-  instruction to the risk label. In particular, `MASKED`, `CONFIRM`, `PERSISTS`,
-  `DANGER`, and `REVIEW` are not risk labels.
+- Commands MUST display name, AT command, then an exception warning when one is
+  required. Sequences MUST display name, summary, then an exception warning
+  when one is required.
+- Allowed exception warning text is:
+  - `! Confirmation required`
+  - `! Confirmation required (effects unknown)`
+- Rows that do not require confirmation MUST omit confirmation status.
+- Scalar labels such as `[safe]`, `[sensitive]`, `[write]`, `[persistent]`,
+  `[dangerous]`, and `[unknown]` MUST NOT appear in normal executable-item rows,
+  compact Status, or confirmation dialogs.
 - Output masking is session and Response state. It MUST be shown separately as
   `Output masking: on` or `Output masking: off` in the applicable Controls,
   Status, and Response surfaces.
-- Expected effect and exact acknowledgement instructions belong in the
-  confirmation surface, not in the executable-item row or risk label.
+- The internal Assessment, Effects, Data handling, Reversibility, and
+  Consequences fields remain structured output and logging data. Human
+  confirmation surfaces MUST present them through the consequence-oriented
+  groups in REQ-TUI-006 rather than as a flat field dump. They do not belong in
+  executable-item rows or compact Status.
 - The specified dark palette is:
   - background `#263238`
   - base text `#ECEFF1`
-  - focus/status/safe `#4DD0E1`
+  - focus/status `#4DD0E1`
   - selection `#FFD54F`
-  - sensitive `#D6B3FF`
-  - write `#FFD166`
-  - persistent `#FFB86C`
-  - dangerous `#FF6B6B`
-  - unknown `#B0BEC5`
+  - warning/confirmation `#FFD166`
+  - error `#FF6B6B`
+  - muted `#B0BEC5`
 - The specified light palette is:
   - background `#FAFAFA`
   - base text `#263238`
-  - focus/status/safe `#007C89`
-  - selection/write `#7A5A00`
-  - sensitive `#6B3FA0`
-  - persistent `#9A4D00`
-  - dangerous `#B00020`
-  - unknown `#4B5563`
-- Risk styling MUST apply to Commands, Status, and Confirmation areas. Response
-  content masking state and Response-action warnings MUST use their own state
-  and warning roles rather than reusing a command-risk label.
-- Selected rows MUST NOT erase risk-specific token styling.
+  - focus/status `#007C89`
+  - selection/warning/confirmation `#7A5A00`
+  - error `#B00020`
+  - muted `#4B5563`
+- Selected rows MUST preserve confirmation-required warning styling.
 - TUI theme selection MUST support default dark, `--theme dark`,
   `--theme light`, and `--theme no-color`.
 - `NO_COLOR` without an explicit `--theme` MUST use no-color mode.
-- Verification MUST cover theme selection, semantic risk-role mapping,
-  selected-row risk-token preservation, all six exact labels, negative checks
-  for the removed suffix words, and render-buffer evidence that masking state
-  and confirmation instructions remain separate from risk labels.
+- Verification MUST cover theme selection, all required semantic roles,
+  selected-row warning-token preservation, both exception warnings, omission
+  of normal-state confirmation text, negative checks for all removed scalar
+  labels, and render-buffer evidence that masking state and confirmation
+  instructions remain separate from row warnings and compact Status. It MUST
+  compare built-in-only, mixed command/Sequence, loaded-definition, known
+  confirmation, unknown confirmation, no-confirmation Sequence review, adjacent
+  acknowledgement, and dark/light/no-color states.
 
 ### 16.2 TUI Output Masking Requirements
 
@@ -2614,7 +2791,8 @@ TUI session output masking contract:
   unmasked copy requires `copy` and unmasked export requires `export`, while
   generated history and session logs remain masked and raw diagnostic export
   requires its own path and `raw-log` acknowledgement.
-- `Esc` and `q` MUST cancel the output-masking confirmation dialog.
+- `Esc` MUST cancel the output-masking confirmation dialog. `q` MUST be
+  accepted as ordinary acknowledgement input.
 - Output masking off MUST persist until the user turns output masking on again
   or exits the TUI. It MUST survive focus changes, category changes, command
   selection changes, response clearing, and ordinary command execution during
@@ -2638,7 +2816,7 @@ TUI session output masking contract:
   request results belong in the Response action menu, and the output-masking
   confirmation dialog or Help may explain that Response copy follows the
   visible Response display.
-- Safe responses whose displayed text is not changed by masking MUST NOT show a
+- Responses whose displayed text is not changed by masking MUST NOT show a
   response-local output-masking state line while output masking is on.
 - Verification MUST cover masked/default behavior,
   `atctl tui --no-mask`, exact typed acknowledgement, cancel behavior, visible
@@ -2658,71 +2836,135 @@ Commands are classified as:
 3. Provider/convenience commands
 4. User-defined commands
 
-### 17.1 Risk Model
+### 17.1 Execution Review Model
 
-Risk levels:
+An execution review is a structured decision object. It MUST keep these axes
+separate instead of combining them into one scalar label:
 
 ```text
-safe:
-  Read-only or harmless command.
+Assessment:
+  known | unknown
 
-sensitive:
-  Reads identifiers, credentials, or operationally sensitive information.
+Effects:
+  observe or read data
+  change runtime state
+  change persistent state
+  communicate or transmit externally
+  delete, reset, or recover
+  interrupt service or connectivity
 
-write:
-  Changes runtime configuration.
+Data handling:
+  sensitive input
+  sensitive output
+  sensitive external disclosure
 
-persistent:
-  Changes persistent modem configuration.
+Reversibility:
+  not applicable
+  immediately reversible
+  restart required
+  persistent until changed
+  irreversible
+  not established
 
-dangerous:
-  May reset modem, detach from network, change bands, break connectivity, or
-  make the device hard to recover.
+Consequences:
+  concise operation-specific consequences
 
-unknown:
-  Cannot be confidently classified and is treated as potentially unsafe.
+Confirmation:
+  required | not required, with reasons when required
 ```
 
-REQ-RISK-001: Every preset command MUST have a risk level.
+`Assessment: unknown` means atctl cannot establish the complete semantics of
+the reviewed operation from its maintained rules. It does not mean atctl has
+identified every harmful unknown command, and it does not convert missing
+knowledge into a harmless classification. The review MUST identify the aspects
+that are not established.
 
-REQ-RISK-002: APN-changing commands MUST NOT run automatically.
+REQ-REVIEW-001: Every executable command and Sequence MUST have one derived
+execution review before its first USB write.
 
-REQ-RISK-003: APN-changing commands MAY exist as presets or templates only when
-they require explicit user selection and confirmation.
+REQ-REVIEW-002: APN-changing commands MUST NOT run automatically.
 
-REQ-RISK-004: Direct command risk classification MUST distinguish safe,
-sensitive, write, persistent, dangerous, and unknown.
+REQ-REVIEW-003: APN-changing commands MAY exist as presets or templates only
+when they require explicit user selection and confirmation.
 
-REQ-RISK-005: The direct command classifier MUST treat syntactic read/test
-commands with unknown sensitivity as sensitive by default.
+REQ-REVIEW-004: The product MUST derive the review from the complete operation
+known at the authorization boundary, including command text, prompt payload,
+Sequence steps, internal conditional actions, and cleanup actions. It MUST
+repeat the boundary check immediately before each write that can materially
+change the reviewed operation.
 
-REQ-RISK-006: The direct command classifier MUST treat commands that cannot be
-confidently classified as read/test as confirmation-required unknown commands.
+REQ-REVIEW-005: A maintained known observation with only an observe/read effect
+MAY execute without confirmation. Sensitive input, sensitive output, and
+sensitive external disclosure MUST remain Data handling properties and MUST NOT
+be presented as operation effects.
 
-REQ-RISK-007: File preset add-ons MUST declare a risk level for every preset.
+REQ-REVIEW-006: A known operation with a material effect MUST require explicit
+confirmation. Interactive surfaces MUST require the exact `run`
+acknowledgement. Non-interactive CLI execution MUST require `--yes`.
 
-REQ-RISK-008: User-declared risk MUST NOT be able to downgrade the risk
-classified from the AT command string.
+REQ-REVIEW-007: An operation whose complete semantics cannot be established
+MUST use `Assessment: unknown`, list the aspects that are not established, show
+the possible consequence boundary, and require explicit authorization for that
+execution. Interactive surfaces MUST require the exact `unknown`
+acknowledgement. Non-interactive CLI execution MUST require both `--yes` and
+`--allow-unknown`.
 
-REQ-RISK-009: For presets loaded from TOML, the implementation MUST compute an
-effective risk from the declared risk and the command classifier. The effective
-risk MUST preserve the stricter enforcement outcome.
+REQ-REVIEW-008: Syntactic query or test forms not covered by maintained command
+knowledge MUST remain unknown. Query syntax alone MUST NOT be used to infer
+that an operation is read-only, non-sensitive, or free of state changes.
 
-REQ-RISK-010: If the classifier identifies a command as sensitive, write,
-persistent, dangerous, or unknown, the effective risk MUST preserve the masking
-or confirmation behavior required by that classification even when the TOML
-declares a lower risk.
+REQ-REVIEW-009: Preset and Sequence definition files MUST NOT declare a scalar
+`risk` field. Strict deserialization MUST reject the removed field and other
+unknown fields instead of silently accepting an obsolete or misleading
+override.
 
-REQ-RISK-011: Unknown read/test commands MAY execute without confirmation only
-when treated as sensitive by default. Unknown commands that cannot be
-confidently classified as read/test MUST be confirmation-required.
+REQ-REVIEW-010: Definition metadata, labels, source type, and origin MUST NOT
+override or downgrade the review derived from the operation. Product-provided,
+repository-managed, and user-authored definitions use the same review,
+confirmation, masking, logging, raw-export, and execution contract.
+
+REQ-REVIEW-011: A Sequence review MUST aggregate every step, internal action,
+cleanup action, supplied value, and payload before execution. Any unknown
+component makes the Sequence assessment unknown. The combined review MUST
+preserve every applicable effect, data-handling property, consequence,
+not-established item, confirmation reason, and the least reversible applicable
+result.
+
+REQ-REVIEW-012: JSON output and normal logs MUST serialize the structured review
+as `execution_review` and MUST NOT expose a scalar `risk` field. Normal output
+and logs MUST use the masked review; an explicitly acknowledged raw diagnostic
+export MAY preserve the raw reviewed operation within the raw-only contract.
+
+REQ-REVIEW-012A: Execution JSON, normal history/session logs, and raw diagnostic
+export metadata MUST identify the production surface as `cli`, `tui`, or `pty`
+and MUST identify the operation structurally. `operation.kind` MUST be
+`command`, `preset`, or `sequence`; named operations MUST include their name;
+commands MUST include their AT command; Sequences MUST include their purpose;
+and loaded definitions MUST include structured `product`, `file`, or `runtime`
+origin with title/path when applicable. User-facing persisted output MUST NOT
+encode these axes in concatenated internal strings such as `preset:<name>` or
+`tui-sequence:<name>`. `execution_review` remains a separate object.
+
+REQ-REVIEW-013: `--allow-unknown` without `--yes` MUST fail, and
+`--allow-unknown` MUST fail when the reviewed operation is known. A prior
+confirmation MUST NOT authorize a different operation after substitution,
+payload collection, Sequence branching, or runtime resolution.
+
+REQ-REVIEW-014: A Sequence list row MAY show a definition-boundary review while
+operator values, defaults, or runtime-derived values are unresolved. Before
+execution confirmation, the product MUST bind every operator value and default,
+re-derive the review from the resulting step commands, conditional internal
+actions, payload boundary, and cleanup actions, and use that resolved review for
+authorization, execution output, and logs. A value that can only be derived from
+a prior modem response MUST remain explicit in the pre-execution boundary and
+the resulting command MUST be checked again immediately before its write.
 
 ### 17.2 Preset Purpose
 
 Presets exist to support practical modem workflows, not only passive
 inspection. The default experience MUST help users inspect a modem, confirm SIM
 and network state, configure or inspect APN/PDP state, and prepare for SMS
-workflow validation while preserving the risk policy.
+workflow validation while preserving the execution-review policy.
 
 ### 17.3 Preset Sets and File Presets
 
@@ -2737,9 +2979,10 @@ File presets:
   --preset-dir locations.
 ```
 
-REQ-PRESET-SET-001: CLI preset lists MUST show a preset set label for every
-preset and a trailing source-path field for source review. Product preset rows
-in CLI list output MUST use `Product presets` and source path `-`.
+REQ-PRESET-SET-001: Human CLI preset lists MUST leave product presets as the
+unheaded baseline and identify each file preset set once by its user-facing
+title and path. Complete structured list/show JSON MUST retain definition
+origin, title, and path for every preset.
 TUI preset lists MUST distinguish standard workflow product presets
 from file presets through the Commands-pane source grouping and `Source:
 <title>` detail rules in section 16. TUI preset lists MUST NOT show preset set
@@ -2830,71 +3073,71 @@ disable-command-echo
 This order intentionally follows connection check, modem identity, SIM, radio
 access selection, operator visibility, registration, signal, PDP/APN readiness,
 failure diagnostics, SMS readiness, modem functionality status/control, and
-then write-risk runtime control. It MUST NOT be replaced with alphabetical
-order.
+then confirmation-required runtime control. It MUST NOT be replaced with
+alphabetical order.
 
 Basic:
 
 ```text
-modem-response: AT [safe]
-disable-command-echo: ATE0 [write]
+modem-response: AT [confirmation not required]
+disable-command-echo: ATE0 [confirmation required]
 ```
 
 Modem identity:
 
 ```text
-modem-info: ATI [safe]
-manufacturer: AT+CGMI [safe]
-model: AT+CGMM [safe]
-firmware-revision: AT+CGMR [safe]
-imei: AT+CGSN [sensitive]
+modem-info: ATI [confirmation not required]
+manufacturer: AT+CGMI [confirmation not required]
+model: AT+CGMM [confirmation not required]
+firmware-revision: AT+CGMR [confirmation not required]
+imei: AT+CGSN [confirmation not required; sensitive output]
 ```
 
 SIM identity and status:
 
 ```text
-sim-pin-status: AT+CPIN? [safe]
-imsi: AT+CIMI [sensitive]
+sim-pin-status: AT+CPIN? [confirmation not required]
+imsi: AT+CIMI [confirmation not required; sensitive output]
 ```
 
 Radio access, operator selection, and network registration:
 
 ```text
-radio-stack: AT+WS46? [safe]
-radio-stack-capabilities: AT+WS46=? [safe]
-current-operator: AT+COPS? [safe]
-available-operators: AT+COPS=? [safe, timeout_secs=180]
-operator-format-numeric: AT+COPS=3,2 [write]
-operator-auto-selection: AT+COPS=0 [write]
-circuit-registration: AT+CREG? [safe]
-gprs-registration: AT+CGREG? [safe]
-eps-registration: AT+CEREG? [safe]
-enable-circuit-registration-detail: AT+CREG=2 [write]
-enable-gprs-registration-detail: AT+CGREG=2 [write]
-enable-eps-registration-detail: AT+CEREG=2 [write]
-enable-eps-registration-cause: AT+CEREG=3 [write]
-enable-eps-registration-extended: AT+CEREG=5 [write]
+radio-stack: AT+WS46? [confirmation not required]
+radio-stack-capabilities: AT+WS46=? [confirmation not required]
+current-operator: AT+COPS? [confirmation not required]
+available-operators: AT+COPS=? [confirmation not required; timeout_secs=180]
+operator-format-numeric: AT+COPS=3,2 [confirmation required]
+operator-auto-selection: AT+COPS=0 [confirmation required]
+circuit-registration: AT+CREG? [confirmation not required]
+gprs-registration: AT+CGREG? [confirmation not required]
+eps-registration: AT+CEREG? [confirmation not required]
+enable-circuit-registration-detail: AT+CREG=2 [confirmation required]
+enable-gprs-registration-detail: AT+CGREG=2 [confirmation required]
+enable-eps-registration-detail: AT+CEREG=2 [confirmation required]
+enable-eps-registration-cause: AT+CEREG=3 [confirmation required]
+enable-eps-registration-extended: AT+CEREG=5 [confirmation required]
 ```
 
 Signal:
 
 ```text
-signal-quality: AT+CSQ [safe]
-extended-signal-quality: AT+CESQ [safe]
-extended-signal-capabilities: AT+CESQ=? [safe]
+signal-quality: AT+CSQ [confirmation not required]
+extended-signal-quality: AT+CESQ [confirmation not required]
+extended-signal-capabilities: AT+CESQ=? [confirmation not required]
 ```
 
 PDP / APN:
 
 ```text
-pdp-contexts: AT+CGDCONT? [safe]
-pdp-auth-settings: AT+CGAUTH? [sensitive]
-pdp-auth-capabilities: AT+CGAUTH=? [safe]
-packet-attach: AT+CGATT? [safe]
-active-pdp-contexts: AT+CGACT? [safe]
-pdp-addresses: AT+CGPADDR [safe]
-pdp-address-capabilities: AT+CGPADDR=? [safe]
-pdp-connection-details: AT+CGCONTRDP [safe]
+pdp-contexts: AT+CGDCONT? [confirmation not required]
+pdp-auth-settings: AT+CGAUTH? [confirmation not required; sensitive output]
+pdp-auth-capabilities: AT+CGAUTH=? [confirmation not required]
+packet-attach: AT+CGATT? [confirmation not required]
+active-pdp-contexts: AT+CGACT? [confirmation not required]
+pdp-addresses: AT+CGPADDR [confirmation not required]
+pdp-address-capabilities: AT+CGPADDR=? [confirmation not required]
+pdp-connection-details: AT+CGCONTRDP [confirmation not required]
 ```
 
 `available-operators` may take longer than ordinary read commands because it
@@ -2909,8 +3152,8 @@ human operator check the standard wireless data service stack selection without
 using AT command input. `operator-format-numeric`,
 `operator-auto-selection`, and the registration detail presets are standard AT
 commands used during troubleshooting, but they change runtime reporting or
-operator selection behavior; they MUST remain write-risk presets and require
-confirmation before USB access.
+operator selection behavior; they MUST remain confirmation-required operations
+with runtime-state effects before USB access.
 
 `extended-signal-quality` and `extended-signal-capabilities` provide standard extended
 signal quality checks alongside the basic `AT+CSQ` checkpoint. `pdp-auth-settings` and
@@ -2923,10 +3166,10 @@ PDP activation.
 Diagnostics:
 
 ```text
-extended-error-report: AT+CEER [safe]
-error-reporting-status: AT+CMEE? [safe]
-enable-verbose-errors: AT+CMEE=2 [write]
-modem-activity-status: AT+CPAS [safe]
+extended-error-report: AT+CEER [confirmation not required]
+error-reporting-status: AT+CMEE? [confirmation not required]
+enable-verbose-errors: AT+CMEE=2 [confirmation required]
+modem-activity-status: AT+CPAS [confirmation not required]
 ```
 
 `AT+CEER` is a standard diagnostic command for reading the extended report for
@@ -2935,40 +3178,42 @@ attach, last unsuccessful PDP context activation, last GPRS detach, or last PDP
 context deactivation when the modem implements the report. `AT+CMEE?` reads
 the current mobile termination error reporting mode. `AT+CMEE=2` enables
 verbose `+CME ERROR` reporting and therefore changes command-session behavior;
-it MUST remain a write-risk preset and require confirmation before USB access.
+it MUST remain a confirmation-required runtime-state change before USB access.
 `AT+CPAS` reads the modem activity status, including ready, unavailable,
 unknown, and asleep states.
 
 SMS readiness:
 
 ```text
-sms-service-support: AT+CSMS? [safe]
-sms-format: AT+CMGF? [safe]
-sms-storage: AT+CPMS? [safe]
+sms-service-support: AT+CSMS? [confirmation not required]
+sms-format: AT+CMGF? [confirmation not required]
+sms-storage: AT+CPMS? [confirmation not required]
 ```
 
 Modem functionality and restart:
 
 ```text
-modem-functionality: AT+CFUN? [safe]
-set-modem-minimum-functionality: AT+CFUN=0 [dangerous]
-set-modem-full-functionality: AT+CFUN=1 [dangerous]
-restart-modem: AT+CFUN=1,1 [dangerous]
+modem-functionality: AT+CFUN? [confirmation not required]
+set-modem-minimum-functionality: AT+CFUN=0 [confirmation required]
+set-modem-full-functionality: AT+CFUN=1 [confirmation required]
+restart-modem: AT+CFUN=1,1 [confirmation required]
 ```
 
 `AT+CFUN?` is a standard read command for the modem functionality level.
 `AT+CFUN=0`, `AT+CFUN=1`, and `AT+CFUN=1,1` change modem functionality or
 restart the modem. They are standard UE AT commands, but they are not diagnostic
-reads. They MUST remain dangerous presets, require typed confirmation, and be
-documented as commands that may detach from the network, restart registration,
-drop the current USB/AT session, or require the user to reconnect and reselect
-the modem.
+reads. Their reviews MUST show the runtime-state and service/connectivity
+effects; `AT+CFUN=1,1` MUST also show its reset/recovery effect and
+restart-required reversibility. They require typed `run` confirmation and MUST
+be documented as commands that may detach from the network, restart
+registration, drop the current USB/AT session, or require the user to reconnect
+and reselect the modem.
 
 APN setting and SMS sending are valid product workflows, but commands that
 change modem state or require prompt/body interaction MUST remain behind the
-risk and Sequence policies. Product presets MAY include read-only readiness
-checks. Carrier APN values and vendor-specific SMS helpers belong in file
-presets or Sequence definition files unless explicitly promoted to
+execution-review and Sequence policies. Product presets MAY include read-only
+readiness checks. Carrier APN values and vendor-specific SMS helpers belong in
+file presets or Sequence definition files unless explicitly promoted to
 product-provided standard Sequences.
 
 Standard SMS send/read/reply checks SHOULD be exposed as product-provided
@@ -2983,8 +3228,8 @@ revised to define a vendor-independent product behavior.
 
 The repository-managed file preset examples MUST demonstrate the same TOML
 format used for user file presets and MUST be suitable for verification of
-multi-file loading, preset set display, duplicate detection, and effective-risk
-handling.
+multi-file loading, preset set display, duplicate detection, strict schema
+validation, and operation-derived execution review.
 
 Quectel file preset requirements:
 
@@ -2998,27 +3243,31 @@ Quectel file preset requirements:
   Quectel preset set: `AT+QCFG="nwscanmode"` and the recovery preset
   `AT+QCFG="nwscanmode",0,1`.
 - MAY include Quectel-specific modem control commands such as `AT+QPOWD` only
-  as dangerous file presets. `AT+QPOWD` MUST NOT be promoted to a built-in
-  preset because it is vendor-specific.
+  as confirmation-required file presets whose review identifies the
+  power-down, restart requirement, and service-interruption consequences.
+  `AT+QPOWD` MUST NOT be promoted to a built-in preset because it is
+  vendor-specific.
 - `AT+QMBNCFG="List"` MAY be included only as a read-style diagnostic file
   preset. Other `AT+QMBNCFG` operations that select, deactivate, add, delete,
-  or auto-select MBN files MUST NOT be added as ordinary safe presets.
+  or auto-select MBN files MUST NOT be added as ordinary no-confirmation
+  observations.
 - Quectel configuration-changing commands such as `AT+QCFG=...` MUST remain
-  protected by persistent, dangerous, or unknown-risk handling unless this
-  specification defines a specific safe read-only form.
+  confirmation-required persistent-state changes, or unknown when their
+  complete semantics are not maintained, unless this specification defines a
+  specific known observation form.
 - MUST declare `title = "Quectel commands"` at file level.
 - MAY declare a file-level `description`.
 - MUST categorize entries with relevant workflow categories such as `sim`,
   `signal`, `network`, `diagnostics`, and `modem`.
 - MUST NOT use `quectel` as a workflow category. Quectel identity is the
   preset set title, not a category.
-- MUST declare risk for every entry.
+- MUST NOT declare the removed scalar `risk` field.
 
 SORACOM file preset requirements:
 
 - MUST include the SORACOM APN setting command
-  `AT+CGDCONT=1,"IP","soracom.io"` as a confirmation-required write preset or
-  template.
+  `AT+CGDCONT=1,"IP","soracom.io"` as a confirmation-required persistent-state
+  change preset or template.
 - MUST include SORACOM APN setting presets for the documented APNs
   `soracom.io`, `du.soracom.io`, and `m-airsim.jp`.
 - MAY include SORACOM default PAP/CHAP authentication templates using
@@ -3030,7 +3279,7 @@ SORACOM file preset requirements:
   `pdp`.
 - MUST NOT use `soracom` as a workflow category. SORACOM identity is the
   preset set title, not a category.
-- MUST declare risk for every entry.
+- MUST NOT declare the removed scalar `risk` field.
 - MUST NOT cause APN-changing commands to run automatically.
 
 ### 17.6 File Preset TOML
@@ -3047,7 +3296,6 @@ description = "Optional description for humans."
 [[presets]]
 name = "custom-modem-response"
 command = "AT"
-risk = "safe"
 categories = ["custom"]
 # Optional. Use only for known long-running commands.
 timeout_secs = 180
@@ -3058,8 +3306,9 @@ REQ-PRESET-FILE-001: Each file preset TOML file MUST include top-level
 and the non-default source title in TUI group headers and `Source: <title>`
 detail. File names MUST NOT be used as the normal display name.
 
-REQ-PRESET-FILE-002: Each `[[presets]]` entry MUST include `name`, `command`,
-and `risk`.
+REQ-PRESET-FILE-002: Each `[[presets]]` entry MUST include `name` and `command`.
+It MUST NOT include the removed scalar `risk` field; strict loading MUST reject
+that field instead of treating it as an execution-policy override.
 
 REQ-PRESET-FILE-003: Each `[[presets]]` entry MAY include `categories`.
 
@@ -3084,13 +3333,16 @@ as their preset set label in CLI listings. In the TUI, file preset identity
 MUST be shown through source group headers or `Source: <title>` detail labels
 when the currently visible executable-item result set contains file presets.
 
-REQ-PRESET-FILE-010: File preset execution MUST use effective risk, not only
-the TOML-declared risk.
+REQ-PRESET-FILE-010: File preset execution MUST derive its execution review from
+the command and resolved operation at the authorization boundary. File metadata
+MUST NOT override or downgrade that review.
 
-REQ-PRESET-FILE-011: User-defined vendor commands MUST be safe to load even
-when the command family is unknown. Safety comes from conservative
-classification, masking, confirmation, and explicit preset set identity rather
-than from rejecting ordinary AT command syntax.
+REQ-PRESET-FILE-011: User-defined vendor commands MUST remain loadable when the
+command family is unknown. Loading does not establish the operation semantics.
+Execution MUST show `Assessment: unknown`, the not-established aspects and
+possible consequence boundary, require `unknown` authorization, and preserve
+masking and explicit preset set identity rather than rejecting ordinary AT
+command syntax.
 
 Explicit file preset location overrides:
 
@@ -3143,15 +3395,16 @@ sms-reply-check
 `sms-send-check` SHOULD use standard 3GPP TS 27.005 SMS commands. It MUST
 collect the recipient and message body as parameters, treat both as sensitive,
 show the destination and message body in the pre-send review surface before USB
-access, require write-risk confirmation, and record in the Response transcript
-that `+CMGS` plus `OK` is submit evidence rather than destination handset
-receipt evidence.
+access, show external communication and sensitive external disclosure
+separately, require typed `run` confirmation, and record in the Response
+transcript that `+CMGS` plus `OK` is submit evidence rather than destination
+handset receipt evidence.
 
 `sms-receive-check` SHOULD use standard 3GPP TS 27.005 SMS receive/list/read
 commands. It MUST treat sender numbers and message bodies as sensitive. If the
 chosen receive method changes message status, notification routing, storage
-state, or unread/read flags, the Sequence MUST be classified as write-risk or
-otherwise confirmation-required. The Sequence MUST NOT silently delete messages.
+state, or unread/read flags, the Sequence review MUST show the applicable state
+effect and require confirmation. The Sequence MUST NOT silently delete messages.
 The Response transcript MUST distinguish modem message status values such as
 `REC READ` and `REC UNREAD` from the product action used to read or list message
 content. The product MUST parse listed message metadata and MUST decode body
@@ -3167,9 +3420,10 @@ content in normal or unmasked foreground transcripts.
 
 `sms-read-message` SHOULD read a specific message by storage index using
 standard 3GPP TS 27.005 commands. Because `AT+CMGR` can change an unread
-message to read state, the Sequence MUST be write-risk and MUST require typed
-confirmation before USB access. The pre-send review surface MUST show the target
-SMS storage index before sending. The SMS storage index MUST be documented and
+message to read state, the Sequence MUST show its observe-data and state-change
+effects and MUST require typed `run` confirmation before USB access. The
+pre-send review surface MUST show the target SMS storage index before sending.
+The SMS storage index MUST be documented and
 displayed as a value obtained from SMS storage listing output such as
 `sms-receive-check` / `AT+CMGL`, not as a self-evident user-created number.
 In TUI, selectable index candidates MAY be reused only from the current TUI
@@ -3236,6 +3490,16 @@ reported as no received data. Non-empty `+QIRD:<length>` output MAY be reported
 as response data evidence, but returned data remains subject to normal masking
 and MUST NOT be treated as proof that a remote application committed the
 payload unless the endpoint protocol defines that response as such.
+`AT+QIRD=<connectID>,<read_length>` data retrieval MUST contribute an
+observe-data effect, a runtime receive-buffer state-change effect, sensitive
+output, irreversible buffer-consumption reversibility, and a confirmation
+requirement to the execution review. `AT+QIRD=<connectID>,0` and `AT+QIRD=?`
+MUST remain known observations because they query counters or capabilities
+without retrieving buffered payload data.
+`AT+QISEND=<connectID>,0` MUST contribute only a known observe-data effect
+because it queries sent, acknowledged, and unacknowledged counters. Positive
+length `AT+QISEND` forms remain external communication operations with a
+separate payload prompt and MUST NOT be executed through a one-shot surface.
 The TCP Sequence input contract MUST distinguish user-entered destination and
 payload values from modem-dependent PDP context ID and socket connect ID
 values. Repository-managed Quectel and SORACOM TCP add-on Sequence definitions
@@ -3308,7 +3572,6 @@ description = "Optional description for humans."
 [[sequences]]
 name = "quectel-tcp-send-check"
 summary = "Open a Quectel TCP socket, send a payload, and read a response."
-risk = "write"
 categories = ["data", "network"]
 timeout_secs = 180
 before_running = [
@@ -3409,8 +3672,10 @@ title is the normal user-facing Sequence set label in CLI output and TUI group
 headers and `Source: <title>` detail when non-default Sequence sets are
 visible. File names MUST NOT be used as the normal display name.
 
-REQ-SEQ-FILE-002: Each `[[sequences]]` entry MUST include `name`, `summary`,
-`risk`, and at least one `[[sequences.steps]]` entry.
+REQ-SEQ-FILE-002: Each `[[sequences]]` entry MUST include `name`, `summary`, and
+at least one `[[sequences.steps]]` entry. It MUST NOT include the removed scalar
+`risk` field; strict loading MUST reject that field instead of treating it as
+an execution-policy override.
 
 REQ-SEQ-FILE-003: Each `[[sequences]]` entry MAY include `categories`,
 `timeout_secs`, `params`, `review`, `success_notes`, and additional step
@@ -3582,9 +3847,10 @@ commands into a one-shot command.
 REQ-MASK-001: Screen output and saved logs MUST mask sensitive values by default.
 
 REQ-MASK-002: Values to mask include IMSI, ICCID, IMEI, MSISDN, APN usernames,
-APN passwords, SMS sender/recipient numbers, SMS message bodies, Sequence
-payloads marked sensitive, application tokens, and long numeric identifiers
-likely to be subscriber or device identifiers.
+APN passwords, SIM PIN/PUK and other product-known credential fields, SMS
+sender/recipient numbers, SMS message bodies, Sequence payloads marked
+sensitive, application tokens, and long numeric identifiers likely to be
+subscriber or device identifiers.
 
 REQ-MASK-002A: `+QCCID:` response values MUST be masked as one sensitive ICCID
 value token. If a modem returns trailing `F` padding with the ICCID response,
@@ -3607,6 +3873,24 @@ for decoded content. QIRD response data returned by TCP example Sequences is
 application response data and MUST be masked when it matches sensitive Sequence
 parameters or when the Sequence analysis only needs to report response length.
 
+REQ-MASK-002D: Masking classification MUST use product-known field semantics
+and value provenance before token length. A phone or MSISDN value in a known
+SMS sender, SMS recipient, own-number, call-number, service-center, or phonebook
+field MUST be masked even when it is a short code. Every digit in that value
+MUST be replaced while quotes and protocol punctuation such as `+`, `*`, `#`,
+spaces, parentheses, and separators remain visible. A Sequence parameter marked
+`sensitive` MUST be fully hidden at each template position generated from that
+parameter; credentials, SMS bodies, sensitive payloads, and application tokens
+MUST NOT retain readable alphanumeric content in masked output.
+
+REQ-MASK-002E: Short operational values such as signal values, status codes,
+storage indexes, PDP context IDs, message references, ports, timeouts, counts,
+and result codes MUST remain visible unless the field itself or the
+product-generated value position is classified as sensitive. In particular,
+the recipient in `AT+CMGS=<number>` is sensitive while the message reference in
+`+CMGS: <mr>` is operational. An unclassified short token in vendor output MUST
+NOT be guessed to be a phone number solely from its characters or length.
+
 REQ-MASK-003: Masking MUST apply to command responses, JSON output, session
 logs, command history, and TUI panes unless the user explicitly requests
 unmasked foreground display or acknowledged raw diagnostic export.
@@ -3615,6 +3899,23 @@ REQ-MASK-003A: The TUI and interactive CLI active Sequence input/review
 surfaces may show user-entered sensitive values before sending, as specified by
 REQ-SEQ-FILE-012. This exception is limited to active input/review and does not
 change Response, log, raw export, save, copy, or JSON masking requirements.
+
+REQ-MASK-003B: A bounded execution MUST create context-preserving raw and masked
+forms before routing output to user-facing or retained consumers. CLI text and
+JSON, preset and Sequence output, TUI Response and Status, Response copy/export,
+PTY output, command history, and session logs MUST consume the applicable form
+from that common contract. Normal history and session-log writers MUST accept
+already-masked operation, review, and response artifacts and MUST NOT attempt a
+second context-free masking pass. Reopening a normal saved log MUST display that
+stored masked artifact without reclassifying it.
+
+REQ-MASK-003C: Product-known and definition-declared sensitive positions MUST be
+covered consistently across direct commands, presets, built-in Sequences,
+repository-managed Sequences, and user-loaded Sequences. For arbitrary output
+whose field meaning is unknown, the product MUST retain the conservative
+long-numeric-identifier fallback and MUST NOT claim that every unknown short
+sensitive value can be detected. This boundary does not weaken the explicit raw
+diagnostic export requirements in REQ-MASK-006.
 
 REQ-MASK-004: If a command string itself contains a credential, logs MUST mask
 the sensitive part of the command string.
@@ -3640,6 +3941,19 @@ Original:
 Masked:
 +QCCID: 89811000************
 ```
+
+Short semantic-field example:
+
+```text
+Original:
++CMGL: 3,"REC UNREAD","901001",,"26/07/18,12:00:00+36"
+
+Masked:
++CMGL: 3,"REC UNREAD","******",,"26/07/18,12:00:00+36"
+```
+
+The storage index `3` and timestamp remain available for operation and
+diagnosis; only the known sender field is hidden.
 
 ## 19. Definition Loading and State Paths
 
@@ -3756,8 +4070,9 @@ the default state/log directory without an explicit user-selected output
 destination.
 
 REQ-LOG-003: Log entries SHOULD include timestamp, device VID/PID, selected
-device identity, interface, endpoints, command, risk level, masked response,
-duration, and status.
+device identity, interface, endpoints, command, masked structured
+`execution_review`, masked response, duration, and status. They MUST NOT include
+a scalar `risk` field.
 
 REQ-LOG-004: Log files SHOULD use user-only permissions when created.
 
@@ -3862,7 +4177,7 @@ MUST be disabled with an actionable missing-file explanation. Neither action
 MUST fall back to a parent directory or another log file.
 
 REQ-LOG-018: Raw diagnostic export files MUST be written as JSON Lines. The
-format MUST include a schema/version event, surface/source metadata, command
+format MUST include a schema/version event, structured surface/operation metadata, command
 metadata, transmitted bytes, received bytes, status, duration, and a warning
 that the file may contain sensitive modem, subscriber, network, APN, or PDP
 authentication values. When command transmission has started but no parsed AT
@@ -4225,7 +4540,8 @@ require a separate explicit operator action.
 ## 23. Verification Strategy
 
 REQ-TEST-001: Unit tests MUST cover masking, AT parser status detection, config
-parsing, preset risk classification, and CLI argument parsing where practical.
+parsing, command and preset execution review, authorization boundaries, and CLI
+argument parsing where practical.
 
 REQ-TEST-002: USB transport MUST be testable through a mock transport or fixture
 without requiring physical hardware.
@@ -4276,10 +4592,11 @@ or user visual review MAY supplement these checks, but MUST NOT replace them
 when objective accessibility claims are made.
 
 REQ-TEST-007: Sequence verification MUST include unit tests for Sequence TOML
-loading, duplicate detection, parameter validation, risk aggregation, prompt
-waits, payload writes, URC waits, per-step timeout handling, masked transcript
-rendering, raw diagnostic export event coverage, CLI `sequence list/run`, and
-TUI Sequence selection/input/result rendering through mock transport fixtures.
+loading, duplicate detection, parameter validation, full-operation review
+aggregation, authorization-boundary rechecks, prompt waits, payload writes, URC
+waits, per-step timeout handling, masked transcript rendering, raw diagnostic
+export event coverage, CLI `sequence list/run`, and TUI Sequence
+selection/input/result rendering through mock transport fixtures.
 
 REQ-TEST-008: Repository-managed example Sequences MUST be verified through the
 same loader path used for user-authored Sequence definitions, such as by passing
@@ -4292,6 +4609,15 @@ For executable-item grouping, tests MUST compare the relevant adjacent states
 instead of only asserting one local state, such as product-only commands,
 mixed product/file presets, mixed command/Sequence results, and loaded
 repository-managed examples.
+
+REQ-TEST-010: Executable discovery verification MUST cover command and Sequence
+row delimiters, equal selected/unselected row height, complete warning
+preservation in selected and narrow rows, command and Sequence Details without a
+device, hidden-field search-match disclosure, empty category/search recovery,
+Details scrolling and exact state restoration, and the safe-resize fallback.
+Sequence modal verification MUST cover complete Name/Purpose identity in every
+phase, page scrolling of long context, unchanged parameter/candidate navigation,
+and pinned phase-critical controls at constrained heights.
 
 ## 24. Accepted Decisions
 
@@ -4312,6 +4638,16 @@ supersedes.
   https://standards.ieee.org/ieee/29148/6937/
 - NASA, Appendix C: How to Write a Good Requirement:
   https://www.nasa.gov/reference/appendix-c-how-to-write-a-good-requirement/
+- Carbon Design System, data table usage:
+  https://carbondesignsystem.com/components/data-table/usage/
+- K9s, command and detail-view interaction reference:
+  https://github.com/derailed/k9s/blob/master/README.md
+- fzf, preview-window wrapping and scrolling reference:
+  https://github.com/junegunn/fzf/blob/master/README.md
+- W3C WCAG 2.2, Reflow:
+  https://www.w3.org/WAI/WCAG22/Understanding/reflow.html
+- W3C WCAG 2.2, Use of Color:
+  https://www.w3.org/WAI/WCAG22/Understanding/use-of-color
 - RFC 2119:
   https://www.rfc-editor.org/rfc/rfc2119
 - RFC 3339:
@@ -4358,8 +4694,25 @@ supersedes.
   https://quectel.com/content/uploads/2024/02/Quectel_EC2xEG2xEG9xEM05_Series_QCFG_AT_Commands_Manual_V1.0.pdf
 - Quectel EC2x/EG9x/EM05 TCP/IP AT commands manual:
   https://sixfab.com/wp-content/uploads/2018/09/Quectel_EC2xEG9xEM05_TCPIP_AT_Commands_Manual_V1.0.pdf
+- Quectel current online AT command manual with `AT+QIRD` buffer semantics:
+  https://developer.quectel.com/doc/shortrange/FGM842D/en/Resources/AT-Firmware/AT-Commands-Manual.html
 - Ratatui popup example:
   https://ratatui.rs/examples/apps/popup/
+- Ratatui key-binding template (`q` for quit):
+  https://ratatui.rs/templates/component/config-rs/
+- W3C WAI-ARIA modal dialog keyboard interaction (`Escape` closes):
+  https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/
+- GNOME Human Interface Guidelines for dialogs (`Esc` activates cancel):
+  https://developer.gnome.org/hig/patterns/feedback/dialogs.html
+- Lazygit current key bindings (`q` quits globally; menu `Esc` closes/cancels):
+  https://github.com/jesseduffield/lazygit/blob/master/docs/keybindings/Keybindings_en.md
+- K9s current key bindings (explicit quit commands; `Esc` goes back):
+  https://github.com/derailed/k9s/blob/master/README.md#key-bindings
+- Yazi shipped keymap (`q` quits; `Esc` clears or cancels active state):
+  https://github.com/sxyazi/yazi/blob/shipped/yazi-config/preset/keymap-default.toml
+- Microsoft confirmation guidance (avoid routine confirmations without a
+  meaningful alternate decision):
+  https://learn.microsoft.com/en-us/windows/win32/uxguide/mess-confirm
 - Cloudscape Design System Timestamps:
   https://cloudscape.design/patterns/general/timestamps/
 - Atlassian Design System Date and time:

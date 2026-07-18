@@ -1,41 +1,30 @@
 use ratatui::prelude::{Color, Modifier, Style};
 
-use crate::at::risk::RiskLevel;
 use crate::cli::TuiThemeChoice;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub(super) enum TuiStyleRole {
     Background,
     Text,
+    Emphasis,
     Focus,
     Selected,
     Status,
     Muted,
-    RiskSafe,
-    RiskSensitive,
-    RiskWrite,
-    RiskPersistent,
-    RiskDangerous,
-    RiskUnknown,
     Warning,
     #[allow(dead_code)]
     Error,
 }
 
 #[cfg(test)]
-pub(super) const REQUIRED_STYLE_ROLES: [TuiStyleRole; 14] = [
+pub(super) const REQUIRED_STYLE_ROLES: [TuiStyleRole; 9] = [
     TuiStyleRole::Background,
     TuiStyleRole::Text,
+    TuiStyleRole::Emphasis,
     TuiStyleRole::Focus,
     TuiStyleRole::Selected,
     TuiStyleRole::Status,
     TuiStyleRole::Muted,
-    TuiStyleRole::RiskSafe,
-    TuiStyleRole::RiskSensitive,
-    TuiStyleRole::RiskWrite,
-    TuiStyleRole::RiskPersistent,
-    TuiStyleRole::RiskDangerous,
-    TuiStyleRole::RiskUnknown,
     TuiStyleRole::Warning,
     TuiStyleRole::Error,
 ];
@@ -100,17 +89,6 @@ impl TuiTheme {
         }
     }
 
-    pub(super) fn risk_style(self, risk: RiskLevel) -> Style {
-        match risk {
-            RiskLevel::Safe => self.style(TuiStyleRole::RiskSafe),
-            RiskLevel::Sensitive => self.style(TuiStyleRole::RiskSensitive),
-            RiskLevel::Write => self.style(TuiStyleRole::RiskWrite),
-            RiskLevel::Persistent => self.style(TuiStyleRole::RiskPersistent),
-            RiskLevel::Dangerous => self.style(TuiStyleRole::RiskDangerous),
-            RiskLevel::Unknown => self.style(TuiStyleRole::RiskUnknown),
-        }
-    }
-
     pub(super) fn style(self, role: TuiStyleRole) -> Style {
         match self.mode {
             TuiThemeMode::Dark => palette_style(dark_palette(), role),
@@ -126,12 +104,9 @@ struct Palette {
     text: Color,
     focus: Color,
     selected: Color,
-    safe: Color,
-    sensitive: Color,
-    write: Color,
-    persistent: Color,
-    dangerous: Color,
-    unknown: Color,
+    warning: Color,
+    error: Color,
+    muted: Color,
 }
 
 const fn rgb(red: u8, green: u8, blue: u8) -> Color {
@@ -144,12 +119,9 @@ fn dark_palette() -> Palette {
         text: rgb(0xec, 0xef, 0xf1),
         focus: rgb(0x4d, 0xd0, 0xe1),
         selected: rgb(0xff, 0xd5, 0x4f),
-        safe: rgb(0x4d, 0xd0, 0xe1),
-        sensitive: rgb(0xd6, 0xb3, 0xff),
-        write: rgb(0xff, 0xd1, 0x66),
-        persistent: rgb(0xff, 0xb8, 0x6c),
-        dangerous: rgb(0xff, 0x6b, 0x6b),
-        unknown: rgb(0xb0, 0xbe, 0xc5),
+        warning: rgb(0xff, 0xd1, 0x66),
+        error: rgb(0xff, 0x6b, 0x6b),
+        muted: rgb(0xb0, 0xbe, 0xc5),
     }
 }
 
@@ -159,12 +131,9 @@ fn light_palette() -> Palette {
         text: rgb(0x26, 0x32, 0x38),
         focus: rgb(0x00, 0x7c, 0x89),
         selected: rgb(0x7a, 0x5a, 0x00),
-        safe: rgb(0x00, 0x7c, 0x89),
-        sensitive: rgb(0x6b, 0x3f, 0xa0),
-        write: rgb(0x7a, 0x5a, 0x00),
-        persistent: rgb(0x9a, 0x4d, 0x00),
-        dangerous: rgb(0xb0, 0x00, 0x20),
-        unknown: rgb(0x4b, 0x55, 0x63),
+        warning: rgb(0x7a, 0x5a, 0x00),
+        error: rgb(0xb0, 0x00, 0x20),
+        muted: rgb(0x4b, 0x55, 0x63),
     }
 }
 
@@ -173,36 +142,24 @@ fn palette_style(palette: Palette, role: TuiStyleRole) -> Style {
     match role {
         TuiStyleRole::Background => base,
         TuiStyleRole::Text => base.fg(palette.text),
+        TuiStyleRole::Emphasis => base.fg(palette.text).add_modifier(Modifier::BOLD),
         TuiStyleRole::Focus => base.fg(palette.focus).add_modifier(Modifier::BOLD),
         TuiStyleRole::Selected => base.fg(palette.selected).add_modifier(Modifier::BOLD),
         TuiStyleRole::Status => base.fg(palette.focus),
-        TuiStyleRole::Muted => base.fg(palette.unknown),
-        TuiStyleRole::RiskSafe => base.fg(palette.safe),
-        TuiStyleRole::RiskSensitive => base.fg(palette.sensitive),
-        TuiStyleRole::RiskWrite => base.fg(palette.write),
-        TuiStyleRole::RiskPersistent => base.fg(palette.persistent),
-        TuiStyleRole::RiskDangerous => base.fg(palette.dangerous),
-        TuiStyleRole::RiskUnknown => base.fg(palette.unknown),
-        TuiStyleRole::Warning => base.fg(palette.write),
-        TuiStyleRole::Error => base.fg(palette.dangerous),
+        TuiStyleRole::Muted => base.fg(palette.muted),
+        TuiStyleRole::Warning => base.fg(palette.warning).add_modifier(Modifier::BOLD),
+        TuiStyleRole::Error => base.fg(palette.error).add_modifier(Modifier::BOLD),
     }
 }
 
 fn no_color_style(role: TuiStyleRole) -> Style {
     match role {
         TuiStyleRole::Background | TuiStyleRole::Text => Style::default(),
-        TuiStyleRole::Focus | TuiStyleRole::Selected => {
-            Style::default().add_modifier(Modifier::BOLD)
-        }
-        TuiStyleRole::Status
-        | TuiStyleRole::Muted
-        | TuiStyleRole::RiskSafe
-        | TuiStyleRole::RiskSensitive
-        | TuiStyleRole::RiskWrite
-        | TuiStyleRole::RiskPersistent
-        | TuiStyleRole::RiskDangerous
-        | TuiStyleRole::RiskUnknown
+        TuiStyleRole::Emphasis
+        | TuiStyleRole::Focus
+        | TuiStyleRole::Selected
         | TuiStyleRole::Warning
-        | TuiStyleRole::Error => Style::default(),
+        | TuiStyleRole::Error => Style::default().add_modifier(Modifier::BOLD),
+        TuiStyleRole::Status | TuiStyleRole::Muted => Style::default(),
     }
 }

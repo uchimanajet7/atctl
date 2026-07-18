@@ -138,7 +138,7 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use crate::at::risk::RiskLevel;
+    use crate::at::review::{Assessment, DataHandling, Effect};
 
     use super::*;
 
@@ -151,7 +151,6 @@ mod tests {
             [[presets]]
             name = "custom-modem-response"
             command = "AT"
-            risk = "safe"
             categories = ["custom"]
             "#,
         )
@@ -159,8 +158,8 @@ mod tests {
 
         assert_eq!(presets.len(), 1);
         assert_eq!(presets[0].name, "custom-modem-response");
-        assert_eq!(presets[0].risk, RiskLevel::Safe);
-        assert_eq!(presets[0].declared_risk, RiskLevel::Safe);
+        assert_eq!(presets[0].review.assessment, Assessment::Known);
+        assert!(!presets[0].review.confirmation_required);
         assert_eq!(presets[0].origin.label(), "Custom commands");
         assert_eq!(presets[0].categories, vec!["custom"]);
         assert_eq!(presets[0].timeout_secs, None);
@@ -175,7 +174,6 @@ mod tests {
             [[presets]]
             name = "long-scan"
             command = "AT+COPS=?"
-            risk = "safe"
             timeout_secs = 180
             "#,
         )
@@ -194,14 +192,13 @@ mod tests {
             [[presets]]
             name = "signal-quectel"
             command = "AT+QCSQ"
-            risk = "safe"
             categories = ["signal"]
             "#,
         )
         .unwrap();
 
         assert_eq!(presets[0].origin.label(), "Quectel commands");
-        assert_eq!(presets[0].risk, RiskLevel::Safe);
+        assert!(!presets[0].review.confirmation_required);
     }
 
     #[test]
@@ -213,7 +210,6 @@ mod tests {
             [[presets]]
             name = "legacy"
             command = "AT"
-            risk = "safe"
             tags = ["basic"]
             "#,
         )
@@ -232,13 +228,29 @@ mod tests {
             [[presets]]
             name = "legacy"
             command = "AT"
-            risk = "safe"
             categories = ["basic"]
             "#,
         )
         .unwrap_err();
 
         assert!(error.message().contains("unknown field `source`"));
+    }
+
+    #[test]
+    fn rejects_removed_risk_field() {
+        let error = parse_presets(
+            r#"
+            title = "Legacy commands"
+
+            [[presets]]
+            name = "legacy"
+            command = "AT"
+            risk = "safe"
+            "#,
+        )
+        .unwrap_err();
+
+        assert!(error.message().contains("unknown field `risk`"));
     }
 
     #[test]
@@ -252,7 +264,6 @@ mod tests {
             [[presets]]
             name = "second"
             command = "AT+CSQ"
-            risk = "safe"
             "#,
         )
         .unwrap();
@@ -264,7 +275,6 @@ mod tests {
             [[presets]]
             name = "first"
             command = "AT"
-            risk = "safe"
             "#,
         )
         .unwrap();
@@ -284,16 +294,10 @@ mod tests {
     #[test]
     fn rejects_duplicate_preset_names() {
         let presets = vec![
-            Preset::built_in(
-                "modem-response",
-                "AT",
-                RiskLevel::Safe,
-                Vec::<String>::new(),
-            ),
+            Preset::built_in("modem-response", "AT", Vec::<String>::new()),
             Preset::new(
                 "modem-response",
                 "AT+CSQ",
-                RiskLevel::Safe,
                 Vec::new(),
                 PresetOrigin::file("Custom commands", "custom.toml", None),
             ),
@@ -331,22 +335,28 @@ mod tests {
         assert!(presets.iter().any(|preset| {
             preset.name == "mbn-list-quectel"
                 && preset.origin.label() == "Quectel commands"
-                && preset.risk == RiskLevel::Sensitive
+                && preset.review.data_handling.contains(&DataHandling::Output)
         }));
         assert!(presets.iter().any(|preset| {
             preset.name == "network-scan-auto-quectel"
                 && preset.origin.label() == "Quectel commands"
-                && preset.risk == RiskLevel::Persistent
+                && preset
+                    .review
+                    .effects
+                    .contains(&Effect::ChangePersistentState)
         }));
         assert!(presets.iter().any(|preset| {
             preset.name == "set-soracom-apn-cid1"
                 && preset.origin.label() == "SORACOM commands"
-                && preset.risk == RiskLevel::Write
+                && preset
+                    .review
+                    .effects
+                    .contains(&Effect::ChangePersistentState)
         }));
         assert!(presets.iter().any(|preset| {
             preset.name == "set-soracom-auth-chap-cid1"
                 && preset.origin.label() == "SORACOM commands"
-                && preset.risk == RiskLevel::Write
+                && preset.review.data_handling.contains(&DataHandling::Input)
         }));
     }
 

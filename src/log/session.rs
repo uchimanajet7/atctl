@@ -5,9 +5,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::at::mask::mask_sensitive_values;
+use crate::app::operation::{ExecutionSurface, OperationIdentity};
 use crate::at::response::AtStatus;
-use crate::at::risk::RiskLevel;
+use crate::at::review::ExecutionReview;
 use crate::{AtctlError, Result};
 
 #[derive(Debug, Clone, Serialize)]
@@ -24,12 +24,12 @@ pub struct LogDeviceSelection {
 #[derive(Debug, Clone)]
 pub struct CommandLogRecord {
     pub timestamp: LogTimestamp,
-    pub source: String,
-    pub command: String,
-    pub risk: RiskLevel,
+    pub surface: ExecutionSurface,
+    pub masked_operation: OperationIdentity,
+    pub masked_review: ExecutionReview,
     pub status: AtStatus,
     pub duration: Duration,
-    pub response: String,
+    pub masked_response: String,
     pub device: LogDeviceSelection,
 }
 
@@ -42,9 +42,9 @@ pub struct LogTimestamp {
 #[derive(Debug, Serialize)]
 struct SessionLogFile<'a> {
     timestamp: &'a str,
-    source: &'a str,
-    command: String,
-    risk: RiskLevel,
+    surface: ExecutionSurface,
+    operation: OperationIdentity,
+    execution_review: ExecutionReview,
     status: &'a AtStatus,
     duration_ms: u128,
     masked: bool,
@@ -75,15 +75,15 @@ pub fn write_masked_session_log(log_dir: &Path, record: &CommandLogRecord) -> Re
     let path = log_dir.join(format!("{}.session.log", record.timestamp.file_stem));
     let file = SessionLogFile {
         timestamp: &record.timestamp.display,
-        source: &record.source,
-        command: mask_sensitive_values(&record.command),
-        risk: record.risk,
+        surface: record.surface,
+        operation: record.masked_operation.clone(),
+        execution_review: record.masked_review.clone(),
         status: &record.status,
         duration_ms: record.duration.as_millis(),
         masked: true,
         raw_log: false,
         device: &record.device,
-        response: mask_sensitive_values(&record.response),
+        response: record.masked_response.clone(),
     };
     let line = serde_json::to_string_pretty(&file)?;
 
@@ -166,18 +166,21 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::app::operation::{ExecutionSurface, OperationIdentity};
+    use crate::at::mask::mask_sensitive_values;
+    use crate::at::review::review_direct_command;
 
     #[test]
     fn masks_response_in_session_log() {
         let dir = unique_temp_dir("session-log");
         let record = CommandLogRecord {
             timestamp: timestamp_from_unix(1_735_689_600, 1),
-            source: "send".to_owned(),
-            command: "AT+CIMI".to_owned(),
-            risk: RiskLevel::Sensitive,
+            surface: ExecutionSurface::Cli,
+            masked_operation: OperationIdentity::command("AT+CIMI").masked(),
+            masked_review: review_direct_command("AT+CIMI").masked(),
             status: AtStatus::Ok,
             duration: Duration::from_millis(12),
-            response: "\r\n898110001234567\r\nOK\r\n".to_owned(),
+            masked_response: mask_sensitive_values("\r\n898110001234567\r\nOK\r\n"),
             device: LogDeviceSelection {
                 requested_vendor_id: Some("0x2c7c".to_owned()),
                 requested_product_id: Some("0x0125".to_owned()),
@@ -194,7 +197,74 @@ mod tests {
 
         assert!(contents.contains("89811000*******"));
         assert!(!contents.contains("898110001234567"));
+        assert!(contents.contains("\"surface\": \"cli\""));
+        assert!(contents.contains("\"kind\": \"command\""));
+        assert!(!contents.contains("\"source\""));
         assert!(contents.contains("\"raw_log\": false"));
+        assert!(contents.contains("\"assessment\": \"known\""));
+        assert!(!contents.contains("\"risk\""));
+    }
+
+    #[test]
+    fn masks_sensitive_operation_inside_execution_review() {
+        let dir = unique_temp_dir("session-review-mask");
+        let command = "AT+CGAUTH=1,2,\"user\",\"secret\"";
+        let record = CommandLogRecord {
+            timestamp: timestamp_from_unix(1_735_689_600, 2),
+            surface: ExecutionSurface::Cli,
+            masked_operation: OperationIdentity::command(command).masked(),
+            masked_review: review_direct_command(command).masked(),
+            status: AtStatus::Ok,
+            duration: Duration::from_millis(12),
+            masked_response: mask_sensitive_values("\r\nOK\r\n"),
+            device: LogDeviceSelection {
+                requested_vendor_id: None,
+                requested_product_id: None,
+                requested_bus: None,
+                requested_address: None,
+                interface: None,
+                bulk_in: None,
+                bulk_out: None,
+            },
+        };
+
+        let path = write_masked_session_log(&dir, &record).unwrap();
+        let contents = fs::read_to_string(path).unwrap().to_ascii_lowercase();
+
+        assert!(!contents.contains("user"));
+        assert!(!contents.contains("secret"));
+        assert!(contents.contains('*'));
+    }
+
+    #[test]
+    fn writes_preclassified_short_phone_artifact_without_hiding_operational_values() {
+        let dir = unique_temp_dir("session-short-phone");
+        let command = "AT+CNUM";
+        let record = CommandLogRecord {
+            timestamp: timestamp_from_unix(1_735_689_600, 3),
+            surface: ExecutionSurface::Cli,
+            masked_operation: OperationIdentity::command(command).masked(),
+            masked_review: review_direct_command(command).masked(),
+            status: AtStatus::Ok,
+            duration: Duration::from_millis(12),
+            masked_response: mask_sensitive_values("+CNUM: \"line\",\"901001\",129\n+CMGS: 7\nOK"),
+            device: LogDeviceSelection {
+                requested_vendor_id: None,
+                requested_product_id: None,
+                requested_bus: None,
+                requested_address: None,
+                interface: None,
+                bulk_in: None,
+                bulk_out: None,
+            },
+        };
+
+        let path = write_masked_session_log(&dir, &record).unwrap();
+        let contents = fs::read_to_string(path).unwrap();
+        assert!(contents.contains("******"));
+        assert!(contents.contains("129"));
+        assert!(contents.contains("+CMGS: 7"));
+        assert!(!contents.contains("901001"));
     }
 
     fn unique_temp_dir(name: &str) -> PathBuf {

@@ -58,10 +58,12 @@ atctl tui
 
 - `atctl tui`で対話的に操作する。
 - `atctl send <COMMAND>`でATコマンドを1つ送信する。
-- `atctl preset list`と`atctl preset run <NAME>`で繰り返し使う確認処理を
-  実行する。
-- `atctl sequence list`と`atctl sequence run <SEQUENCE>`でSMSやデータ送信の
-  複数手順を実行する。
+- `atctl preset list`で繰り返し使う確認処理を探し、
+  `atctl preset show <NAME>`で完全な内容を確認してから
+  `atctl preset run <NAME>`で実行する。
+- `atctl sequence list`でSMSやデータ送信の複数手順を探し、
+  `atctl sequence show <SEQUENCE>`で完全な内容を確認してから
+  `atctl sequence run <SEQUENCE>`で実行する。
 - `atctl bridge --symlink <PATH>`でターミナル用PTYブリッジを利用する。
 - raw診断証跡は、出力先と`raw-log`の確認語を明示した場合だけ収集する。
 
@@ -113,16 +115,25 @@ CLIとTUIでの確認、Response export、Finderでの表示、削除による�
 
 ## 安全
 
-コマンドとSequenceの行には、`[safe]`、`[sensitive]`、`[write]`、
-`[persistent]`、`[dangerous]`、`[unknown]`のいずれか1つだけを表示します。
-output maskingの状態と必要な確認操作は別に表示します。
+コマンド行は`name │ AT: command`、Sequence行は`name │ Purpose: preview`を使い、
+選択しても行の高さは変わりません。注意が必要な項目だけに確認警告を追加します。
+完全な内容は`d`で読み取り専用Detailsを開いて確認でき、Detailsを開くだけでは
+モデムにアクセスしません。Sequenceの入力・確認の全フェーズでは完全な名前と目的を
+表示し、長い内容をスクロールしても現在の入力や確認操作を隠しません。
+確認が必要な場合は、何が起きるかを先に示し、
+機微データや復旧に関する情報は該当する場合だけ表示します。未知の操作は、既知の
+事項、起こり得る影響、atctlが確認できなかった事項を分けて表示します。影響を把握
+している操作の確認語は`run`、未知の操作の確認語は`unknown`であり、未知を既知の
+影響と誤認しないようにします。
 
 ATコマンドは機微な識別子を読み取ったり、モデムの状態を変更したりします。
-`atctl`は機微な出力を初期状態でマスクし、状態を変更する操作では確認を求め、
-利用者が出力ファイルを選んでリスクを確認した場合だけraw診断ファイルを作成
+`atctl`は機微な出力を初期状態でマスクし、状態変更など実質的な影響がある操作では
+確認を求め、利用者が出力ファイルを選んで警告を確認した場合だけraw診断ファイルを作成
 します。未確認のコマンドや状態変更コマンドを実行する前に、
 [安全ガイド](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md)
 を参照してください。
+既知の電話番号・SMSアドレス欄は短い番号でもマスクし、index、status、
+message referenceなど診断に必要な短い値は表示したままにします。
 
 ## プリセットとSequence
 
@@ -132,10 +143,17 @@ ATコマンドは機微な識別子を読み取ったり、モデムの状態を
 
 ```sh
 atctl preset list
+atctl preset show modem-info
 atctl preset run modem-info
 atctl sequence list
+atctl sequence show sms-receive-check
 atctl sequence run sms-receive-check
 ```
+
+通常の一覧は、名前、ATコマンドまたは目的のプレビュー、確認が必要な場合の
+例外警告だけを1行で表示します。`show`はUSBへアクセスせず、完全な内容を
+読み取り専用で表示します。完全な構造化データが必要な場合は、`list`または
+`show`に`--json`を追加します。
 
 リポジトリ内の例やプロジェクト固有の定義を利用する場合は、現在のコマンドまたは
 TUIセッションでファイルかディレクトリを指定します。
@@ -146,9 +164,10 @@ atctl sequence list --sequence-dir examples/sequences
 atctl tui --preset-dir examples/presets --sequence-dir examples/sequences
 ```
 
-外部定義は読み込み元を区別したまま、製品組み込み定義と同じリスク判定、確認、
-マスキング、ログ、raw診断エクスポートの保護を受けます。実行前に定義の入手元と
-送信先の値を確認してください。プリセット一覧、TOML形式、読み込みオプション、
+外部定義は読み込み元を区別したまま、製品組み込み定義と同じ製品側の実行レビュー、
+確認、マスキング、ログ、raw診断エクスポートの保護を受けます。定義ファイルに
+単一のリスクラベルは記述しません。実行前に定義の入手元と送信先の値を確認してください。
+プリセット一覧、TOML形式、読み込みオプション、
 Sequenceのパラメーター、証跡の読み方は
 [プリセットとSequenceのリファレンス](https://github.com/uchimanajet7/atctl/blob/main/docs/PRESETS.md)
 を参照してください。

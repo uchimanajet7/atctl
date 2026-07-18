@@ -8,7 +8,7 @@ use ratatui::prelude::{Color, Modifier};
 use ratatui::symbols;
 
 use crate::at::response::AtStatus;
-use crate::at::risk::RiskLevel;
+use crate::at::review::{DataHandling, review_direct_command};
 use crate::cli::TuiThemeChoice;
 use crate::sequences::engine::SmsMessageCandidate;
 use crate::sequences::model::{SequenceStep, StepTerminator};
@@ -31,18 +31,166 @@ fn key_handling_toggles_help_and_quits() {
     let mut state = test_state();
 
     assert_eq!(
+        handle_key_code(&mut state, KeyCode::Esc),
+        TuiAction::Continue
+    );
+    assert!(!state.show_help);
+    assert_eq!(
         handle_key_code(&mut state, KeyCode::Char('?')),
         TuiAction::Continue
     );
     assert!(state.show_help);
+    let selected_command = state.selected_command;
+    let status = state.status.clone();
     assert_eq!(
         handle_key_code(&mut state, KeyCode::Char('q')),
+        TuiAction::Continue
+    );
+    assert!(state.show_help);
+    assert_eq!(state.selected_command, selected_command);
+    assert_eq!(state.status, status);
+    assert_eq!(
+        handle_key_code(&mut state, KeyCode::Esc),
         TuiAction::Continue
     );
     assert!(!state.show_help);
     assert_eq!(
         handle_key_code(&mut state, KeyCode::Char('q')),
         TuiAction::Quit
+    );
+
+    let mut help_closed_by_toggle = test_state();
+    handle_key_code(&mut help_closed_by_toggle, KeyCode::Char('?'));
+    handle_key_code(&mut help_closed_by_toggle, KeyCode::Char('?'));
+    assert!(!help_closed_by_toggle.show_help);
+}
+
+#[test]
+fn q_is_text_in_text_and_acknowledgement_inputs() {
+    let mut state = test_state();
+
+    handle_key_code(&mut state, KeyCode::Char('/'));
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert_eq!(
+        state
+            .search_input
+            .as_ref()
+            .map(|input| input.input.as_str()),
+        Some("q")
+    );
+    handle_key_code(&mut state, KeyCode::Esc);
+
+    state.edit_input = Some(EditInputState {
+        input: String::new(),
+        error: None,
+    });
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert_eq!(
+        state.edit_input.as_ref().map(|input| input.input.as_str()),
+        Some("q")
+    );
+    handle_key_code(&mut state, KeyCode::Esc);
+
+    state.timeout_input = Some(TimeoutInputState {
+        input: String::new(),
+        error: None,
+    });
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert_eq!(
+        state
+            .timeout_input
+            .as_ref()
+            .map(|input| input.input.as_str()),
+        Some("q")
+    );
+    handle_key_code(&mut state, KeyCode::Esc);
+
+    state.output_masking_ack_input = Some(String::new());
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert_eq!(state.output_masking_ack_input.as_deref(), Some("q"));
+    handle_key_code(&mut state, KeyCode::Esc);
+
+    state.response_action_confirmation = Some(ResponseActionConfirmationState {
+        action: ResponseActionConfirmation::Copy {
+            contents: "response".to_owned(),
+            response_label: "Response".to_owned(),
+        },
+        input: String::new(),
+        error: None,
+    });
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert_eq!(
+        state
+            .response_action_confirmation
+            .as_ref()
+            .map(|confirmation| confirmation.input.as_str()),
+        Some("q")
+    );
+    handle_key_code(&mut state, KeyCode::Esc);
+
+    state.raw_log_path_input = Some(RawLogPathInputState::default());
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert_eq!(
+        state
+            .raw_log_path_input
+            .as_ref()
+            .map(|input| input.input.as_str()),
+        Some("q")
+    );
+    handle_key_code(&mut state, KeyCode::Esc);
+
+    state.raw_log_ack_input = Some(RawLogAckInputState {
+        path: PathBuf::from("raw.log"),
+        input: String::new(),
+        error: None,
+    });
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert_eq!(
+        state
+            .raw_log_ack_input
+            .as_ref()
+            .map(|input| input.input.as_str()),
+        Some("q")
+    );
+    handle_key_code(&mut state, KeyCode::Esc);
+
+    state.ad_hoc_input = Some(AdHocInputState::default());
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert_eq!(
+        state
+            .ad_hoc_input
+            .as_ref()
+            .map(|input| input.input.as_str()),
+        Some("q")
+    );
+    handle_key_code(&mut state, KeyCode::Esc);
+
+    state.selected_command = 1;
+    handle_key_code(&mut state, KeyCode::Enter);
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert_eq!(
+        state
+            .confirmation
+            .as_ref()
+            .map(|confirmation| confirmation.input.as_str()),
+        Some("q")
+    );
+
+    let mut sequence_state = test_state_with_sequences();
+    sequence_state.selected_category = sequence_state
+        .categories
+        .iter()
+        .position(|category| category == "sms")
+        .expect("sms category");
+    handle_key_code(&mut sequence_state, KeyCode::Enter);
+    handle_key_code(&mut sequence_state, KeyCode::Char('q'));
+    assert_eq!(
+        sequence_state
+            .sequence_input
+            .as_ref()
+            .and_then(|input| input.values.first())
+            .map(String::as_str),
+        Some("q")
     );
 }
 
@@ -62,15 +210,15 @@ fn help_modal_blocks_underlying_actions() {
 }
 
 #[test]
-fn help_shows_complete_risk_and_confirmation_grammar() {
+fn help_shows_complete_confirmation_grammar() {
     let mut state = test_state();
     handle_key_code(&mut state, KeyCode::Char('?'));
 
     let buffer = rendered_buffer(&mut state, 100, 32);
 
-    assert!(buffer.contains("Risk labels: [safe] [sensitive] [write]"));
-    assert!(buffer.contains("[persistent] [dangerous] [unknown]"));
-    assert!(buffer.contains("Confirm: write / persistent / dangerous / unknown"));
+    assert!(buffer.contains("Rows: confirmation warnings appear only when required"));
+    assert!(buffer.contains("Confirm known operation: run"));
+    assert!(buffer.contains("Confirm unknown operation: unknown"));
     assert!(buffer.contains("Unmasked Response: copy / export confirmation"));
 }
 
@@ -102,6 +250,109 @@ fn footer_hints_are_context_sensitive() {
 
     state.focus = Pane::History;
     assert!(footer_text(&state, 80).contains("Enter Actions"));
+}
+
+#[test]
+fn non_text_action_menu_ignores_q_and_uses_esc_cancel() {
+    let mut state = test_state();
+    state.response = ResponseState::masked("OK");
+    state.focus = Pane::Response;
+
+    handle_key_code(&mut state, KeyCode::Enter);
+
+    assert!(state.action_menu.is_some());
+    let selected = state.action_menu.as_ref().map(|menu| menu.selected);
+    let status = state.status.clone();
+    assert!(footer_text(&state, 80).contains("Esc Cancel"));
+    assert!(!footer_text(&state, 80).contains('q'));
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert!(state.action_menu.is_some());
+    assert_eq!(
+        state.action_menu.as_ref().map(|menu| menu.selected),
+        selected
+    );
+    assert_eq!(state.status, status);
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.action_menu.is_none());
+}
+
+#[test]
+fn escape_dismisses_every_atctl_owned_modal_state() {
+    let mut state = test_state();
+
+    state.show_help = true;
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(!state.show_help);
+
+    state.response = ResponseState::masked("OK");
+    state.focus = Pane::Response;
+    handle_key_code(&mut state, KeyCode::Enter);
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.action_menu.is_none());
+
+    state.output_masking_ack_input = Some(String::new());
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.output_masking_ack_input.is_none());
+
+    state.response_action_confirmation = Some(ResponseActionConfirmationState {
+        action: ResponseActionConfirmation::Copy {
+            contents: "response".to_owned(),
+            response_label: "Response".to_owned(),
+        },
+        input: String::new(),
+        error: None,
+    });
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.response_action_confirmation.is_none());
+
+    state.raw_log_path_input = Some(RawLogPathInputState::default());
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.raw_log_path_input.is_none());
+
+    state.raw_log_ack_input = Some(RawLogAckInputState {
+        path: PathBuf::from("raw.log"),
+        input: String::new(),
+        error: None,
+    });
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.raw_log_ack_input.is_none());
+
+    state.search_input = Some(SearchInputState::default());
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.search_input.is_none());
+
+    state.edit_input = Some(EditInputState {
+        input: "AT".to_owned(),
+        error: None,
+    });
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.edit_input.is_none());
+
+    state.timeout_input = Some(TimeoutInputState {
+        input: "120".to_owned(),
+        error: None,
+    });
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.timeout_input.is_none());
+
+    state.ad_hoc_input = Some(AdHocInputState::default());
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.ad_hoc_input.is_none());
+
+    state.confirmation = Some(ConfirmationState::new(test_commands()[1].clone()));
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.confirmation.is_none());
+
+    let mut sequence_state = test_state_with_sequences();
+    sequence_state.selected_category = sequence_state
+        .categories
+        .iter()
+        .position(|category| category == "sms")
+        .expect("sms category");
+    handle_key_code(&mut sequence_state, KeyCode::Enter);
+    assert!(sequence_state.sequence_input.is_some());
+    handle_key_code(&mut sequence_state, KeyCode::Esc);
+    assert!(sequence_state.sequence_input.is_none());
 }
 
 #[test]
@@ -317,7 +568,9 @@ fn built_in_only_tui_does_not_show_preset_set_labels() {
     handle_key_code(&mut state, KeyCode::Enter);
     let confirmation_buffer = rendered_buffer(&mut state, 120, 32);
 
-    assert!(confirmation_buffer.contains("Command requires confirmation"));
+    assert!(confirmation_buffer.contains("Confirm command"));
+    assert!(confirmation_buffer.contains("Name: disable-command-echo"));
+    assert!(confirmation_buffer.contains("Command: ATE0"));
     assert!(!confirmation_buffer.contains("[core]"));
     assert!(!confirmation_buffer.contains("Built-in presets"));
     assert!(!confirmation_buffer.contains("Product presets"));
@@ -332,15 +585,13 @@ fn mixed_preset_sets_group_commands_without_inline_badges() {
             Preset::new(
                 "set-soracom-apn-cid1",
                 "AT+CGDCONT=1,\"IP\",\"soracom.io\"",
-                RiskLevel::Write,
                 vec!["pdp".to_owned(), "apn".to_owned()],
                 PresetOrigin::file("SORACOM commands", "soracom.toml", None),
             ),
-            Preset::built_in("modem-response", "AT", RiskLevel::Safe, ["basic"]),
+            Preset::built_in("modem-response", "AT", ["basic"]),
             Preset::new(
                 "qccid",
                 "AT+QCCID",
-                RiskLevel::Sensitive,
                 vec!["sim".to_owned()],
                 PresetOrigin::file("Quectel commands", "quectel.toml", None),
             ),
@@ -413,7 +664,6 @@ fn external_preset_confirmation_shows_source_file_and_review_notice() {
         vec![Preset::new(
             "external-write",
             "ATE0",
-            RiskLevel::Write,
             vec!["basic".to_owned()],
             PresetOrigin::file("External commands", "external.toml", None),
         )],
@@ -425,7 +675,9 @@ fn external_preset_confirmation_shows_source_file_and_review_notice() {
     handle_key_code(&mut state, KeyCode::Enter);
     let buffer = rendered_buffer(&mut state, 120, 32);
 
-    assert!(buffer.contains("Command requires confirmation"));
+    assert!(buffer.contains("Confirm command"));
+    assert!(buffer.contains("Name: external-write"));
+    assert!(buffer.contains("Command: ATE0"));
     assert!(buffer.contains("Source: External commands"));
     assert!(buffer.contains("File: external.toml"));
     assert!(buffer.contains("Review external definition before running."));
@@ -435,11 +687,10 @@ fn external_preset_confirmation_shows_source_file_and_review_notice() {
 fn preset_set_headers_are_not_command_selection_targets() {
     let mut state = TuiState::new(
         vec![
-            Preset::built_in("modem-response", "AT", RiskLevel::Safe, ["basic"]),
+            Preset::built_in("modem-response", "AT", ["basic"]),
             Preset::new(
                 "qccid",
                 "AT+QCCID",
-                RiskLevel::Sensitive,
                 vec!["sim".to_owned()],
                 PresetOrigin::file("Quectel commands", "quectel.toml", None),
             ),
@@ -471,11 +722,10 @@ fn mixed_commands_and_sequences_group_kind_then_non_default_source_titles() {
     let mut state = TuiState::new_with_all_usb(
         executable_items(
             vec![
-                Preset::built_in("pdp-contexts", "AT+CGDCONT?", RiskLevel::Safe, ["data"]),
+                Preset::built_in("pdp-contexts", "AT+CGDCONT?", ["data"]),
                 Preset::new(
                     "set-soracom-apn-cid1",
                     "AT+CGDCONT=1,\"IP\",\"soracom.io\"",
-                    RiskLevel::Write,
                     vec!["data".to_owned(), "apn".to_owned()],
                     PresetOrigin::file("SORACOM commands", "soracom.toml", None),
                 ),
@@ -484,7 +734,6 @@ fn mixed_commands_and_sequences_group_kind_then_non_default_source_titles() {
                 Sequence::built_in(
                     "sms-send-check",
                     "Send an SMS and check receive state.",
-                    RiskLevel::Write,
                     vec!["data".to_owned(), "sms".to_owned()],
                     Some(180),
                     Vec::new(),
@@ -493,7 +742,6 @@ fn mixed_commands_and_sequences_group_kind_then_non_default_source_titles() {
                 Sequence::new(
                     "quectel-tcp-send-check",
                     "Open a Quectel TCP socket, send a payload, and read a response.",
-                    RiskLevel::Write,
                     vec!["data".to_owned(), "network".to_owned()],
                     SequenceOrigin::file("Quectel Sequences", "quectel.toml", None),
                     Some(180),
@@ -551,14 +799,12 @@ fn file_preset_commands_preserve_entry_order_within_preset_set() {
             Preset::new(
                 "second-quectel",
                 "AT+QCSQ",
-                RiskLevel::Safe,
                 vec!["signal".to_owned()],
                 PresetOrigin::file("Quectel commands", "quectel.toml", None),
             ),
             Preset::new(
                 "first-quectel",
                 "AT+QCCID",
-                RiskLevel::Sensitive,
                 vec!["sim".to_owned()],
                 PresetOrigin::file("Quectel commands", "quectel.toml", None),
             ),
@@ -716,7 +962,7 @@ fn log_view_shows_response_local_line_numbers_and_range() {
 }
 
 #[test]
-fn enter_executes_safe_command_through_executor() {
+fn enter_executes_known_observation_through_executor() {
     let mut state = test_state();
     let mut executor = TestExecutor::default();
 
@@ -736,7 +982,7 @@ fn enter_executes_safe_command_through_executor() {
 }
 
 #[test]
-fn ad_hoc_input_executes_safe_command_through_executor() {
+fn ad_hoc_input_executes_known_observation_through_executor() {
     let mut state = test_state();
     let mut executor = TestExecutor::default();
 
@@ -762,7 +1008,7 @@ fn ad_hoc_input_executes_safe_command_through_executor() {
 }
 
 #[test]
-fn ad_hoc_write_command_uses_existing_confirmation_flow() {
+fn ad_hoc_material_command_uses_existing_confirmation_flow() {
     let mut state = test_state();
     let mut executor = TestExecutor::default();
 
@@ -774,7 +1020,7 @@ fn ad_hoc_write_command_uses_existing_confirmation_flow() {
 
     assert!(state.confirmation.is_some());
     assert!(state.pending_execution.is_none());
-    for value in "write".chars() {
+    for value in "run".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
@@ -789,6 +1035,21 @@ fn ad_hoc_input_rejects_prompt_required_sms_command() {
 
     run_control(&mut state, ControlAction::AdHocCommand);
     for value in "AT+CMGS=\"+819012345678\"".chars() {
+        handle_key_code(&mut state, KeyCode::Char(value));
+    }
+    handle_key_code(&mut state, KeyCode::Enter);
+
+    assert!(state.ad_hoc_input.is_some());
+    assert!(state.pending_execution.is_none());
+    assert!(state.status.contains("Prompt-required"));
+}
+
+#[test]
+fn ad_hoc_input_rejects_prompt_required_socket_data_entry() {
+    let mut state = test_state();
+
+    run_control(&mut state, ControlAction::AdHocCommand);
+    for value in "AT+QISEND=0,4".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
@@ -828,6 +1089,128 @@ fn command_search_filters_visible_commands() {
 }
 
 #[test]
+fn executable_details_is_read_only_scrollable_and_restores_discovery_state() {
+    let purpose = format!(
+        "Inspect a complete Sequence purpose without device access. {} terminal-end-marker",
+        "Long explanatory context remains available through the scrollable Details overlay. "
+            .repeat(12)
+    );
+    let sequence = Sequence::built_in(
+        "review-flow",
+        purpose,
+        vec!["sms".to_owned()],
+        Some(30),
+        Vec::new(),
+        vec![test_sequence_step("AT+CSQ")],
+    );
+    let mut state = TuiState::new_with_all_usb(
+        executable_items(Vec::new(), vec![sequence]),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+    state.search_query = "sms".to_owned();
+    let category = state.selected_category;
+    let selected = state.selected_command;
+
+    rendered_buffer(&mut state, 160, 14);
+    handle_key_code(&mut state, KeyCode::Char('d'));
+
+    assert!(state.executable_details.is_some());
+    assert!(state.pending_execution.is_none());
+    assert!(state.running_execution.is_none());
+    let initial = rendered_buffer(&mut state, 160, 14);
+    assert!(initial.contains("Details 1-"));
+    assert!(initial.contains("Type: Sequence"));
+    assert!(initial.contains("Name: review-flow"));
+    assert!(initial.contains("Purpose:"));
+    assert_eq!(
+        state
+            .executable_details
+            .as_ref()
+            .and_then(|details| details.search_match.as_deref()),
+        Some("Category: sms")
+    );
+    assert_eq!(
+        footer_text(&state, 160),
+        "Up/Down Scroll  PgUp/PgDn Page  Esc Close"
+    );
+
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert!(state.executable_details.is_some());
+    let mut detail_pages = initial;
+    for _ in 0..20 {
+        handle_key_code(&mut state, KeyCode::PageDown);
+        detail_pages.push_str(&rendered_buffer(&mut state, 160, 14));
+    }
+    let _final_page = rendered_buffer(&mut state, 160, 14);
+    assert!(detail_pages.contains("Search match: Category: sms"));
+    assert!(
+        state
+            .executable_details
+            .as_ref()
+            .is_some_and(|details| details.scroll > 0)
+    );
+
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.executable_details.is_none());
+    assert_eq!(state.selected_category, category);
+    assert_eq!(state.selected_command, selected);
+    assert_eq!(state.search_query, "sms");
+}
+
+#[test]
+fn command_details_shows_complete_identity_and_non_default_source_without_device() {
+    let preset = Preset::new(
+        "external-command-with-a-long-name",
+        "AT+EXTERNAL=1234567890,1234567890,1234567890",
+        vec!["diagnostics".to_owned()],
+        PresetOrigin::file("External command set", "/tmp/external-commands.toml", None),
+    );
+    let mut state = TuiState::new_with_all_usb(
+        executable_items(vec![preset], Vec::new()),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+    state.search_query = "external command set".to_owned();
+
+    rendered_buffer(&mut state, 160, 24);
+    handle_key_code(&mut state, KeyCode::Char('d'));
+    let buffer = rendered_buffer(&mut state, 160, 24);
+
+    assert!(buffer.contains("Type: Command"));
+    assert!(buffer.contains("Name: external-command-with-a-long-name"));
+    assert!(buffer.contains("AT command: AT+EXTERNAL=1234567890,1234567890,1234567890"));
+    assert!(buffer.contains("Source: External command set"));
+    assert!(buffer.contains("File: /tmp/external-commands.toml"));
+    assert!(buffer.contains("Search match: Source: External command set"));
+    assert!(buffer.contains("Categories: diagnostics"));
+    assert!(buffer.contains("Timeout: 30 seconds (default)"));
+    assert!(buffer.contains("Execution review:"));
+    assert!(state.pending_execution.is_none());
+}
+
+#[test]
+fn executable_empty_states_explain_recovery_without_starting_work() {
+    let mut search_state = test_state();
+    search_state.search_query = "no-such-executable".to_owned();
+    let search_buffer = rendered_buffer(&mut search_state, 160, 32);
+    assert!(search_buffer.contains("No commands or Sequences match `no-such-executable`."));
+    assert!(search_buffer.contains("Press / to change or clear the search."));
+    assert!(search_state.pending_execution.is_none());
+
+    let mut category_state = test_state();
+    category_state.commands.clear();
+    let category_buffer = rendered_buffer(&mut category_state, 160, 32);
+    assert!(category_buffer.contains("No commands or Sequences are available in this category."));
+    assert!(category_buffer.contains("Press Left to choose another category, or / to search."));
+    assert!(category_state.pending_execution.is_none());
+}
+
+#[test]
 fn sequence_rows_are_selectable_from_commands_pane() {
     let mut state = test_state_with_sequences();
     state.selected_category = state
@@ -855,7 +1238,7 @@ fn sequence_rows_are_selectable_from_commands_pane() {
 
     assert!(buffer.contains("Commands / Sequences"));
     assert!(buffer.contains("sms-send-check"));
-    assert!(buffer.contains("Send a standard SMS"));
+    assert!(buffer.contains("│ Purpose:"));
     assert!(!buffer.contains("Product Sequences"));
 }
 
@@ -873,7 +1256,8 @@ fn selected_sequence_status_does_not_show_summary_text() {
 
     assert!(buffer.contains("Selected Sequence:"));
     assert!(buffer.contains("sms-receive-check"));
-    assert!(buffer.contains("Risk:"));
+    assert!(!buffer.contains("Confirmation:"));
+    assert!(!buffer.contains("Assessment:"));
     assert!(!buffer.contains("Summary:"));
     assert!(!buffer.contains("List received SMS material"));
 }
@@ -890,7 +1274,7 @@ fn completed_sequence_status_does_not_show_summary_text() {
     state.selected_command = 1;
 
     handle_key_code(&mut state, KeyCode::Enter);
-    for value in "write".chars() {
+    for value in "run".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
@@ -939,7 +1323,7 @@ fn failed_sequence_status_keeps_full_error_out_of_compact_status() {
     }
     handle_key_code(&mut state, KeyCode::Enter);
     handle_key_code(&mut state, KeyCode::Enter);
-    for value in "write".chars() {
+    for value in "run".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
@@ -990,7 +1374,7 @@ fn sequence_error_status_is_failed_state_even_when_transcript_exists() {
     state.selected_command = 1;
 
     handle_key_code(&mut state, KeyCode::Enter);
-    for value in "write".chars() {
+    for value in "run".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
@@ -1010,7 +1394,8 @@ fn sequence_error_status_is_failed_state_even_when_transcript_exists() {
     assert!(status_buffer.contains("Sequence:"));
     assert!(status_buffer.contains("sms-receive-check"));
     assert!(status_buffer.contains("Result: ERROR 7ms"));
-    assert!(status_buffer.contains("Risk:"));
+    assert!(!status_buffer.contains("Risk:"));
+    assert!(!status_buffer.contains("Confirmation:"));
     assert_contains_in_order(
         &status_buffer,
         &[
@@ -1019,7 +1404,6 @@ fn sequence_error_status_is_failed_state_even_when_transcript_exists() {
             "Sequence:",
             "sms-receive-check",
             "Result: ERROR 7ms",
-            "Risk:",
         ],
     );
     assert!(state.response.contains("Result: failed duration=7ms"));
@@ -1069,7 +1453,16 @@ fn run_sequence_modal_collects_params_and_confirmation_before_execution() {
     assert!(confirmation_buffer.contains("+819012345678"));
     assert!(confirmation_buffer.contains("Message body"));
     assert!(confirmation_buffer.contains("hello from atctl"));
-    for value in "write".chars() {
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert_eq!(
+        state
+            .sequence_input
+            .as_ref()
+            .map(|input| input.confirmation_input.as_str()),
+        Some("q")
+    );
+    handle_key_code(&mut state, KeyCode::Backspace);
+    for value in "run".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
@@ -1113,14 +1506,24 @@ fn run_sequence_modal_shows_value_sources_defaults_and_hints() {
     handle_key_code(&mut state, KeyCode::Enter);
 
     let buffer = rendered_buffer(&mut state, 140, 36);
-    assert!(buffer.contains("Values:"));
+    assert!(buffer.contains("Run Sequence"));
+    assert!(buffer.contains("Values overview:"));
     assert!(buffer.contains("PDP context ID: 1  default"));
     assert!(buffer.contains("Socket connect ID: 0  default"));
     assert!(buffer.contains("Payload (sensitive): <empty>  user"));
     assert!(buffer.contains("Read length: 1500  default"));
-    assert!(buffer.contains("Confirm the PDP context"));
-    assert!(buffer.contains("During execution"));
-    assert!(buffer.contains("AT+QIACT?"));
+    let mut all_context_pages = buffer.clone();
+    for _ in 0..8 {
+        handle_key_code(&mut state, KeyCode::PageDown);
+        all_context_pages.push_str(&rendered_buffer(&mut state, 140, 36));
+    }
+    for _ in 0..8 {
+        handle_key_code(&mut state, KeyCode::PageUp);
+        rendered_buffer(&mut state, 140, 36);
+    }
+    assert!(all_context_pages.contains("Confirm the PDP context"));
+    assert!(all_context_pages.contains("During execution"));
+    assert!(all_context_pages.contains("AT+QIACT?"));
     assert!(buffer.contains("Load active PDP contexts  AT+CGACT?"));
     assert!(buffer.contains("Load PDP context definitions  AT+CGDCONT?"));
     assert!(!buffer.contains("Load Quectel PDP contexts  AT+QIACT?"));
@@ -1143,7 +1546,8 @@ fn run_sequence_modal_shows_value_sources_defaults_and_hints() {
         state.sequence_input.as_ref().map(|input| input.phase),
         Some(SequenceInputPhase::Confirmation)
     );
-    let confirmation_buffer = rendered_buffer(&mut state, 140, 36);
+    let confirmation_buffer = rendered_buffer(&mut state, 140, 44);
+    assert!(confirmation_buffer.contains("Confirm Sequence"));
     assert!(confirmation_buffer.contains("Values:"));
     assert!(confirmation_buffer.contains("PDP context ID: 1  default"));
     assert!(confirmation_buffer.contains("Socket connect ID: 0  default"));
@@ -1151,21 +1555,395 @@ fn run_sequence_modal_shows_value_sources_defaults_and_hints() {
     assert!(confirmation_buffer.contains("Read length: 1500  default"));
     assert!(confirmation_buffer.contains("Destination"));
     assert!(confirmation_buffer.contains("unified.soracom.io:23080"));
-    assert!(confirmation_buffer.contains("Expected effect:"));
-    assert!(confirmation_buffer.contains("Type `write` to run."));
+    assert!(confirmation_buffer.contains("What will happen:"));
+    assert!(confirmation_buffer.contains("Type `run` to run."));
     assert!(confirmation_buffer.contains("Input: <empty>"));
 
     let compact_confirmation_buffer = rendered_buffer(&mut state, 140, 24);
-    assert!(compact_confirmation_buffer.contains("detail omitted"));
-    assert!(compact_confirmation_buffer.contains("Type `write` to run."));
+    assert!(compact_confirmation_buffer.contains("Details "));
+    assert!(!compact_confirmation_buffer.contains("detail omitted"));
+    assert!(compact_confirmation_buffer.contains("Type `run` to run."));
     assert!(compact_confirmation_buffer.contains("Input: <empty>"));
 
-    for value in "wr".chars() {
+    let unsafe_confirmation_buffer = rendered_buffer(&mut state, 140, 5);
+    assert!(
+        unsafe_confirmation_buffer.contains("Executable details cannot fit safely."),
+        "{unsafe_confirmation_buffer}"
+    );
+    assert!(unsafe_confirmation_buffer.contains("Resize the terminal to continue."));
+    assert!(!unsafe_confirmation_buffer.contains("Input: <empty>"));
+
+    for value in "ru".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     let typed_confirmation_buffer = rendered_buffer(&mut state, 140, 24);
-    assert!(typed_confirmation_buffer.contains("Type `write` to run."));
-    assert!(typed_confirmation_buffer.contains("Input: wr"));
+    assert!(typed_confirmation_buffer.contains("Type `run` to run."));
+    assert!(typed_confirmation_buffer.contains("Input: ru"));
+}
+
+#[test]
+fn every_sequence_modal_phase_shows_complete_name_and_purpose() {
+    let mut params = test_state_with_sequences();
+    params.selected_category = params
+        .categories
+        .iter()
+        .position(|category| category == "sms")
+        .expect("sms category");
+    params.selected_command = params
+        .visible_commands()
+        .iter()
+        .position(|command| command.name() == "sms-send-check")
+        .expect("sms-send-check");
+    handle_key_code(&mut params, KeyCode::Enter);
+    let params_purpose = params
+        .sequence_input
+        .as_ref()
+        .expect("params phase")
+        .sequence
+        .summary
+        .clone();
+    params.sequence_input.as_mut().expect("params phase").error =
+        Some("Keep identity visible with an input error.".to_owned());
+    let params_buffer = rendered_buffer(&mut params, 160, 44);
+    assert!(params_buffer.contains("Name: sms-send-check"));
+    assert!(params_buffer.contains(&format!("Purpose: {params_purpose}")));
+    assert!(params_buffer.contains("Keep identity visible with an input error."));
+
+    let mut candidate = test_state_with_sequences();
+    candidate.selected_category = candidate
+        .categories
+        .iter()
+        .position(|category| category == "sms")
+        .expect("sms category");
+    candidate.selected_command = candidate
+        .visible_commands()
+        .iter()
+        .position(|command| command.name() == "sms-read-message")
+        .expect("sms-read-message");
+    handle_key_code(&mut candidate, KeyCode::Enter);
+    handle_key_code(&mut candidate, KeyCode::Down);
+    handle_key_code(&mut candidate, KeyCode::Enter);
+    assert_eq!(
+        candidate.sequence_input.as_ref().map(|input| input.phase),
+        Some(SequenceInputPhase::CandidateActionConfirmation)
+    );
+    let candidate_purpose = candidate
+        .sequence_input
+        .as_ref()
+        .expect("candidate confirmation")
+        .sequence
+        .summary
+        .clone();
+    let candidate_buffer = rendered_buffer(&mut candidate, 160, 44);
+    assert!(candidate_buffer.contains("Name: sms-read-message"));
+    assert!(candidate_buffer.contains(&format!("Purpose: {candidate_purpose}")));
+    assert!(candidate_buffer.contains("AT command: AT+CMGL=\"ALL\""));
+
+    let review_sequence = Sequence::built_in(
+        "review-only",
+        "Review a known observation before execution.",
+        vec!["review".to_owned()],
+        Some(30),
+        vec![SequenceParam {
+            name: "note".to_owned(),
+            label: "Note".to_owned(),
+            required: true,
+            sensitive: false,
+            default_value: None,
+            source: SequenceParamSource::User,
+            candidate: None,
+            hint: None,
+        }],
+        vec![test_sequence_step("AT+CSQ")],
+    );
+    let mut review = TuiState::new_with_all_usb(
+        executable_items(Vec::new(), vec![review_sequence]),
+        vec![test_usb_device(1, 3, "Onyx A")],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+    handle_key_code(&mut review, KeyCode::Enter);
+    for value in "review".chars() {
+        handle_key_code(&mut review, KeyCode::Char(value));
+    }
+    handle_key_code(&mut review, KeyCode::Enter);
+    let review_buffer = rendered_buffer(&mut review, 160, 44);
+    assert!(review_buffer.contains("Review Sequence"));
+    assert!(review_buffer.contains("Name: review-only"));
+    assert!(review_buffer.contains("Purpose: Review a known observation before execution."));
+
+    for (name, purpose, command, title) in [
+        (
+            "known-confirmation",
+            "Confirm a known state change.",
+            "AT+CFUN=1",
+            "Confirm Sequence",
+        ),
+        (
+            "unknown-confirmation",
+            "Confirm an operation whose effects are unknown.",
+            "AT+VENDOR=1",
+            "! Confirm unknown Sequence",
+        ),
+    ] {
+        let sequence = Sequence::built_in(
+            name,
+            purpose,
+            vec!["review".to_owned()],
+            Some(30),
+            Vec::new(),
+            vec![test_sequence_step(command)],
+        );
+        let mut state = TuiState::new_with_all_usb(
+            executable_items(Vec::new(), vec![sequence]),
+            vec![test_usb_device(1, 3, "Onyx A")],
+            vec![test_usb_device(1, 3, "Onyx A")],
+            Vec::new(),
+            TuiTheme::dark(),
+        );
+        handle_key_code(&mut state, KeyCode::Enter);
+        let buffer = rendered_buffer(&mut state, 160, 44);
+        assert!(buffer.contains(title));
+        assert!(buffer.contains(&format!("Name: {name}")));
+        assert!(buffer.contains(&format!("Purpose: {purpose}")));
+    }
+}
+
+#[test]
+fn sequence_details_scroll_independently_from_current_value_navigation() {
+    let sequence = Sequence::built_in(
+        "long-input-context",
+        "Resolve values while long context remains reviewable.",
+        vec!["review".to_owned()],
+        Some(30),
+        vec![
+            SequenceParam {
+                name: "first".to_owned(),
+                label: "First value".to_owned(),
+                required: true,
+                sensitive: false,
+                default_value: Some("one".to_owned()),
+                source: SequenceParamSource::Default,
+                candidate: None,
+                hint: Some("First value hint.".to_owned()),
+            },
+            SequenceParam {
+                name: "second".to_owned(),
+                label: "Second value".to_owned(),
+                required: true,
+                sensitive: false,
+                default_value: Some("two".to_owned()),
+                source: SequenceParamSource::Default,
+                candidate: None,
+                hint: Some("Second value hint.".to_owned()),
+            },
+        ],
+        vec![test_sequence_step("AT+CSQ")],
+    )
+    .with_before_running(
+        (1..=18)
+            .map(|index| format!("Context line {index} must remain available."))
+            .collect(),
+    );
+    let mut state = TuiState::new_with_all_usb(
+        executable_items(Vec::new(), vec![sequence]),
+        vec![test_usb_device(1, 3, "Onyx A")],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+    handle_key_code(&mut state, KeyCode::Enter);
+
+    let first = rendered_buffer(&mut state, 120, 18);
+    assert!(first.contains("Details 1-"));
+    assert!(first.contains("Current value:"));
+    assert!(first.contains("> First value: one  default"));
+    handle_key_code(&mut state, KeyCode::PageDown);
+    let scrolled = rendered_buffer(&mut state, 120, 18);
+    assert!(scrolled.contains("Current value:"));
+    assert!(scrolled.contains("> First value: one  default"));
+    assert!(
+        state
+            .sequence_input
+            .as_ref()
+            .is_some_and(|input| input.detail_scroll > 0)
+    );
+
+    handle_key_code(&mut state, KeyCode::Down);
+    let second = rendered_buffer(&mut state, 120, 18);
+    assert!(second.contains("> Second value: two  default"));
+    assert_eq!(
+        state
+            .sequence_input
+            .as_ref()
+            .map(|input| input.active_param),
+        Some(1)
+    );
+    assert_eq!(
+        state
+            .sequence_input
+            .as_ref()
+            .map(|input| input.detail_scroll),
+        Some(0)
+    );
+}
+
+#[test]
+fn run_sequence_modal_rederives_review_from_bound_values() {
+    let sequence = Sequence::built_in(
+        "dynamic-functionality",
+        "Set the requested modem functionality.",
+        vec!["modem".to_owned()],
+        Some(30),
+        vec![SequenceParam {
+            name: "mode".to_owned(),
+            label: "Mode".to_owned(),
+            required: true,
+            sensitive: false,
+            default_value: None,
+            source: SequenceParamSource::User,
+            candidate: None,
+            hint: None,
+        }],
+        vec![SequenceStep {
+            id: "set-mode".to_owned(),
+            label: None,
+            ensure_pdp_context_active: None,
+            send: Some("AT+CFUN={{mode}}".to_owned()),
+            expect: Some("OK".to_owned()),
+            expect_prompt: None,
+            expect_urc: None,
+            payload: None,
+            terminator: StepTerminator::None,
+            require_tcp_ack: false,
+            require_ping_success: false,
+            timeout_secs: None,
+            evidence: None,
+            cleanup_on_failure: None,
+        }],
+    );
+    assert!(
+        !sequence
+            .review
+            .effects
+            .contains(&crate::at::review::Effect::DeleteResetOrRecover)
+    );
+    let mut state = TuiState::new_with_all_usb(
+        executable_items(Vec::new(), vec![sequence]),
+        vec![test_usb_device(1, 3, "Onyx A")],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+
+    handle_key_code(&mut state, KeyCode::Enter);
+    for value in "1,1".chars() {
+        handle_key_code(&mut state, KeyCode::Char(value));
+    }
+    handle_key_code(&mut state, KeyCode::Enter);
+
+    assert_eq!(
+        state.sequence_input.as_ref().map(|input| input.phase),
+        Some(SequenceInputPhase::Confirmation)
+    );
+    let buffer = rendered_buffer(&mut state, 120, 32);
+    assert!(buffer.contains("What will happen:"));
+    assert!(buffer.contains("Changes modem functionality"));
+    assert!(buffer.contains("restart the modem"));
+    assert!(buffer.contains("Persists / Recovery:"));
+    assert!(buffer.contains("restart required"));
+    assert!(buffer.contains("restart"));
+    assert!(buffer.contains("Type `run` to run."));
+    assert!(!buffer.contains("Assessment:"));
+    assert!(!buffer.contains("Confirmation: required"));
+}
+
+#[test]
+fn no_confirmation_sequence_uses_focus_review_before_execution() {
+    let sequence = Sequence::built_in(
+        "review-only",
+        "Review a known observation before execution.",
+        vec!["review".to_owned()],
+        Some(30),
+        vec![SequenceParam {
+            name: "note".to_owned(),
+            label: "Note".to_owned(),
+            required: true,
+            sensitive: false,
+            default_value: None,
+            source: SequenceParamSource::User,
+            candidate: None,
+            hint: None,
+        }],
+        vec![test_sequence_step("AT+CSQ")],
+    );
+    let mut state = TuiState::new_with_all_usb(
+        executable_items(Vec::new(), vec![sequence]),
+        vec![test_usb_device(1, 3, "Onyx A")],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+
+    handle_key_code(&mut state, KeyCode::Enter);
+    for value in "review".chars() {
+        handle_key_code(&mut state, KeyCode::Char(value));
+    }
+    handle_key_code(&mut state, KeyCode::Enter);
+
+    assert_eq!(
+        state.sequence_input.as_ref().map(|input| input.phase),
+        Some(SequenceInputPhase::Confirmation)
+    );
+    assert_eq!(state.status, "Sequence ready for review.");
+    let backend = TestBackend::new(120, 32);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render_frame(frame, &mut state))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let rendered = format!("{buffer:?}");
+    assert!(rendered.contains("Review Sequence"));
+    assert!(rendered.contains("Press Enter to run. Esc cancels."));
+    assert!(!rendered.contains("Type `run`"));
+    assert!(!rendered.contains("Input: <empty>"));
+    let position = buffer_line_position(buffer, "Review Sequence").expect("review title");
+    assert_eq!(
+        buffer.cell(position).map(|cell| cell.fg),
+        Some(Color::Rgb(0x4d, 0xd0, 0xe1))
+    );
+
+    assert_eq!(
+        state
+            .sequence_input
+            .as_ref()
+            .map(|input| input.confirmation_input.as_str()),
+        Some("")
+    );
+    state.sequence_input.as_mut().expect("review input").error =
+        Some("review state must remain unchanged".to_owned());
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    handle_key_code(&mut state, KeyCode::Backspace);
+    assert_eq!(
+        state
+            .sequence_input
+            .as_ref()
+            .map(|input| input.confirmation_input.as_str()),
+        Some("")
+    );
+    assert_eq!(
+        state
+            .sequence_input
+            .as_ref()
+            .and_then(|input| input.error.as_deref()),
+        Some("review state must remain unchanged")
+    );
+    assert!(state.pending_execution.is_none());
+
+    handle_key_code(&mut state, KeyCode::Enter);
+    let pending = state.pending_execution.as_ref().expect("pending Sequence");
+    assert!(!pending.confirmed);
 }
 
 #[test]
@@ -1251,7 +2029,7 @@ fn run_sequence_modal_can_refresh_loaded_pdp_candidates() {
 }
 
 #[test]
-fn run_sequence_modal_confirms_write_risk_candidate_action_before_execution() {
+fn run_sequence_modal_requires_confirmation_for_sms_list_status_change() {
     let mut state = test_state_with_sequences();
     state.selected_category = state
         .categories
@@ -1273,34 +2051,16 @@ fn run_sequence_modal_confirms_write_risk_candidate_action_before_execution() {
         state.sequence_input.as_ref().map(|input| input.phase),
         Some(SequenceInputPhase::CandidateActionConfirmation)
     );
-    let confirmation_buffer = rendered_buffer(&mut state, 150, 36);
-    assert!(confirmation_buffer.contains("Confirm action."));
-    assert!(confirmation_buffer.contains("Action: Load received SMS list"));
-    assert!(confirmation_buffer.contains("Command: AT+CMGL=\"ALL\""));
-    assert!(confirmation_buffer.contains("Risk:"));
-    assert!(confirmation_buffer.contains("Type `write` to run."));
-    assert!(confirmation_buffer.contains("Input: <empty>"));
-
-    handle_key_code(&mut state, KeyCode::Enter);
-    assert!(state.pending_execution.is_none());
-    assert!(state.sequence_input.as_ref().is_some_and(|input| {
-        input
-            .error
-            .as_deref()
-            .is_some_and(|error| error.contains("Type `write` exactly"))
-    }));
-
-    for value in "write".chars() {
-        handle_key_code(&mut state, KeyCode::Char(value));
-    }
-    handle_key_code(&mut state, KeyCode::Enter);
-
-    let pending = state.pending_execution.as_ref().expect("candidate action");
-    assert_eq!(pending.item.name(), "Load received SMS list");
-    assert!(pending.confirmed);
+    let buffer = rendered_buffer(&mut state, 150, 36);
+    assert!(buffer.contains("changes received-unread messages to received-read"));
+    assert!(buffer.contains("Type `run` to run."));
+    handle_key_code(&mut state, KeyCode::Char('q'));
     assert_eq!(
-        state.sequence_input.as_ref().map(|input| input.phase),
-        Some(SequenceInputPhase::Params)
+        state
+            .sequence_input
+            .as_ref()
+            .map(|input| input.confirmation_input.as_str()),
+        Some("q")
     );
 }
 
@@ -1327,7 +2087,7 @@ fn failed_candidate_action_is_not_rendered_as_selected_sequence_failure() {
     handle_key_code(&mut state, KeyCode::Enter);
     handle_key_code(&mut state, KeyCode::Down);
     handle_key_code(&mut state, KeyCode::Enter);
-    for value in "write".chars() {
+    for value in "run".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
@@ -1394,11 +2154,11 @@ fn run_sequence_modal_selects_sms_index_candidate_without_leaving_modal() {
     assert!(buffer.contains("Candidates: last sms-receive-check result (2 total"));
     assert!(buffer.contains("No modem read is performed by this modal."));
     assert!(buffer.contains(
-        "> storage=3  REC UNREAD  90****  26/06/23,06:03:02+00  <masked sensitive body>"
+        "> storage=3  REC UNREAD  ******  26/06/23,06:03:02+00  <masked sensitive body>"
     ));
     assert!(
         buffer.contains(
-            "  storage=4  REC READ  90****  26/06/23,08:09:02+00  <masked sensitive body>"
+            "  storage=4  REC READ  ******  26/06/23,08:09:02+00  <masked sensitive body>"
         )
     );
     assert!(buffer.contains("Actions:"));
@@ -1409,7 +2169,7 @@ fn run_sequence_modal_selects_sms_index_candidate_without_leaving_modal() {
     let moved_buffer = rendered_buffer(&mut state, 150, 36);
     assert!(
         moved_buffer.contains(
-            "> storage=4  REC READ  90****  26/06/23,08:09:02+00  <masked sensitive body>"
+            "> storage=4  REC READ  ******  26/06/23,08:09:02+00  <masked sensitive body>"
         )
     );
 
@@ -1435,6 +2195,7 @@ fn run_sequence_modal_selects_sms_index_candidate_without_leaving_modal() {
         Some(SequenceInputPhase::Confirmation)
     );
     let confirmation_buffer = rendered_buffer(&mut state, 150, 36);
+    assert!(confirmation_buffer.contains("Confirm Sequence"));
     assert!(confirmation_buffer.contains("Review:"));
     assert!(confirmation_buffer.contains("SMS storage index"));
     assert!(confirmation_buffer.contains("4"));
@@ -1489,8 +2250,19 @@ fn run_sequence_modal_can_refresh_loaded_sms_candidates_with_confirmation() {
         Some(SequenceInputPhase::CandidateActionConfirmation)
     );
     let confirmation_buffer = rendered_buffer(&mut state, 150, 36);
-    assert!(confirmation_buffer.contains("Action: Load received SMS list"));
-    assert!(confirmation_buffer.contains("Type `write` to run."));
+    assert!(confirmation_buffer.contains("Confirm action"));
+    assert!(confirmation_buffer.contains("What will happen:"));
+    assert!(confirmation_buffer.contains("Lists stored SMS content"));
+    assert!(confirmation_buffer.contains("Sensitive data:"));
+    assert!(confirmation_buffer.contains("sensitive output"));
+    assert!(confirmation_buffer.contains("Type `run` to run."));
+    for value in "run".chars() {
+        handle_key_code(&mut state, KeyCode::Char(value));
+    }
+    handle_key_code(&mut state, KeyCode::Enter);
+    let pending = state.pending_execution.as_ref().expect("candidate action");
+    assert_eq!(pending.item.name(), "Load received SMS list");
+    assert!(pending.confirmed);
 }
 
 #[test]
@@ -1528,7 +2300,7 @@ fn run_sequence_modal_keeps_selected_sms_candidate_visible_when_list_overflows()
     let buffer = rendered_buffer(&mut state, 150, 36);
     assert!(buffer.contains("Candidates: last sms-receive-check result (8 total"));
     assert!(buffer.contains("Candidate rows 4-8 of 8"));
-    assert!(buffer.contains("> storage=7  REC READ  90****  26/06/24,11:16:08+00"));
+    assert!(buffer.contains("> storage=7  REC READ  ******  26/06/24,11:16:08+00"));
     assert!(!buffer.contains("> storage=0  REC READ"));
 }
 
@@ -1557,7 +2329,7 @@ fn completed_sms_receive_sequence_updates_candidates_for_next_select_modal() {
         .expect("sms-receive-check command");
 
     handle_key_code(&mut state, KeyCode::Enter);
-    for value in "write".chars() {
+    for value in "run".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
@@ -1594,23 +2366,32 @@ fn completed_sms_receive_sequence_updates_candidates_for_next_select_modal() {
     let buffer = rendered_buffer(&mut state, 150, 36);
     assert!(buffer.contains("Candidates: last sms-receive-check result (1 total"));
     assert!(buffer.contains(
-        "> storage=5  REC UNREAD  90****  26/06/24,11:16:08+00  <masked sensitive body>"
+        "> storage=5  REC UNREAD  ******  26/06/24,11:16:08+00  <masked sensitive body>"
     ));
 }
 
 #[test]
 fn completed_cmgl_command_updates_sms_index_candidates() {
     let mut state = test_state_with_sequences();
-    let output = ExecutionOutput::Command(SendExecution {
-            risk: RiskLevel::Write,
-            status: AtStatus::Ok,
-            text: "+CMGL: 6,\"REC READ\",\"901001\",,\"26/06/24,12:00:00+00\"\nSMS body (ucs2): direct command\nOK\n".to_owned(),
-            lines: Vec::new(),
-            raw_response: Vec::new(),
-            raw_text: "AT+CMGL=\"ALL\"\r\n+CMGL: 6,\"REC READ\",\"901001\",,\"26/06/24,12:00:00+00\"\r\n00640069007200650063007400200063006F006D006D0061006E0064\r\n\r\nOK\r\n".to_owned(),
-            masked: false,
-            duration: Duration::from_millis(7),
-        });
+    let operation = OperationIdentity::command("AT+CMGF=1");
+    let review = review_direct_command("AT+CMGF=1");
+    let raw_text = "AT+CMGL=\"ALL\"\r\n+CMGL: 6,\"REC READ\",\"901001\",,\"26/06/24,12:00:00+00\"\r\n00640069007200650063007400200063006F006D006D0061006E0064\r\n\r\nOK\r\n".to_owned();
+    let masked_text = mask_sensitive_values(&raw_text);
+    let output = ExecutionOutput::Command(Box::new(SendExecution {
+        surface: ExecutionSurface::Tui,
+        masked_operation: operation.masked(),
+        operation,
+        masked_review: review.masked(),
+        review,
+        status: AtStatus::Ok,
+        text: masked_text.clone(),
+        lines: Vec::new(),
+        raw_response: Vec::new(),
+        raw_text,
+        masked_text,
+        masked: true,
+        duration: Duration::from_millis(7),
+    }));
 
     update_sequence_candidates_from_execution(&mut state, &output);
 
@@ -1624,7 +2405,47 @@ fn completed_cmgl_command_updates_sms_index_candidates() {
     let candidate = &candidate_set.candidates[0];
     assert_eq!(candidate.value, "6");
     assert!(candidate.raw_label.contains("direct command"));
-    assert!(candidate.masked_label.contains("90****"));
+    assert!(candidate.masked_label.contains("******"));
+}
+
+#[test]
+fn tui_response_copy_uses_the_execution_short_phone_pair() {
+    let mut state = test_state_with_sequences();
+    let preset = Preset::new("own-number", "AT+CNUM", Vec::new(), PresetOrigin::BuiltIn);
+    let item = ExecutableItem::Preset(preset);
+    let operation = OperationIdentity::command("AT+CNUM");
+    let review = review_direct_command("AT+CNUM");
+    let raw_text = "+CNUM: \"line\",\"901001\",129\n+CMGS: 7\nOK\n".to_owned();
+    let masked_text = mask_sensitive_values(&raw_text);
+    let execution = SendExecution {
+        surface: ExecutionSurface::Tui,
+        masked_operation: operation.masked(),
+        operation,
+        masked_review: review.masked(),
+        review,
+        status: AtStatus::Ok,
+        text: masked_text.clone(),
+        lines: masked_text.lines().map(str::to_owned).collect(),
+        raw_text: raw_text.clone(),
+        masked_text,
+        raw_response: raw_text.as_bytes().to_vec(),
+        masked: true,
+        duration: Duration::from_millis(7),
+    };
+
+    finish_execution_result(
+        &mut state,
+        item,
+        30,
+        Ok(ExecutionOutput::Command(Box::new(execution))),
+    );
+
+    let masked_copy = copyable_response_text_for_masking(&state, true).unwrap();
+    assert!(masked_copy.contains("\"******\",129"));
+    assert!(masked_copy.contains("+CMGS: 7"));
+    assert!(!masked_copy.contains("901001"));
+    let raw_copy = copyable_response_text_for_masking(&state, false).unwrap();
+    assert!(raw_copy.contains("\"901001\",129"));
 }
 
 #[test]
@@ -1633,7 +2454,7 @@ fn raw_capture_for_tui_sequence_uses_sequence_step_events() {
     let mut executor = TestExecutor::default();
     let path = unique_temp_dir("sequence-raw-capture").join("case.rawlog");
     state.raw_capture =
-        Some(RawLogSink::create(RawLogConfig::new(path.clone(), "tui", "tui")).unwrap());
+        Some(RawLogSink::create(RawLogConfig::new(path.clone(), ExecutionSurface::Tui)).unwrap());
     state.selected_category = state
         .categories
         .iter()
@@ -1649,7 +2470,7 @@ fn raw_capture_for_tui_sequence_uses_sequence_step_events() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
-    for value in "write".chars() {
+    for value in "run".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
@@ -1694,7 +2515,7 @@ fn edit_before_run_executes_edited_command_through_safety_flow() {
 }
 
 #[test]
-fn edit_before_run_write_command_requires_confirmation() {
+fn edit_before_run_material_command_requires_confirmation() {
     let mut state = test_state();
     let mut executor = TestExecutor::default();
 
@@ -1709,7 +2530,7 @@ fn edit_before_run_write_command_requires_confirmation() {
 
     assert!(state.confirmation.is_some());
     assert!(state.pending_execution.is_none());
-    for value in "write".chars() {
+    for value in "run".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
@@ -1751,12 +2572,7 @@ fn response_export_request_follows_visible_masking_and_names_the_response() {
     let mut state = unmasked_sensitive_state();
     state.active_command = Some(CommandStatus::new(
         CommandRunState::Completed,
-        &ExecutableItem::Preset(Preset::built_in(
-            "imsi",
-            "AT+CIMI",
-            RiskLevel::Sensitive,
-            ["sim"],
-        )),
+        &ExecutableItem::Preset(Preset::built_in("imsi", "AT+CIMI", ["sim"])),
         DEFAULT_COMMAND_TIMEOUT_SECS,
         StatusSummary::Completed {
             status: "OK".to_owned(),
@@ -1789,7 +2605,6 @@ fn response_export_masks_a_sensitive_command_when_response_has_no_echo() {
     let item = ExecutableItem::Preset(Preset::built_in(
         "pdp-auth",
         "AT+CGAUTH=1,1,\"user\",\"password\"",
-        RiskLevel::Write,
         ["pdp"],
     ));
     state.active_command = Some(CommandStatus::new(
@@ -1872,7 +2687,7 @@ fn response_actions_show_export_contract_without_fixed_folder_action() {
 }
 
 #[test]
-fn write_command_opens_confirmation_without_executing() {
+fn material_command_opens_confirmation_without_executing() {
     let mut state = test_state();
     state.selected_command = 1;
 
@@ -1881,7 +2696,10 @@ fn write_command_opens_confirmation_without_executing() {
     assert!(state.confirmation.is_some());
     assert!(state.pending_execution.is_none());
     assert!(state.response.contains("Command requires confirmation"));
-    assert!(state.response.contains("Risk: [write]"));
+    assert!(state.response.contains("What will happen:"));
+    assert!(!state.response.contains("Assessment:"));
+    assert!(!state.response.contains("Confirmation: required"));
+    assert!(!state.response.contains("Risk:"));
     assert!(!state.response.contains("CONFIRM"));
 }
 
@@ -1902,13 +2720,13 @@ fn confirmation_mismatch_does_not_execute() {
 }
 
 #[test]
-fn confirmation_match_executes_write_command() {
+fn confirmation_match_executes_material_command() {
     let mut state = test_state();
     let mut executor = TestExecutor::default();
     state.selected_command = 1;
 
     handle_key_code(&mut state, KeyCode::Enter);
-    for value in "write".chars() {
+    for value in "run".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
@@ -1926,7 +2744,7 @@ fn confirmation_match_executes_write_command() {
 }
 
 #[test]
-fn dangerous_commands_are_visible_and_confirmation_required() {
+fn material_commands_are_visible_and_confirmation_required() {
     let state = test_state();
     let visible_names = state
         .visible_commands()
@@ -1934,18 +2752,18 @@ fn dangerous_commands_are_visible_and_confirmation_required() {
         .map(|preset| preset.name())
         .collect::<Vec<_>>();
 
-    assert!(visible_names.contains(&"danger-reset"));
+    assert!(visible_names.contains(&"material-reset"));
 
-    let dangerous = state
+    let material = state
         .visible_commands()
         .into_iter()
-        .find(|preset| preset.name() == "danger-reset")
-        .expect("dangerous preset should be visible");
-    assert!(dangerous.risk().requires_confirmation());
+        .find(|preset| preset.name() == "material-reset")
+        .expect("material command should be visible");
+    assert!(material.review().requires_confirmation());
 }
 
 #[test]
-fn dangerous_commands_remain_visible_when_category_selection_is_invalid() {
+fn material_commands_remain_visible_when_category_selection_is_invalid() {
     let mut state = test_state();
     state.selected_category = usize::MAX;
     let visible_names = state
@@ -1954,7 +2772,7 @@ fn dangerous_commands_remain_visible_when_category_selection_is_invalid() {
         .map(|preset| preset.name())
         .collect::<Vec<_>>();
 
-    assert!(visible_names.contains(&"danger-reset"));
+    assert!(visible_names.contains(&"material-reset"));
 }
 
 #[test]
@@ -2017,7 +2835,6 @@ fn running_status_shows_timeout_budget_feedback() {
     let command = ExecutableItem::Preset(Preset::built_in(
         "available-operators",
         "AT+COPS=?",
-        RiskLevel::Safe,
         ["network"],
     ));
     state.active_command = Some(CommandStatus::new(
@@ -2057,6 +2874,15 @@ fn running_status_shows_timeout_budget_feedback() {
 
 #[test]
 fn running_command_blocks_new_actions_without_quitting() {
+    let mut pending = test_state();
+    handle_key_code(&mut pending, KeyCode::Enter);
+    assert!(pending.pending_execution.is_some());
+    assert_eq!(
+        handle_key_code(&mut pending, KeyCode::Char('q')),
+        TuiAction::Continue
+    );
+    assert!(pending.pending_execution.is_some());
+
     let mut state = test_state();
     state.running_execution = Some(RunningExecution {
         started_at: Instant::now(),
@@ -2067,7 +2893,7 @@ fn running_command_blocks_new_actions_without_quitting() {
         handle_key_code(&mut state, KeyCode::Char('q')),
         TuiAction::Continue
     );
-    assert!(state.status.contains("Command is running"));
+    assert!(state.status.contains("Operation is running"));
     assert!(state.running_execution.is_some());
 }
 
@@ -2253,7 +3079,6 @@ fn category_list_keeps_lower_selected_item_visible() {
             Preset::built_in(
                 format!("cmd-{index:02}"),
                 "AT",
-                RiskLevel::Safe,
                 [format!("category-{index:02}")],
             )
         })
@@ -2280,7 +3105,7 @@ fn category_list_keeps_lower_selected_item_visible() {
 #[test]
 fn command_list_keeps_lower_selected_item_visible() {
     let commands = (0..18)
-        .map(|index| Preset::built_in(format!("cmd-{index:02}"), "AT", RiskLevel::Safe, ["bulk"]))
+        .map(|index| Preset::built_in(format!("cmd-{index:02}"), "AT", ["bulk"]))
         .collect::<Vec<_>>();
     let mut state = TuiState::new(
         commands,
@@ -2514,7 +3339,13 @@ fn deleted_selected_log_feedback_persists_during_log_action_navigation() {
     assert!(buffer.contains("2026-07-03T02-50-00Z.session.log"));
     assert!(!buffer.contains("Open log in Response"));
     assert!(!buffer.contains("Open logs folder"));
-    assert!(buffer.contains("Esc or q closes."));
+    assert!(buffer.contains("Esc closes."));
+    assert!(!buffer.contains("Enter selects."));
+    assert_eq!(footer_text(&state, 80), "Esc Close");
+    handle_key_code(&mut state, KeyCode::Char('q'));
+    assert!(state.action_menu.is_some());
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.action_menu.is_none());
 }
 
 #[test]
@@ -2590,7 +3421,7 @@ fn logs_pane_shows_refresh_error_without_replacing_existing_list() {
 #[test]
 fn page_and_boundary_keys_apply_to_focused_list_pane() {
     let commands = (0..20)
-        .map(|index| Preset::built_in(format!("cmd-{index:02}"), "AT", RiskLevel::Safe, ["bulk"]))
+        .map(|index| Preset::built_in(format!("cmd-{index:02}"), "AT", ["bulk"]))
         .collect::<Vec<_>>();
     let mut state = TuiState::new(
         commands,
@@ -2660,7 +3491,7 @@ fn history_focus_selects_and_opens_masked_log_content() {
         &session_log,
         r#"{
   "command": "AT+QCCID",
-  "response": "+QCCID: 8942310020003626445F"
+  "response": "+QCCID: 89423100************"
 }"#,
     )
     .unwrap();
@@ -2728,19 +3559,14 @@ fn renders_running_command_context_before_transport_executes() {
 
     assert!(buffer.contains("Waiting for modem response"));
     assert!(buffer.contains("AT command: AT"));
-    assert!(buffer.contains("Risk: [safe]"));
+    assert!(!buffer.contains("Risk:"));
 }
 
 #[test]
 fn clear_response_removes_previous_rendered_content() {
     let mut state = test_state();
     state.log_paths = test_logging_paths("clear-response-actions");
-    let command = ExecutableItem::Preset(Preset::built_in(
-        "signal-quality",
-        "AT+CSQ",
-        RiskLevel::Safe,
-        ["signal"],
-    ));
+    let command = ExecutableItem::Preset(Preset::built_in("signal-quality", "AT+CSQ", ["signal"]));
     state.active_command = Some(
         CommandStatus::new(
             CommandRunState::Completed,
@@ -2779,7 +3605,7 @@ fn clear_response_removes_previous_rendered_content() {
     assert!(buffer.contains("Completed: 2026-07-02T11:41:12Z"));
     assert!(!buffer.contains("Completed at:"));
     assert!(buffer.contains("2026-07-02T11:41:12Z"));
-    assert!(buffer.contains("Risk: [safe]"));
+    assert!(!buffer.contains("Risk:"));
     let status_buffer = rendered_status_buffer(&mut state, 80, 12);
     assert_contains_in_order(
         &status_buffer,
@@ -2789,7 +3615,6 @@ fn clear_response_removes_previous_rendered_content() {
             "Command: signal-quality",
             "AT command: AT+CSQ",
             "Result: OK 7ms",
-            "Risk:",
         ],
     );
     assert!(status_buffer.contains("Command: signal-quality"));
@@ -2851,7 +3676,7 @@ fn completed_execution_status_shows_completed_event_timestamp() {
     assert!(!buffer.contains("Result: OK 7ms Completed:"));
     assert!(buffer.contains(&completed_at));
     assert!(buffer.contains("AT command: AT"));
-    assert!(buffer.contains("Risk:"));
+    assert!(!buffer.contains("Risk:"));
     assert!(buffer.contains("Output masking: off"));
     assert_contains_in_order(
         &buffer,
@@ -2861,7 +3686,6 @@ fn completed_execution_status_shows_completed_event_timestamp() {
             "Command: modem-response",
             "AT command: AT",
             "Result: OK 7ms",
-            "Risk:",
             "Output masking: off",
         ],
     );
@@ -2870,12 +3694,7 @@ fn completed_execution_status_shows_completed_event_timestamp() {
 #[test]
 fn cancelled_execution_status_shows_cancelled_event_timestamp() {
     let mut state = test_state();
-    let command = ExecutableItem::Preset(Preset::built_in(
-        "signal-quality",
-        "AT+CSQ",
-        RiskLevel::Safe,
-        ["signal"],
-    ));
+    let command = ExecutableItem::Preset(Preset::built_in("signal-quality", "AT+CSQ", ["signal"]));
     state.active_command = Some(
         CommandStatus::new(
             CommandRunState::Cancelled,
@@ -2898,7 +3717,6 @@ fn cancelled_execution_status_shows_cancelled_event_timestamp() {
             "Cancelled: 2026-07-02T11:42:13Z",
             "Command: signal-quality",
             "AT command: AT+CSQ",
-            "Risk:",
         ],
     );
 }
@@ -2936,36 +3754,42 @@ fn renders_non_color_state_affordances() {
         .draw(|frame| render_frame(frame, &mut state))
         .unwrap();
     let buffer = format!("{:?}", terminal.backend().buffer());
+    let compact = buffer.split_whitespace().collect::<Vec<_>>().join(" ");
 
     assert!(buffer.contains("> modem-response"));
-    assert!(buffer.contains("[safe]"));
-    assert!(buffer.contains("[sensitive]"));
+    assert!(compact.contains("> modem-response │ AT: AT"));
+    assert!(!buffer.contains("Confirmation: not required"));
+    assert!(buffer.contains("! Confirmation required"));
 }
 
 #[test]
-fn command_rows_use_one_exact_risk_label_without_action_suffixes() {
+fn command_rows_prioritize_identity_and_show_only_confirmation_exceptions() {
     let mut state = TuiState::new(
         vec![
-            Preset::built_in("risk-safe", "AT", RiskLevel::Safe, ["risk"]),
-            Preset::built_in("risk-sensitive", "AT", RiskLevel::Sensitive, ["risk"]),
-            Preset::built_in("risk-write", "AT", RiskLevel::Write, ["risk"]),
-            Preset::built_in("risk-persistent", "AT", RiskLevel::Persistent, ["risk"]),
-            Preset::built_in("risk-dangerous", "AT", RiskLevel::Dangerous, ["risk"]),
-            Preset::built_in("risk-unknown", "AT", RiskLevel::Unknown, ["risk"]),
+            Preset::built_in("inspect", "AT", ["review"]),
+            Preset::built_in("change", "AT+CMEE=2", ["review"]),
+            Preset::built_in("unknown", "AT+VENDOR=1", ["review"]),
         ],
         vec![test_usb_device(1, 3, "Onyx A")],
         Vec::new(),
         TuiTheme::dark(),
     );
-    let backend = TestBackend::new(100, 32);
+    let backend = TestBackend::new(160, 32);
     let mut terminal = Terminal::new(backend).unwrap();
 
     terminal
         .draw(|frame| render_frame(frame, &mut state))
         .unwrap();
     let buffer = format!("{:?}", terminal.backend().buffer());
+    let compact = buffer.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    for label in [
+    assert!(compact.contains("> inspect │ AT: AT"));
+    assert!(!buffer.contains("Confirmation: not required"));
+    assert!(compact.contains("change │ AT: AT+CMEE=2 ! Confirmation required"));
+    assert!(
+        compact.contains("unknown │ AT: AT+VENDOR=1 ! Confirmation required (effects unknown)")
+    );
+    for removed in [
         "[safe]",
         "[sensitive]",
         "[write]",
@@ -2973,11 +3797,6 @@ fn command_rows_use_one_exact_risk_label_without_action_suffixes() {
         "[dangerous]",
         "[unknown]",
     ] {
-        assert!(buffer.contains(label), "missing {label} in {buffer}");
-    }
-    assert!(buffer.contains("> risk-safe"));
-    assert!(buffer.contains("[sensitive]"));
-    for removed in ["MASKED", "CONFIRM", "PERSISTS", "DANGER", "REVIEW"] {
         assert!(
             !buffer.contains(removed),
             "unexpected {removed} in {buffer}"
@@ -2986,10 +3805,106 @@ fn command_rows_use_one_exact_risk_label_without_action_suffixes() {
 }
 
 #[test]
-fn risk_confirmation_behavior_matches_the_six_label_grammar() {
-    for risk in [RiskLevel::Safe, RiskLevel::Sensitive] {
+fn executable_selection_keeps_row_height_and_warning_role_independent() {
+    let mut state = TuiState::new(
+        vec![
+            Preset::built_in("inspect", "AT", ["review"]),
+            Preset::built_in("unknown", "AT+VENDOR=1", ["review"]),
+        ],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+    state.selected_command = 1;
+    let backend = TestBackend::new(160, 32);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render_frame(frame, &mut state))
+        .unwrap();
+    let buffer = terminal.backend().buffer();
+    let inspect = buffer_line_position(buffer, "inspect │ AT:").expect("inspect row");
+    let unknown = buffer_line_position(buffer, "> unknown │ AT:").expect("unknown row");
+    assert_eq!(unknown.1, inspect.1 + 1);
+
+    let name_cell = buffer.cell(unknown).expect("selected name cell");
+    let warning =
+        buffer_line_position(buffer, "! Confirmation required (effects unknown)").expect("warning");
+    let warning_cell = buffer.cell(warning).expect("warning cell");
+    assert_eq!(
+        name_cell.fg,
+        TuiTheme::dark()
+            .style(TuiStyleRole::Selected)
+            .fg
+            .expect("selected color")
+    );
+    assert_eq!(
+        warning_cell.fg,
+        TuiTheme::dark()
+            .style(TuiStyleRole::Warning)
+            .fg
+            .expect("warning color")
+    );
+    assert_ne!(name_cell.fg, warning_cell.fg);
+}
+
+#[test]
+fn narrow_command_rows_preserve_exception_warning_before_detail() {
+    let mut state = TuiState::new(
+        vec![Preset::built_in(
+            "vendor-command-with-a-long-name",
+            "AT+VENDORCOMMANDWITHLONGARGUMENT=1234567890",
+            ["review"],
+        )],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+
+    let too_narrow = rendered_buffer(&mut state, 100, 32);
+
+    assert!(too_narrow.contains("Executable details cannot fit safely."));
+    assert!(too_narrow.contains("Resize the terminal to continue."));
+    handle_key_code(&mut state, KeyCode::Enter);
+    assert!(state.pending_execution.is_none());
+    assert!(state.confirmation.is_none());
+    assert!(state.status.contains("Resize the terminal to continue."));
+
+    let buffer = rendered_buffer(&mut state, 130, 32);
+
+    assert!(buffer.contains("! Confirmation required (effects unknown)"));
+    assert!(buffer.contains('…'));
+}
+
+#[test]
+fn executable_name_alignment_uses_terminal_display_cells() {
+    let ascii = ExecutableItem::Preset(Preset::built_in("modem", "AT", ["review"]));
+    let wide = ExecutableItem::Preset(Preset::built_in("通信確認", "AT+CSQ", ["review"]));
+    let commands = [&ascii, &wide];
+    let name_width = executable_name_column_width(&commands, 120).unwrap();
+    let ascii_row = executable_row_layout(&ascii, 120, name_width).unwrap();
+    let wide_row = executable_row_layout(&wide, 120, name_width).unwrap();
+
+    assert_eq!(display_cell_width(&ascii_row.name), name_width);
+    assert_eq!(display_cell_width(&wide_row.name), name_width);
+}
+
+#[test]
+fn compact_status_does_not_duplicate_execution_review() {
+    let mut state = test_state();
+    let status = rendered_status_buffer(&mut state, 80, 12);
+
+    assert!(status.contains("Selected Command:"));
+    assert!(!status.contains("Confirmation:"));
+    assert!(!status.contains("Assessment:"));
+    assert!(!status.contains("Effects:"));
+    assert!(!status.contains("Consequences:"));
+}
+
+#[test]
+fn confirmation_behavior_separates_known_and_unknown_consequences() {
+    for (name, command) in [("inspect", "AT"), ("sensitive-read", "AT+CIMI")] {
         let mut state = TuiState::new(
-            vec![Preset::built_in("direct", "AT", risk, ["risk"])],
+            vec![Preset::built_in(name, command, ["review"])],
             vec![test_usb_device(1, 3, "Onyx A")],
             Vec::new(),
             TuiTheme::dark(),
@@ -2999,22 +3914,20 @@ fn risk_confirmation_behavior_matches_the_six_label_grammar() {
 
         assert!(
             state.confirmation.is_none(),
-            "unexpected confirmation for {risk}"
+            "unexpected confirmation for {command}"
         );
         assert!(
             state.pending_execution.is_some(),
-            "missing execution for {risk}"
+            "missing execution for {command}"
         );
     }
 
-    for risk in [
-        RiskLevel::Write,
-        RiskLevel::Persistent,
-        RiskLevel::Dangerous,
-        RiskLevel::Unknown,
+    for (command, token, unknown) in [
+        ("AT+CMEE=2", "run", false),
+        ("AT+VENDOR=1", "unknown", true),
     ] {
         let mut state = TuiState::new(
-            vec![Preset::built_in("confirm", "AT", risk, ["risk"])],
+            vec![Preset::built_in("confirm", command, ["review"])],
             vec![test_usb_device(1, 3, "Onyx A")],
             Vec::new(),
             TuiTheme::dark(),
@@ -3024,16 +3937,29 @@ fn risk_confirmation_behavior_matches_the_six_label_grammar() {
 
         assert!(
             state.pending_execution.is_none(),
-            "unexpected execution for {risk}"
+            "unexpected execution for {command}"
         );
         assert!(
             state.confirmation.is_some(),
-            "missing confirmation for {risk}"
+            "missing confirmation for {command}"
         );
         let buffer = rendered_buffer(&mut state, 100, 32);
-        assert!(buffer.contains(&format!("Risk: [{risk}]")));
-        assert!(buffer.contains("Expected effect:"));
-        assert!(buffer.contains(&format!("Type `{risk}` to send")));
+        if unknown {
+            assert!(buffer.contains("! Confirm unknown command"));
+            assert!(buffer.contains("! Effects are not fully known"));
+            assert!(buffer.contains("Known:"));
+            assert!(buffer.contains("Possible consequences:"));
+            assert!(buffer.contains("Not established:"));
+            assert!(!buffer.contains("What will happen:"));
+        } else {
+            assert!(buffer.contains("Confirm command"));
+            assert!(buffer.contains("What will happen:"));
+            assert!(!buffer.contains("! Effects are not fully known"));
+            assert!(!buffer.contains("Not established:"));
+        }
+        assert!(!buffer.contains("Assessment:"));
+        assert!(!buffer.contains("Confirmation: required"));
+        assert!(buffer.contains(&format!("Type `{token}` to send")));
     }
 }
 
@@ -3086,7 +4012,7 @@ fn output_masking_off_requires_exact_acknowledgement_for_session() {
 }
 
 #[test]
-fn safe_response_does_not_show_mask_state_when_no_values_are_masked() {
+fn response_without_masked_values_does_not_show_mask_state() {
     let mut state = test_state();
     let mut executor = TestExecutor::default();
 
@@ -3112,7 +4038,7 @@ fn safe_response_does_not_show_mask_state_when_no_values_are_masked() {
     assert!(buffer.contains("Command:"));
     assert!(buffer.contains("modem-response"));
     assert!(buffer.contains("AT"));
-    assert!(buffer.contains("Risk: [safe]"));
+    assert!(!buffer.contains("Risk:"));
     assert!(!buffer.contains("Mask: masked"));
     assert!(!buffer.contains("raw visible"));
     assert!(!buffer.contains("Output masking: on"));
@@ -3189,6 +4115,14 @@ fn unmasked_response_copy_requires_explicit_confirmation_and_can_be_cancelled() 
         handle_key_code(&mut cancelled, KeyCode::Char('q')),
         TuiAction::Continue
     );
+    assert_eq!(
+        cancelled
+            .response_action_confirmation
+            .as_ref()
+            .map(|confirmation| confirmation.input.as_str()),
+        Some("q")
+    );
+    handle_key_code(&mut cancelled, KeyCode::Esc);
     assert!(cancelled.response_action_confirmation.is_none());
     assert_eq!(cancelled.status, "Response copy cancelled.");
     assert_eq!(
@@ -3384,12 +4318,7 @@ fn viewed_history_and_session_logs_reveal_the_exact_opened_file() {
 #[test]
 fn export_response_uses_selected_folder_and_retains_exact_file_context() {
     let mut state = test_state();
-    let command = ExecutableItem::Preset(Preset::built_in(
-        "signal-quality",
-        "AT+CSQ",
-        RiskLevel::Safe,
-        ["signal"],
-    ));
+    let command = ExecutableItem::Preset(Preset::built_in("signal-quality", "AT+CSQ", ["signal"]));
     state.active_command = Some(
         CommandStatus::new(
             CommandRunState::Completed,
@@ -3898,12 +4827,7 @@ fn log_view_close_clears_opened_log_without_status_clear_action() {
 #[test]
 fn response_copy_prefixes_command_when_modem_does_not_echo() {
     let mut state = test_state();
-    let command = ExecutableItem::Preset(Preset::built_in(
-        "signal-quality",
-        "AT+CSQ",
-        RiskLevel::Safe,
-        ["signal"],
-    ));
+    let command = ExecutableItem::Preset(Preset::built_in("signal-quality", "AT+CSQ", ["signal"]));
     state.active_command = Some(CommandStatus::new(
         CommandRunState::Completed,
         &command,
@@ -3977,8 +4901,10 @@ fn output_masking_change_can_be_cancelled_and_enabled_again() {
     run_control(&mut state, ControlAction::ToggleOutputMasking);
     handle_key_code(&mut state, KeyCode::Char('q'));
 
-    assert!(state.output_masking_ack_input.is_none());
+    assert_eq!(state.output_masking_ack_input.as_deref(), Some("q"));
     assert!(state.output_masking_enabled);
+    handle_key_code(&mut state, KeyCode::Esc);
+    assert!(state.output_masking_ack_input.is_none());
 
     run_control(&mut state, ControlAction::ToggleOutputMasking);
     for value in OUTPUT_UNMASK_ACK.chars() {
@@ -4039,7 +4965,7 @@ fn unmasked_response_pane_prioritizes_response_body_without_duplicate_context() 
     assert!(buffer.contains("Output masking: off"));
     assert!(buffer.contains("898110001234567"));
     assert!(!buffer.contains("Completed command"));
-    assert!(!buffer.contains("Expected effect: reads sensitive"));
+    assert!(!buffer.contains("Effects: reads sensitive"));
 }
 
 #[test]
@@ -4126,16 +5052,11 @@ fn semantic_style_roles_are_declared() {
     for role in [
         TuiStyleRole::Background,
         TuiStyleRole::Text,
+        TuiStyleRole::Emphasis,
         TuiStyleRole::Focus,
         TuiStyleRole::Selected,
         TuiStyleRole::Status,
         TuiStyleRole::Muted,
-        TuiStyleRole::RiskSafe,
-        TuiStyleRole::RiskSensitive,
-        TuiStyleRole::RiskWrite,
-        TuiStyleRole::RiskPersistent,
-        TuiStyleRole::RiskDangerous,
-        TuiStyleRole::RiskUnknown,
         TuiStyleRole::Warning,
         TuiStyleRole::Error,
     ] {
@@ -4158,25 +5079,288 @@ fn approved_colored_accents_are_retained() {
 }
 
 #[test]
-fn risk_roles_use_approved_dark_and_light_palettes() {
+fn confirmation_roles_use_approved_dark_and_light_palettes() {
     let dark = TuiTheme::dark();
     assert_eq!(
-        dark.risk_style(RiskLevel::Sensitive).fg,
-        Some(Color::Rgb(0xd6, 0xb3, 0xff))
+        dark.style(TuiStyleRole::Warning).fg,
+        Some(Color::Rgb(0xff, 0xd1, 0x66))
     );
-    assert_eq!(
-        dark.risk_style(RiskLevel::Dangerous).fg,
-        Some(Color::Rgb(0xff, 0x6b, 0x6b))
+    assert!(
+        dark.style(TuiStyleRole::Warning)
+            .add_modifier
+            .contains(Modifier::BOLD)
     );
 
     let light = TuiTheme::light();
     assert_eq!(
-        light.risk_style(RiskLevel::Safe).fg,
-        Some(Color::Rgb(0x00, 0x7c, 0x89))
+        light.style(TuiStyleRole::Warning).fg,
+        Some(Color::Rgb(0x7a, 0x5a, 0x00))
+    );
+}
+
+#[test]
+fn modal_control_copy_is_consistent_across_all_states_and_themes() {
+    for theme in [TuiTheme::dark(), TuiTheme::light(), TuiTheme::no_color()] {
+        let mut help = test_state_with_theme(theme);
+        help.show_help = true;
+        let help_buffer = rendered_buffer(&mut help, 160, 44);
+        assert!(help_buffer.contains(ModalDismissal::Help.instruction()));
+        assert!(help_buffer.contains("q             Quit (idle base screen)"));
+        assert_eq!(footer_text(&help, 160), "Esc Close  ? Close");
+        assert!(!help_buffer.contains("q Close"));
+
+        let mut empty_menu = test_state_with_theme(theme);
+        empty_menu.action_menu = Some(ActionMenuState {
+            kind: ActionMenuKind::Log,
+            selected: 0,
+            feedback: None,
+            feedback_scope: ActionMenuFeedbackScope::ModalState,
+            log_target: None,
+            response_export: None,
+        });
+        let empty_menu_buffer = rendered_buffer(&mut empty_menu, 160, 44);
+        assert!(empty_menu_buffer.contains(ModalDismissal::Close.instruction()));
+        assert_eq!(footer_text(&empty_menu, 160), "Esc Close");
+        assert!(!empty_menu_buffer.contains("Enter selects."));
+
+        let mut cancel_states = Vec::new();
+
+        let mut action_menu = test_state_with_theme(theme);
+        action_menu.response = ResponseState::masked("OK");
+        action_menu.focus = Pane::Response;
+        handle_key_code(&mut action_menu, KeyCode::Enter);
+        cancel_states.push(action_menu);
+
+        let mut confirmation = test_state_with_theme(theme);
+        confirmation.confirmation = Some(ConfirmationState::new(Preset::built_in(
+            "change",
+            "AT+CMEE=2",
+            ["review"],
+        )));
+        cancel_states.push(confirmation);
+
+        let mut masking = test_state_with_theme(theme);
+        masking.output_masking_ack_input = Some(String::new());
+        cancel_states.push(masking);
+
+        let mut response_copy = test_state_with_theme(theme);
+        response_copy.response_action_confirmation = Some(ResponseActionConfirmationState {
+            action: ResponseActionConfirmation::Copy {
+                contents: "response".to_owned(),
+                response_label: "Response".to_owned(),
+            },
+            input: String::new(),
+            error: None,
+        });
+        cancel_states.push(response_copy);
+
+        let mut raw_path = test_state_with_theme(theme);
+        raw_path.raw_log_path_input = Some(RawLogPathInputState::default());
+        cancel_states.push(raw_path);
+
+        let mut raw_ack = test_state_with_theme(theme);
+        raw_ack.raw_log_ack_input = Some(RawLogAckInputState {
+            path: PathBuf::from("case.rawlog"),
+            input: String::new(),
+            error: None,
+        });
+        cancel_states.push(raw_ack);
+
+        let mut search = test_state_with_theme(theme);
+        search.search_input = Some(SearchInputState::default());
+        cancel_states.push(search);
+
+        let mut edit = test_state_with_theme(theme);
+        edit.edit_input = Some(EditInputState {
+            input: "AT+QCFG?".to_owned(),
+            error: None,
+        });
+        cancel_states.push(edit);
+
+        let mut timeout = test_state_with_theme(theme);
+        timeout.timeout_input = Some(TimeoutInputState {
+            input: "120".to_owned(),
+            error: None,
+        });
+        cancel_states.push(timeout);
+
+        let mut ad_hoc = test_state_with_theme(theme);
+        ad_hoc.ad_hoc_input = Some(AdHocInputState::default());
+        cancel_states.push(ad_hoc);
+
+        let mut sequence_params = test_state_with_sequences_and_theme(theme);
+        sequence_params.selected_category = sequence_params
+            .categories
+            .iter()
+            .position(|category| category == "sms")
+            .expect("sms category");
+        handle_key_code(&mut sequence_params, KeyCode::Enter);
+        cancel_states.push(sequence_params);
+
+        let required_sequence = Sequence::built_in(
+            "required-review",
+            "Review a state change before execution.",
+            vec!["review".to_owned()],
+            Some(30),
+            Vec::new(),
+            vec![test_sequence_step("AT+CFUN=1")],
+        );
+        let mut required_review = TuiState::new_with_all_usb(
+            executable_items(Vec::new(), vec![required_sequence]),
+            vec![test_usb_device(1, 3, "Onyx A")],
+            vec![test_usb_device(1, 3, "Onyx A")],
+            Vec::new(),
+            theme,
+        );
+        handle_key_code(&mut required_review, KeyCode::Enter);
+        cancel_states.push(required_review);
+
+        let review_sequence = Sequence::built_in(
+            "review-only",
+            "Review an observation before execution.",
+            vec!["review".to_owned()],
+            Some(30),
+            vec![SequenceParam {
+                name: "note".to_owned(),
+                label: "Note".to_owned(),
+                required: true,
+                sensitive: false,
+                default_value: None,
+                source: SequenceParamSource::User,
+                candidate: None,
+                hint: None,
+            }],
+            vec![test_sequence_step("AT+CSQ")],
+        );
+        let mut review_only = TuiState::new_with_all_usb(
+            executable_items(Vec::new(), vec![review_sequence]),
+            vec![test_usb_device(1, 3, "Onyx A")],
+            vec![test_usb_device(1, 3, "Onyx A")],
+            Vec::new(),
+            theme,
+        );
+        handle_key_code(&mut review_only, KeyCode::Enter);
+        for value in "review".chars() {
+            handle_key_code(&mut review_only, KeyCode::Char(value));
+        }
+        handle_key_code(&mut review_only, KeyCode::Enter);
+        cancel_states.push(review_only);
+
+        let mut candidate_confirmation = test_state_with_sequences_and_theme(theme);
+        candidate_confirmation.selected_category = candidate_confirmation
+            .categories
+            .iter()
+            .position(|category| category == "sms")
+            .expect("sms category");
+        candidate_confirmation.selected_command = candidate_confirmation
+            .visible_commands()
+            .iter()
+            .position(|command| command.name() == "sms-read-message")
+            .expect("sms-read-message command");
+        handle_key_code(&mut candidate_confirmation, KeyCode::Enter);
+        handle_key_code(&mut candidate_confirmation, KeyCode::Down);
+        handle_key_code(&mut candidate_confirmation, KeyCode::Enter);
+        cancel_states.push(candidate_confirmation);
+
+        for (index, state) in cancel_states.iter_mut().enumerate() {
+            let buffer = rendered_buffer(state, 160, 44);
+            assert!(
+                buffer.contains(ModalDismissal::Cancel.instruction()),
+                "missing cancel instruction in {:?} modal state {index}",
+                theme.mode(),
+            );
+            assert!(footer_text(state, 160).contains("Esc Cancel"));
+            assert!(!buffer.contains("Esc/q"));
+            assert!(!buffer.contains("Esc or q"));
+            assert!(!buffer.contains("q Close"));
+        }
+    }
+}
+
+#[test]
+fn confirmation_render_uses_warning_for_decision_and_focus_for_input() {
+    for (theme, warning, focus) in [
+        (
+            TuiTheme::dark(),
+            Color::Rgb(0xff, 0xd1, 0x66),
+            Color::Rgb(0x4d, 0xd0, 0xe1),
+        ),
+        (
+            TuiTheme::light(),
+            Color::Rgb(0x7a, 0x5a, 0x00),
+            Color::Rgb(0x00, 0x7c, 0x89),
+        ),
+        (TuiTheme::no_color(), Color::Reset, Color::Reset),
+    ] {
+        let mut state = TuiState::new(
+            vec![Preset::built_in("change", "AT+CMEE=2", ["review"])],
+            vec![test_usb_device(1, 3, "Onyx A")],
+            Vec::new(),
+            theme,
+        );
+        handle_key_code(&mut state, KeyCode::Enter);
+
+        let backend = TestBackend::new(120, 32);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render_frame(frame, &mut state))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let instruction = buffer_line_position(buffer, "Type `run` to send").expect("instruction");
+        let input = buffer_line_position(buffer, "Input: <empty>").expect("input");
+        let instruction_cell = buffer.cell(instruction).expect("instruction cell");
+        let input_cell = buffer.cell(input).expect("input cell");
+
+        assert_eq!(instruction_cell.fg, warning);
+        assert_eq!(input_cell.fg, focus);
+        assert!(instruction_cell.modifier.contains(Modifier::BOLD));
+        assert!(input_cell.modifier.contains(Modifier::BOLD));
+    }
+}
+
+#[test]
+fn raw_export_path_is_focus_and_acknowledgement_is_warning() {
+    let mut state = test_state();
+    run_control(&mut state, ControlAction::RawExport);
+
+    assert_eq!(state.status_role, TuiStyleRole::Status);
+    let backend = TestBackend::new(120, 32);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render_frame(frame, &mut state))
+        .unwrap();
+    let path_buffer = terminal.backend().buffer();
+    let path_title =
+        buffer_line_position(path_buffer, "Raw diagnostic export path").expect("path title");
+    assert_eq!(
+        path_buffer.cell(path_title).map(|cell| cell.fg),
+        Some(Color::Rgb(0x4d, 0xd0, 0xe1))
+    );
+
+    let path = unique_temp_dir("raw-review-style").join("case.rawlog");
+    for value in path.to_string_lossy().chars() {
+        handle_key_code(&mut state, KeyCode::Char(value));
+    }
+    handle_key_code(&mut state, KeyCode::Enter);
+
+    assert!(state.raw_log_path_input.is_none());
+    assert!(state.raw_log_ack_input.is_some());
+    let backend = TestBackend::new(120, 32);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render_frame(frame, &mut state))
+        .unwrap();
+    let ack_buffer = terminal.backend().buffer();
+    let ack_title = buffer_line_position(ack_buffer, "Start raw diagnostic export?")
+        .expect("acknowledgement title");
+    let ack_input = buffer_line_position(ack_buffer, "Input: <empty>").expect("ack input");
+    assert_eq!(
+        ack_buffer.cell(ack_title).map(|cell| cell.fg),
+        Some(Color::Rgb(0xff, 0xd1, 0x66))
     );
     assert_eq!(
-        light.risk_style(RiskLevel::Dangerous).fg,
-        Some(Color::Rgb(0xb0, 0x00, 0x20))
+        ack_buffer.cell(ack_input).map(|cell| cell.fg),
+        Some(Color::Rgb(0x4d, 0xd0, 0xe1))
     );
 }
 
@@ -4196,6 +5380,12 @@ fn no_color_disables_foreground_colors_but_keeps_non_color_emphasis() {
     assert!(
         theme
             .style(TuiStyleRole::Selected)
+            .add_modifier
+            .contains(Modifier::BOLD)
+    );
+    assert!(
+        theme
+            .style(TuiStyleRole::Warning)
             .add_modifier
             .contains(Modifier::BOLD)
     );
@@ -4226,6 +5416,10 @@ fn no_color_environment_value_controls_color_mode() {
 }
 
 fn test_state() -> TuiState {
+    test_state_with_theme(TuiTheme::dark())
+}
+
+fn test_state_with_theme(theme: TuiTheme) -> TuiState {
     TuiState::new(
         test_commands(),
         vec![test_usb_device(1, 3, "Onyx A")],
@@ -4233,11 +5427,15 @@ fn test_state() -> TuiState {
             LogListingKind::History,
             "/tmp/history.jsonl",
         )],
-        TuiTheme::dark(),
+        theme,
     )
 }
 
 fn test_state_with_sequences() -> TuiState {
+    test_state_with_sequences_and_theme(TuiTheme::dark())
+}
+
+fn test_state_with_sequences_and_theme(theme: TuiTheme) -> TuiState {
     TuiState::new_with_all_usb(
         executable_items(test_commands(), crate::sequences::builtin::builtins()),
         vec![test_usb_device(1, 3, "Onyx A")],
@@ -4246,7 +5444,7 @@ fn test_state_with_sequences() -> TuiState {
             LogListingKind::History,
             "/tmp/history.jsonl",
         )],
-        TuiTheme::dark(),
+        theme,
     )
 }
 
@@ -4280,7 +5478,7 @@ fn sms_candidate(
         index: index.to_owned(),
         status: Some(status.to_owned()),
         sender: Some(sender.to_owned()),
-        masked_sender: Some("90****".to_owned()),
+        masked_sender: Some("******".to_owned()),
         timestamp: Some(timestamp.to_owned()),
         raw_body_preview: Some(body_preview.to_owned()),
         masked_body_preview: Some("<masked sensitive body>".to_owned()),
@@ -4360,10 +5558,10 @@ fn buffer_line_position(buffer: &Buffer, needle: &str) -> Option<(u16, u16)> {
 
 fn test_commands() -> Vec<Preset> {
     vec![
-        Preset::built_in("modem-response", "AT", RiskLevel::Safe, ["basic"]),
-        Preset::built_in("disable-command-echo", "ATE0", RiskLevel::Write, ["basic"]),
-        Preset::built_in("imsi", "AT+CIMI", RiskLevel::Sensitive, ["sim"]),
-        Preset::built_in("danger-reset", "AT+CFUN=0", RiskLevel::Dangerous, ["modem"]),
+        Preset::built_in("modem-response", "AT", ["basic"]),
+        Preset::built_in("disable-command-echo", "ATE0", ["basic"]),
+        Preset::built_in("imsi", "AT+CIMI", ["sim"]),
+        Preset::built_in("material-reset", "AT+CFUN=0", ["modem"]),
     ]
 }
 
@@ -4527,7 +5725,7 @@ impl TuiCommandExecutor for TestExecutor {
                             "AT+QISTATE\n+QISTATE: 0,\"TCP\",\"example.com\",80,0,2,1,0,0,\"uart1\"\nOK\n".to_owned(),
                             "AT+QISTATE\r\n+QISTATE: 0,\"TCP\",\"example.com\",80,0,2,1,0,0,\"uart1\"\r\nOK\r\n".to_owned(),
                         )
-                } else if preset.risk == RiskLevel::Sensitive {
+                } else if preset.review.data_handling.contains(&DataHandling::Output) {
                     (
                         "89811000*******\nOK\n".to_owned(),
                         "898110001234567\nOK\n".to_owned(),
@@ -4538,16 +5736,28 @@ impl TuiCommandExecutor for TestExecutor {
                         format!("{}\nOK\n", preset.command),
                     )
                 };
-                Ok(ExecutionOutput::Command(SendExecution {
-                    risk: preset.risk,
+                let operation = OperationIdentity::preset(preset);
+                let review = preset.review.clone();
+                let masked_text = mask_sensitive_values(&raw_text);
+                Ok(ExecutionOutput::Command(Box::new(SendExecution {
+                    surface: ExecutionSurface::Tui,
+                    masked_operation: operation.masked(),
+                    operation,
+                    masked_review: review.masked(),
+                    review,
                     status: AtStatus::Ok,
-                    text,
-                    lines: vec![preset.command.clone(), "OK".to_owned()],
+                    text: if text.is_empty() {
+                        masked_text.clone()
+                    } else {
+                        text
+                    },
+                    lines: masked_text.lines().map(str::to_owned).collect(),
                     raw_response: raw_text.as_bytes().to_vec(),
                     raw_text,
+                    masked_text,
                     masked: true,
                     duration: Duration::from_millis(7),
-                }))
+                })))
             }
             ExecutableItem::Sequence(sequence) => {
                 self.sequence_params.push(
@@ -4561,10 +5771,12 @@ impl TuiCommandExecutor for TestExecutor {
                     return Err(error);
                 }
                 if let Some(raw_log) = raw_log {
+                    let operation = OperationIdentity::sequence(sequence);
                     raw_log.append_exchange(RawLogExchange {
+                        operation: &operation,
                         command_name: Some("test-sequence-step"),
                         command: "AT+CMGF=1",
-                        risk: sequence.risk,
+                        review: &sequence.review,
                         status: &AtStatus::Ok,
                         duration: Duration::from_millis(1),
                         tx_bytes: b"AT+CMGF=1\r",
@@ -4594,9 +5806,11 @@ impl TuiCommandExecutor for TestExecutor {
                         sequence.name
                     )
                 };
-                Ok(ExecutionOutput::Sequence(SequenceExecution {
+                let review = sequence.review.clone();
+                Ok(ExecutionOutput::Sequence(Box::new(SequenceExecution {
                     name: sequence.name.clone(),
-                    risk: sequence.risk,
+                    masked_review: review.masked(),
+                    review,
                     status,
                     steps: Vec::new(),
                     masked_notes: Vec::new(),
@@ -4605,7 +5819,7 @@ impl TuiCommandExecutor for TestExecutor {
                     masked_transcript: transcript.clone(),
                     raw_transcript: transcript,
                     duration: Duration::from_millis(7),
-                }))
+                })))
             }
         }
     }

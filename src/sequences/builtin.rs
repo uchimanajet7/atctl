@@ -1,4 +1,3 @@
-use crate::at::risk::RiskLevel;
 use crate::sequences::definition::{SequenceDefinition, definitions_into_sequences};
 use crate::sequences::model::{
     Sequence, SequenceCandidateSource, SequenceOrigin, SequenceParam, SequenceParamSource,
@@ -22,7 +21,6 @@ fn sms_send_check() -> SequenceDefinition {
     SequenceDefinition::new(
         "sms-send-check",
         "Send a standard SMS and report modem submit evidence.",
-        RiskLevel::Write,
         vec!["sms".to_owned()],
         Some(180),
         vec![
@@ -97,7 +95,6 @@ fn sms_receive_check() -> SequenceDefinition {
     SequenceDefinition::new(
         "sms-receive-check",
         "List received SMS material and decode message bodies while keeping sensitive values masked.",
-        RiskLevel::Write,
         vec!["sms".to_owned()],
         Some(120),
         Vec::new(),
@@ -145,7 +142,6 @@ fn sms_read_message() -> SequenceDefinition {
     SequenceDefinition::new(
         "sms-read-message",
         "Read one SMS storage index; the modem may change unread status to read.",
-        RiskLevel::Write,
         vec!["sms".to_owned()],
         Some(120),
         vec![
@@ -198,7 +194,6 @@ fn sms_reply_check() -> SequenceDefinition {
     SequenceDefinition::new(
         "sms-reply-check",
         "Reply to the sender of one SMS storage index and report modem submit evidence.",
-        RiskLevel::Write,
         vec!["sms".to_owned()],
         Some(180),
         vec![

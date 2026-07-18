@@ -3,10 +3,15 @@
 This document explains how `atctl` presents, loads, reviews, and runs one-shot
 presets and multi-step Sequences.
 
+For the cross-surface review, confirmation, masking, and raw-diagnostic
+contract, see the [Safety Guide](SAFETY.md). For task-oriented diagnosis and
+Response or log handling, see [Troubleshooting](TROUBLESHOOTING.md).
+
 Presets are not TUI-only. The same loaded preset set is used by:
 
 ```sh
 atctl preset list
+atctl preset show <NAME>
 atctl preset run <NAME>
 atctl tui
 ```
@@ -17,7 +22,8 @@ socket checks. Both are selectable from the TUI executable-item surface.
 
 Product-provided definitions ship with `atctl`. File definitions are loaded from
 files or directories provided for the current invocation. After loading, both
-origins use the same validation, risk handling, masking, logging, raw diagnostic
+origins use the same validation, product-derived execution review, confirmation,
+masking, logging, raw diagnostic
 export, and execution behavior.
 
 ## Preset Sources
@@ -50,77 +56,77 @@ selection, operator visibility, registration, signal, PDP/APN readiness,
 failure diagnostics, SMS readiness, modem functionality status/control, and
 runtime control.
 
-| Preset | Command | Categories | Risk | Purpose | Reference |
+| Preset | Command | Categories | Confirmation | Purpose | Reference |
 |---|---|---|---|---|---|
-| `modem-response` | `AT` | `basic` | `safe` | Check that the modem responds to a minimal AT command. | ITU-T V.250 |
-| `modem-info` | `ATI` | `identity` | `safe` | Read modem identification text. | ITU-T V.250 / vendor behavior |
-| `manufacturer` | `AT+CGMI` | `identity` | `safe` | Read manufacturer. | 3GPP TS 27.007 |
-| `model` | `AT+CGMM` | `identity` | `safe` | Read model. | 3GPP TS 27.007 |
-| `firmware-revision` | `AT+CGMR` | `identity` | `safe` | Read firmware revision. | 3GPP TS 27.007 |
-| `imei` | `AT+CGSN` | `identity` | `sensitive` | Read device identifier. | 3GPP TS 27.007 |
-| `sim-pin-status` | `AT+CPIN?` | `sim` | `safe` | Check SIM readiness. | 3GPP TS 27.007 |
-| `imsi` | `AT+CIMI` | `sim` | `sensitive` | Read subscriber identifier. | 3GPP TS 27.007 |
-| `radio-stack` | `AT+WS46?` | `network` | `safe` | Read selected wireless data service stack. | 3GPP TS 27.007 |
-| `radio-stack-capabilities` | `AT+WS46=?` | `network` | `safe` | Read supported wireless data service stack values. | 3GPP TS 27.007 |
-| `current-operator` | `AT+COPS?` | `network` | `safe` | Read selected operator. | 3GPP TS 27.007 |
-| `available-operators` | `AT+COPS=?` | `network` | `safe` | Scan visible operators and RATs. | 3GPP TS 27.007 |
-| `operator-format-numeric` | `AT+COPS=3,2` | `network` | `write` | Set operator readout format to numeric PLMN for subsequent operator checks. | 3GPP TS 27.007 |
-| `operator-auto-selection` | `AT+COPS=0` | `network` | `write` | Return operator selection to automatic mode. | 3GPP TS 27.007 |
-| `circuit-registration` | `AT+CREG?` | `network` | `safe` | Check circuit registration. | 3GPP TS 27.007 |
-| `gprs-registration` | `AT+CGREG?` | `network` | `safe` | Check GPRS registration. | 3GPP TS 27.007 |
-| `eps-registration` | `AT+CEREG?` | `network` | `safe` | Check EPS/LTE registration. | 3GPP TS 27.007 |
-| `enable-circuit-registration-detail` | `AT+CREG=2` | `network` | `write` | Enable detailed circuit registration reporting. | 3GPP TS 27.007 |
-| `enable-gprs-registration-detail` | `AT+CGREG=2` | `network` | `write` | Enable detailed GPRS registration reporting. | 3GPP TS 27.007 |
-| `enable-eps-registration-detail` | `AT+CEREG=2` | `network` | `write` | Enable detailed EPS registration reporting. | 3GPP TS 27.007 |
-| `enable-eps-registration-cause` | `AT+CEREG=3` | `network` | `write` | Enable EPS registration detail including reject cause when provided. | 3GPP TS 27.007 |
-| `enable-eps-registration-extended` | `AT+CEREG=5` | `network` | `write` | Enable extended EPS registration detail when supported. | 3GPP TS 27.007 |
-| `signal-quality` | `AT+CSQ` | `signal` | `safe` | Read basic signal quality. | 3GPP TS 27.007 |
-| `extended-signal-quality` | `AT+CESQ` | `signal` | `safe` | Read extended signal quality. | 3GPP TS 27.007 |
-| `extended-signal-capabilities` | `AT+CESQ=?` | `signal` | `safe` | Read extended signal quality support. | 3GPP TS 27.007 |
-| `pdp-contexts` | `AT+CGDCONT?` | `pdp`, `apn` | `safe` | Inspect PDP/APN context definitions. | 3GPP TS 27.007 |
-| `pdp-auth-settings` | `AT+CGAUTH?` | `pdp`, `apn` | `sensitive` | Inspect PDP authentication settings. | 3GPP TS 27.007 |
-| `pdp-auth-capabilities` | `AT+CGAUTH=?` | `pdp`, `apn` | `safe` | Read PDP authentication command support. | 3GPP TS 27.007 |
-| `packet-attach` | `AT+CGATT?` | `network`, `pdp` | `safe` | Check packet service attach state. | 3GPP TS 27.007 |
-| `active-pdp-contexts` | `AT+CGACT?` | `pdp` | `safe` | Check active PDP contexts. | 3GPP TS 27.007 |
-| `pdp-addresses` | `AT+CGPADDR` | `pdp` | `safe` | Read PDP context IP address assignments. | 3GPP TS 27.007 |
-| `pdp-address-capabilities` | `AT+CGPADDR=?` | `pdp` | `safe` | Read PDP address command support. | 3GPP TS 27.007 |
-| `pdp-connection-details` | `AT+CGCONTRDP` | `pdp` | `safe` | Read PDP connection details. | 3GPP TS 27.007 |
-| `extended-error-report` | `AT+CEER` | `diagnostics` | `safe` | Read the latest extended modem/network failure report when supported by the modem. | 3GPP TS 27.007 |
-| `error-reporting-status` | `AT+CMEE?` | `diagnostics` | `safe` | Read whether extended mobile termination errors are enabled. | 3GPP TS 27.007 |
-| `enable-verbose-errors` | `AT+CMEE=2` | `diagnostics` | `write` | Enable verbose `+CME ERROR` reporting for easier troubleshooting. | 3GPP TS 27.007 |
-| `modem-activity-status` | `AT+CPAS` | `modem`, `diagnostics` | `safe` | Read whether the modem is ready, unavailable, unknown, or asleep. | 3GPP TS 27.007 |
-| `sms-service-support` | `AT+CSMS?` | `sms` | `safe` | Check SMS service support. | 3GPP TS 27.005 |
-| `sms-format` | `AT+CMGF?` | `sms` | `safe` | Check SMS format. | 3GPP TS 27.005 |
-| `sms-storage` | `AT+CPMS?` | `sms` | `safe` | Check SMS storage selection. | 3GPP TS 27.005 |
-| `modem-functionality` | `AT+CFUN?` | `modem` | `safe` | Read modem functionality level. | 3GPP TS 27.007 |
-| `set-modem-minimum-functionality` | `AT+CFUN=0` | `modem` | `dangerous` | Change modem functionality to minimum mode. | 3GPP TS 27.007 |
-| `set-modem-full-functionality` | `AT+CFUN=1` | `modem` | `dangerous` | Return modem functionality to full mode. | 3GPP TS 27.007 |
-| `restart-modem` | `AT+CFUN=1,1` | `modem` | `dangerous` | Request modem restart. | 3GPP TS 27.007 |
-| `disable-command-echo` | `ATE0` | `basic` | `write` | Disable command echo for the current AT session. | ITU-T V.250 |
+| `modem-response` | `AT` | `basic` | not required | Check that the modem responds to a minimal AT command. | ITU-T V.250 |
+| `modem-info` | `ATI` | `identity` | not required | Read modem identification text. | ITU-T V.250 / vendor behavior |
+| `manufacturer` | `AT+CGMI` | `identity` | not required | Read manufacturer. | 3GPP TS 27.007 |
+| `model` | `AT+CGMM` | `identity` | not required | Read model. | 3GPP TS 27.007 |
+| `firmware-revision` | `AT+CGMR` | `identity` | not required | Read firmware revision. | 3GPP TS 27.007 |
+| `imei` | `AT+CGSN` | `identity` | not required | Read device identifier. | 3GPP TS 27.007 |
+| `sim-pin-status` | `AT+CPIN?` | `sim` | not required | Check SIM readiness. | 3GPP TS 27.007 |
+| `imsi` | `AT+CIMI` | `sim` | not required | Read subscriber identifier. | 3GPP TS 27.007 |
+| `radio-stack` | `AT+WS46?` | `network` | not required | Read selected wireless data service stack. | 3GPP TS 27.007 |
+| `radio-stack-capabilities` | `AT+WS46=?` | `network` | not required | Read supported wireless data service stack values. | 3GPP TS 27.007 |
+| `current-operator` | `AT+COPS?` | `network` | not required | Read selected operator. | 3GPP TS 27.007 |
+| `available-operators` | `AT+COPS=?` | `network` | not required | Scan visible operators and RATs. | 3GPP TS 27.007 |
+| `operator-format-numeric` | `AT+COPS=3,2` | `network` | required | Set operator readout format to numeric PLMN for subsequent operator checks. | 3GPP TS 27.007 |
+| `operator-auto-selection` | `AT+COPS=0` | `network` | required | Return operator selection to automatic mode. | 3GPP TS 27.007 |
+| `circuit-registration` | `AT+CREG?` | `network` | not required | Check circuit registration. | 3GPP TS 27.007 |
+| `gprs-registration` | `AT+CGREG?` | `network` | not required | Check GPRS registration. | 3GPP TS 27.007 |
+| `eps-registration` | `AT+CEREG?` | `network` | not required | Check EPS/LTE registration. | 3GPP TS 27.007 |
+| `enable-circuit-registration-detail` | `AT+CREG=2` | `network` | required | Enable detailed circuit registration reporting. | 3GPP TS 27.007 |
+| `enable-gprs-registration-detail` | `AT+CGREG=2` | `network` | required | Enable detailed GPRS registration reporting. | 3GPP TS 27.007 |
+| `enable-eps-registration-detail` | `AT+CEREG=2` | `network` | required | Enable detailed EPS registration reporting. | 3GPP TS 27.007 |
+| `enable-eps-registration-cause` | `AT+CEREG=3` | `network` | required | Enable EPS registration detail including reject cause when provided. | 3GPP TS 27.007 |
+| `enable-eps-registration-extended` | `AT+CEREG=5` | `network` | required | Enable extended EPS registration detail when supported. | 3GPP TS 27.007 |
+| `signal-quality` | `AT+CSQ` | `signal` | not required | Read basic signal quality. | 3GPP TS 27.007 |
+| `extended-signal-quality` | `AT+CESQ` | `signal` | not required | Read extended signal quality. | 3GPP TS 27.007 |
+| `extended-signal-capabilities` | `AT+CESQ=?` | `signal` | not required | Read extended signal quality support. | 3GPP TS 27.007 |
+| `pdp-contexts` | `AT+CGDCONT?` | `pdp`, `apn` | not required | Inspect PDP/APN context definitions. | 3GPP TS 27.007 |
+| `pdp-auth-settings` | `AT+CGAUTH?` | `pdp`, `apn` | not required | Inspect PDP authentication settings. | 3GPP TS 27.007 |
+| `pdp-auth-capabilities` | `AT+CGAUTH=?` | `pdp`, `apn` | not required | Read PDP authentication command support. | 3GPP TS 27.007 |
+| `packet-attach` | `AT+CGATT?` | `network`, `pdp` | not required | Check packet service attach state. | 3GPP TS 27.007 |
+| `active-pdp-contexts` | `AT+CGACT?` | `pdp` | not required | Check active PDP contexts. | 3GPP TS 27.007 |
+| `pdp-addresses` | `AT+CGPADDR` | `pdp` | not required | Read PDP context IP address assignments. | 3GPP TS 27.007 |
+| `pdp-address-capabilities` | `AT+CGPADDR=?` | `pdp` | not required | Read PDP address command support. | 3GPP TS 27.007 |
+| `pdp-connection-details` | `AT+CGCONTRDP` | `pdp` | not required | Read PDP connection details. | 3GPP TS 27.007 |
+| `extended-error-report` | `AT+CEER` | `diagnostics` | not required | Read the latest extended modem/network failure report when supported by the modem. | 3GPP TS 27.007 |
+| `error-reporting-status` | `AT+CMEE?` | `diagnostics` | not required | Read whether extended mobile termination errors are enabled. | 3GPP TS 27.007 |
+| `enable-verbose-errors` | `AT+CMEE=2` | `diagnostics` | required | Enable verbose `+CME ERROR` reporting for easier troubleshooting. | 3GPP TS 27.007 |
+| `modem-activity-status` | `AT+CPAS` | `modem`, `diagnostics` | not required | Read whether the modem is ready, unavailable, unknown, or asleep. | 3GPP TS 27.007 |
+| `sms-service-support` | `AT+CSMS?` | `sms` | not required | Check SMS service support. | 3GPP TS 27.005 |
+| `sms-format` | `AT+CMGF?` | `sms` | not required | Check SMS format. | 3GPP TS 27.005 |
+| `sms-storage` | `AT+CPMS?` | `sms` | not required | Check SMS storage selection. | 3GPP TS 27.005 |
+| `modem-functionality` | `AT+CFUN?` | `modem` | not required | Read modem functionality level. | 3GPP TS 27.007 |
+| `set-modem-minimum-functionality` | `AT+CFUN=0` | `modem` | required | Change modem functionality to minimum mode. | 3GPP TS 27.007 |
+| `set-modem-full-functionality` | `AT+CFUN=1` | `modem` | required | Return modem functionality to full mode. | 3GPP TS 27.007 |
+| `restart-modem` | `AT+CFUN=1,1` | `modem` | required | Request modem restart. | 3GPP TS 27.007 |
+| `disable-command-echo` | `ATE0` | `basic` | required | Disable command echo for the current AT session. | ITU-T V.250 |
 
 `available-operators` declares `timeout_secs = 180` because `AT+COPS=?` can
 take longer than ordinary reads.
 
 The operator format, operator auto-selection, and registration detail presets
-are useful during troubleshooting but change modem runtime behavior. They are
-write-risk presets and require confirmation before USB access.
+are useful during troubleshooting but change modem runtime behavior. They
+require confirmation before USB access.
 
 `pdp-auth-settings` can expose APN authentication usernames and passwords through
-`+CGAUTH:` responses. It is sensitive, and saved output must remain masked by
+`+CGAUTH:` responses. Its data handling is sensitive output, and saved output must remain masked by
 default.
 
 `extended-error-report` is useful after failed attach, registration, or PDP
 activation attempts because `AT+CEER` returns the modem's latest extended
 failure report when the modem implements it. `enable-verbose-errors` changes
-the error reporting mode and is therefore a write-risk preset even though it is
+the error reporting mode and therefore requires confirmation even though it is
 used for diagnostics.
 
 The `set-modem-minimum-functionality`, `set-modem-full-functionality`, and
 `restart-modem` presets are modem state-changing operations, not diagnostic
 reads. They can detach from the network, restart network registration, disrupt
 PDP state, drop the current USB/AT session, or require the user to reconnect
-and reselect the modem. They are visible as dangerous commands and require
-exact typed risk confirmation before sending.
+and reselect the modem. They require a structured review and exact `run`
+confirmation before sending.
 
 ## File Preset TOML
 
@@ -133,7 +139,6 @@ description = "Optional description for humans."
 [[presets]]
 name = "custom-modem-response"
 command = "AT"
-risk = "safe"
 categories = ["custom"]
 # Optional. Use only for known long-running commands.
 timeout_secs = 180
@@ -153,8 +158,6 @@ Required preset fields:
 
 - `name`: unique preset name across all loaded presets.
 - `command`: one AT command line.
-- `risk`: declared risk, one of `safe`, `sensitive`, `write`, `persistent`,
-  `dangerous`, or `unknown`.
 
 Optional preset fields:
 
@@ -162,9 +165,10 @@ Optional preset fields:
   `network`, `pdp`, `apn`, `signal`, `sms`, `diagnostics`, or `modem`.
 - `timeout_secs`: preset-specific timeout hint for known long-running commands.
 
-The command classifier still runs for file presets. A TOML file cannot downgrade
-the effective risk. For example, `AT+CFUN=1,1` remains dangerous even if a file
-incorrectly declares a lower risk.
+The product derives the execution review from the final command. Definition
+metadata cannot override the assessment, effects, data handling, reversibility,
+consequences, or confirmation requirement. A removed `risk` field is rejected
+as an unknown TOML field instead of being silently ignored.
 
 ## Loading File Presets
 
@@ -182,16 +186,20 @@ atctl tui --preset-dir ./presets
 The product presets remain loaded. Loading an external file does not send AT
 commands by itself, but running loaded presets may read sensitive values,
 change modem state, or affect the network. Review the file source, command
-text, destination values, declared risk, and effective risk before running a
+text, destination values, and product-derived execution review before running a
 loaded preset. `atctl` validates the TOML shape, duplicate names, masking, and
-effective risk, but it does not certify that an external definition is
+execution review, but it does not certify that an external definition is
 appropriate for the current device, SIM, network, or endpoint.
 
-`atctl preset list` shows both the preset set label and a trailing
-`source-path` column. Product presets show `-`; file presets show the file path
-that supplied the row. `atctl preset run` prints the source label, file path,
+Human-readable `atctl preset list` output shows `NAME`, `AT COMMAND`, and
+`ATTENTION`. Only confirmation-required rows show an attention warning; normal
+rows do not repeat `not required`. File definitions are grouped once by title
+and file path. `atctl preset show <NAME>` displays the complete command,
+definition origin, categories, timeout, and execution review without USB
+access. Use `--json` with `list` or `show` for complete structured records.
+`atctl preset run` prints the source label, file path,
 and review notice before USB access when a file preset is executed, including
-non-interactive `--yes --risk-ack <risk>` runs.
+non-interactive `--yes` or `--yes --allow-unknown` runs.
 
 Both explicit options are repeatable. Explicit files are loaded in command-line
 order. Explicit directories are loaded in command-line order, and `.toml` files
@@ -221,12 +229,14 @@ The Quectel example file contains Quectel-specific commands such as `AT+QCCID`,
 The Quectel diagnostic presets are file presets because they are
 vendor-specific. `AT+QMBNCFG="List"` is included only as a read-style MBN list
 diagnostic. Other MBN operations such as selecting, deactivating, adding,
-deleting, or auto-selecting MBN files are not ordinary safe presets.
+deleting, or auto-selecting MBN files are not known no-confirmation
+observations.
 
 `AT+QPOWD` is not a product preset because it is Quectel-specific. It is a
-dangerous file preset in the Quectel example set. It may power down the module
-and drop the current USB/AT session. After sending it, do not assume the current
-TUI or PTY session remains usable.
+confirmation-required file preset in the Quectel example set. Its review shows
+the runtime-state change, service interruption, and restart requirement. It may
+power down the module and drop the current USB/AT session. After sending it, do
+not assume the current TUI or PTY session remains usable.
 
 The SORACOM example file contains SORACOM-specific APN setup. Carrier APN values
 and default SORACOM authentication templates belong in file presets, not in
@@ -242,6 +252,7 @@ The same loaded Sequence set is used by:
 
 ```sh
 atctl sequence list
+atctl sequence show <SEQUENCE>
 atctl sequence run <SEQUENCE>
 atctl tui
 ```
@@ -260,6 +271,16 @@ user-authored or repository-managed Sequence definitions are visible, their
 top-level TOML `title` is shown as a non-selectable source group header, such
 as `Quectel Sequences`; the TUI does not add an `Add-on:` prefix.
 
+The TUI keeps every executable item to one list row. Command rows use
+`name │ AT: command`; Sequence rows use `name │ Purpose: preview`. Selection
+does not expand a row. Press `d` for the complete name, AT command or Sequence
+purpose, definition origin, categories, timeout, parameters, and execution
+review; Details also shows the source title and file path for a non-default
+loaded definition. Details is read-only and does not access the modem. Every
+`Run Sequence` phase repeats the complete Sequence name and purpose. Long
+review context scrolls with `PageUp`/`PageDown` while the active value,
+candidate action, or confirmation input remains visible.
+
 Sequence add-ons are external executable definitions. To use repository-managed
 examples or project-local definitions, provide their locations for the current
 invocation:
@@ -275,14 +296,31 @@ When any `--sequence-file` or `--sequence-dir` flag is used, explicit Sequence
 locations are added for that invocation. Product-provided standard Sequences
 remain loaded. Loading a Sequence file does not send AT commands by itself, but
 running loaded Sequences may change modem state, send SMS, or transmit network
-payloads. Review the file source, steps, parameters, destination values,
-declared risk, and effective risk before running a loaded Sequence.
+payloads. Review the file source, steps, parameters, destination values, and
+the product-derived execution review before running a loaded Sequence.
 
-`atctl sequence list` shows both the Sequence set label and a trailing
-`source-path` column. Product Sequences show `-`; file Sequences show the file
-path that supplied the row. `atctl sequence run` prints the source label, file
+Human-readable `atctl sequence list` output shows `NAME`, `PURPOSE`, and
+`ATTENTION`, with the same exception-only warning and one-time file grouping as
+preset lists. `atctl sequence show <SEQUENCE>` displays complete purpose,
+definition origin, categories, timeout, before-running notes, parameter
+sources/defaults/hints/candidate sources, and the definition-boundary execution
+review without USB access. Use `--json` with `list` or `show` for complete
+structured records.
+List rows review the complete definition boundary while parameter values are
+still unresolved. Before a run, atctl binds operator values and defaults,
+re-derives the execution review from the resulting commands, payload boundary,
+conditional internal actions, and cleanup actions, and uses that resolved review
+for confirmation, output, and logs. Values derived from modem responses remain
+explicitly unresolved until their normal Sequence step produces them and are
+checked again before their command is written.
+`atctl sequence run` prints the source label, file
 path, and review notice before USB access when a file Sequence is executed,
-including non-interactive `--yes --risk-ack <risk>` runs.
+including non-interactive `--yes` or `--yes --allow-unknown` runs.
+
+Preset and Sequence executions participate in the normal masked history and
+session-log lifecycle. See [Logging](SAFETY.md#logging) for the protection
+contract and [Review and Manage Logs](TROUBLESHOOTING.md#review-and-manage-logs)
+for paths, `--no-log`, review, Response export, retention, and deletion.
 
 ## Sequence TOML Files
 
@@ -295,7 +333,6 @@ description = "Optional description for humans."
 [[sequences]]
 name = "custom-sequence"
 summary = "Short user-facing summary."
-risk = "write"
 categories = ["data"]
 timeout_secs = 180
 success_notes = [
@@ -336,9 +373,8 @@ Optional top-level fields:
 Required Sequence fields:
 
 - `name`: unique Sequence name across all loaded Sequences.
-- `summary`: concise purpose shown in listings, TUI rows, and execution review.
-- `risk`: declared risk, one of `safe`, `sensitive`, `write`, `persistent`,
-  `dangerous`, or `unknown`.
+- `summary`: concise purpose shown as a TUI row preview and in complete Details,
+  listings, and every TUI Sequence input/review/confirmation phase.
 - at least one step.
 
 Optional Sequence fields:
@@ -381,7 +417,7 @@ dialog shows available values and their source. If values have not been loaded,
 select the action shown in the dialog to obtain them. Opening the dialog alone
 does not read the modem or contact a network endpoint.
 
-Candidate actions use the normal risk confirmation, timeout, masking, Response,
+Candidate actions use the normal execution review, confirmation, timeout, masking, Response,
 and logging behavior. A failed candidate action is reported separately from the
 selected Sequence. Manual entry remains available when the candidate list is
 empty or does not contain the required value.
@@ -440,30 +476,21 @@ output, Response exports, history, session logs, and JSON remain masked by
 default unless the operator explicitly selects unmasked foreground output and
 Response export.
 
-## Logging
-
-Preset and Sequence executions write masked history and session logs by
-default. Use `--no-log` when the current execution must not create either
-normal log artifact:
-
-```sh
-atctl preset run modem-info --no-log
-atctl sequence run sms-receive-check --no-log
-atctl tui --no-log
-```
-
-`--no-log` applies only to the current command or TUI session. It does not hide
-existing logs and does not disable a raw diagnostic export explicitly requested
-with an output path and acknowledgement. Normal log paths follow
-`XDG_STATE_HOME`; see the [README logging section](../README.md#logs) for the
-default paths and an override example.
+Masking uses the final field and template provenance shared by product-provided,
+repository-managed, and user-loaded definitions. A parameter declared
+`sensitive = true` is fully hidden at its generated command, payload, note, and
+recognized echo positions regardless of length. Product-known SMS sender and
+recipient fields are likewise hidden even for short codes. Short operational
+values such as storage indexes, context IDs, message references, ports, and
+counts remain visible unless their own generated position is sensitive. No
+additional user masking rule or Sequence-only setting is required.
 
 ## Standard Sequences
 
 Product-provided standard Sequence targets:
 
 - `sms-send-check`: send an SMS using standard 3GPP TS 27.005 commands. It
-  reviews recipient and message body before USB access, uses write-risk
+  reviews recipient and message body before USB access, requires
   confirmation, and records under `Notes:` / `Analysis:` that `+CMGS` plus
   `OK` is submit evidence rather than destination handset receipt proof.
 - `sms-receive-check`: check received SMS material using standard 3GPP TS
@@ -474,7 +501,8 @@ Product-provided standard Sequence targets:
   decoded before masking so the raw encoded body is not treated as readable
   content.
 - `sms-read-message`: read a specific SMS storage index. Because `AT+CMGR` can
-  change an unread message to read state, this Sequence is write-risk and
+  change an unread message to read state, this Sequence has observation,
+  sensitive-output, and stored-status-change dimensions and
   requires confirmation before USB access. Unmasked foreground output shows
   supported message bodies as decoded text, while normal output stays masked.
   Raw diagnostic export remains a separate acknowledged raw modem exchange and
@@ -535,6 +563,10 @@ declared payload bytes without SMS-style Ctrl-Z. Their acknowledgement query
 steps declare `require_tcp_ack = true`, so `atctl` retries
 `AT+QISEND=<connectID>,0` within the step timeout and fails the Sequence if the
 payload remains unacknowledged instead of reporting `Result: OK`.
+The Sequence review includes the receive-buffer effect of
+`AT+QIRD=<connectID>,<read_length>` because retrieving data advances Quectel's
+read/unread buffer state. `AT+QIRD=<connectID>,0` only queries receive counters
+and does not consume buffered payload data.
 
 Quectel and SORACOM TCP examples provide editable defaults or candidate help for
 routine modem values. PDP context ID uses `candidate = "pdp-context"` with
@@ -581,6 +613,8 @@ assuming one TCP write equals one cloud message.
   https://quectel.com/content/uploads/2024/02/Quectel_EC2xEG2xEG9xEM05_Series_QCFG_AT_Commands_Manual_V1.0.pdf
 - Quectel EC2x/EG9x/EM05 TCP/IP AT commands manual:
   https://sixfab.com/wp-content/uploads/2018/09/Quectel_EC2xEG9xEM05_TCPIP_AT_Commands_Manual_V1.0.pdf
+- Quectel current online AT command manual with `AT+QIRD` buffer semantics:
+  https://developer.quectel.com/doc/shortrange/FGM842D/en/Resources/AT-Firmware/AT-Commands-Manual.html
 - SORACOM service endpoints:
   https://developers.soracom.io/en/docs/reference/endpoints/
 - SORACOM modem testing and Ping Response Service:

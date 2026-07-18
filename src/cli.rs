@@ -5,13 +5,16 @@ use std::time::{Duration, Instant};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 
-use crate::at::command::{command_with_terminator, normalize_command};
-use crate::at::mask::{mask_identifier, mask_sensitive_values};
+use crate::app::operation::{DefinitionOrigin, ExecutionSurface, OperationIdentity, OperationKind};
+use crate::at::command::{
+    command_with_terminator, has_embedded_command_framing, normalize_command,
+};
+use crate::at::mask::{mask_declared_sensitive_value, mask_sensitive_values};
 use crate::at::parser::parse_response;
 use crate::at::response::AtStatus;
-use crate::at::risk::{
-    DirectSendConfirmation, RiskClassification, RiskLevel, classify_direct_command,
-    direct_send_confirmation,
+use crate::at::review::{
+    Assessment, ExecutionAuthorization, ExecutionReview, authorize_execution,
+    is_prompt_required_command, review_direct_command,
 };
 use crate::log::history::{LogListingKind, append_command_history, list_logs};
 use crate::log::raw::{
@@ -31,7 +34,7 @@ use crate::response_export::{validate_response_export_target, write_response_exp
 use crate::sequences::builtin::builtins as sequence_builtins;
 use crate::sequences::engine::{
     SequenceExecution, SequenceParamValue, SequenceReviewValue, SequenceStepResult,
-    execute_sequence, render_sequence_review, required_param_summary, sequence_classification,
+    execute_sequence, render_sequence_review, review_sequence_execution,
     validate_sequence_confirmation,
 };
 use crate::sequences::loader::{
@@ -81,9 +84,9 @@ pub enum Command {
     Inspect(UsbOptions),
     #[command(about = "Send one AT command")]
     Send(SendArgs),
-    #[command(about = "List or run one-shot product and loaded file presets")]
+    #[command(about = "List, inspect, or run one-shot product and loaded file presets")]
     Preset(PresetArgs),
-    #[command(about = "List or run product and loaded multi-step Sequences")]
+    #[command(about = "List, inspect, or run product and loaded multi-step Sequences")]
     Sequence(SequenceArgs),
     #[command(about = "Open the interactive TUI")]
     Tui(TuiArgs),
@@ -196,12 +199,15 @@ pub struct SendArgs {
 
     #[arg(
         long,
-        help = "Run without an interactive risk prompt when paired with --risk-ack"
+        help = "Approve a known confirmation-required operation without an interactive prompt"
     )]
     pub yes: bool,
 
-    #[arg(long = "risk-ack", value_parser = parse_risk_level, help = "Acknowledge the classified risk level for --yes")]
-    pub risk_ack: Option<RiskLevel>,
+    #[arg(
+        long = "allow-unknown",
+        help = "Additionally authorize an unknown operation; requires --yes"
+    )]
+    pub allow_unknown: bool,
 }
 
 #[derive(Debug, Args)]
@@ -214,12 +220,29 @@ pub struct PresetArgs {
 pub enum PresetCommand {
     #[command(about = "List product and loaded file presets")]
     List(PresetListArgs),
+    #[command(about = "Show complete details for one loaded preset")]
+    Show(PresetShowArgs),
     #[command(about = "Run one loaded preset by name")]
     Run(PresetRunArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct PresetListArgs {
+    #[arg(long, help = "Print complete structured JSON records")]
+    pub json: bool,
+
+    #[command(flatten)]
+    pub preset_locations: PresetFileLocationOptions,
+}
+
+#[derive(Debug, Args)]
+pub struct PresetShowArgs {
+    #[arg(help = "Preset name from atctl preset list")]
+    pub name: String,
+
+    #[arg(long, help = "Print complete structured JSON output")]
+    pub json: bool,
+
     #[command(flatten)]
     pub preset_locations: PresetFileLocationOptions,
 }
@@ -273,12 +296,15 @@ pub struct PresetRunArgs {
 
     #[arg(
         long,
-        help = "Run without an interactive risk prompt when paired with --risk-ack"
+        help = "Approve a known confirmation-required operation without an interactive prompt"
     )]
     pub yes: bool,
 
-    #[arg(long = "risk-ack", value_parser = parse_risk_level, help = "Acknowledge the classified risk level for --yes")]
-    pub risk_ack: Option<RiskLevel>,
+    #[arg(
+        long = "allow-unknown",
+        help = "Additionally authorize an unknown operation; requires --yes"
+    )]
+    pub allow_unknown: bool,
 
     #[command(flatten)]
     pub preset_locations: PresetFileLocationOptions,
@@ -294,12 +320,29 @@ pub struct SequenceArgs {
 pub enum SequenceCommand {
     #[command(about = "List product and loaded Sequence definitions")]
     List(SequenceListArgs),
+    #[command(about = "Show complete details for one loaded Sequence")]
+    Show(SequenceShowArgs),
     #[command(about = "Run one loaded Sequence by name")]
     Run(SequenceRunArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct SequenceListArgs {
+    #[arg(long, help = "Print complete structured JSON records")]
+    pub json: bool,
+
+    #[command(flatten)]
+    pub sequence_locations: SequenceFileLocationOptions,
+}
+
+#[derive(Debug, Args)]
+pub struct SequenceShowArgs {
+    #[arg(help = "Sequence name from atctl sequence list")]
+    pub name: String,
+
+    #[arg(long, help = "Print complete structured JSON output")]
+    pub json: bool,
+
     #[command(flatten)]
     pub sequence_locations: SequenceFileLocationOptions,
 }
@@ -308,9 +351,9 @@ pub struct SequenceListArgs {
 #[command(
     after_help = "Parameters are supplied with repeated --param NAME=VALUE options.
 Examples:
-  atctl sequence run sms-send-check --param recipient=+819012345678 --param message='hello' --yes --risk-ack write
-  atctl sequence run soracom-ping-check --sequence-dir examples/sequences --yes --risk-ack write
-  atctl sequence run soracom-unified-endpoint-tcp-send-check --sequence-dir examples/sequences --param payload='hello' --yes --risk-ack write"
+  atctl sequence run sms-send-check --param recipient=+819012345678 --param message='hello' --yes
+  atctl sequence run soracom-ping-check --sequence-dir examples/sequences --yes
+  atctl sequence run soracom-unified-endpoint-tcp-send-check --sequence-dir examples/sequences --param payload='hello' --yes"
 )]
 pub struct SequenceRunArgs {
     #[arg(help = "Sequence name from atctl sequence list")]
@@ -360,12 +403,15 @@ pub struct SequenceRunArgs {
 
     #[arg(
         long,
-        help = "Run without an interactive risk prompt when paired with --risk-ack"
+        help = "Approve a known confirmation-required operation without an interactive prompt"
     )]
     pub yes: bool,
 
-    #[arg(long = "risk-ack", value_parser = parse_risk_level, help = "Acknowledge the classified risk level for --yes")]
-    pub risk_ack: Option<RiskLevel>,
+    #[arg(
+        long = "allow-unknown",
+        help = "Additionally authorize an unknown operation; requires --yes"
+    )]
+    pub allow_unknown: bool,
 
     #[arg(long = "param", value_parser = parse_sequence_param_value, help = "Set one Sequence parameter as NAME=VALUE; repeat for multiple parameters")]
     pub params: Vec<SequenceParamValue>,
@@ -533,11 +579,16 @@ pub fn run_cli(cli: Cli) -> Result<()> {
 
 #[derive(Debug, Clone)]
 pub(crate) struct SendExecution {
-    pub(crate) risk: RiskLevel,
+    pub(crate) surface: ExecutionSurface,
+    pub(crate) operation: OperationIdentity,
+    pub(crate) masked_operation: OperationIdentity,
+    pub(crate) review: ExecutionReview,
+    pub(crate) masked_review: ExecutionReview,
     pub(crate) status: AtStatus,
     pub(crate) text: String,
     pub(crate) lines: Vec<String>,
     pub(crate) raw_text: String,
+    pub(crate) masked_text: String,
     pub(crate) raw_response: Vec<u8>,
     pub(crate) masked: bool,
     pub(crate) duration: Duration,
@@ -545,7 +596,9 @@ pub(crate) struct SendExecution {
 
 #[derive(Debug, Serialize)]
 struct SendJsonOutput<'a> {
-    risk: RiskLevel,
+    surface: ExecutionSurface,
+    operation: OperationIdentity,
+    execution_review: &'a ExecutionReview,
     status: &'a AtStatus,
     masked: bool,
     response: &'a str,
@@ -563,11 +616,11 @@ fn run_send(args: SendArgs) -> Result<()> {
     });
     let mut prompt = StdioConfirmationPrompt;
     let execution = execute_send_with_confirmation(&args, transport, &mut prompt)?;
-    record_command_logs("send", &args, &execution)?;
+    record_command_logs(&args, &execution)?;
     let output = format_send_output(&execution, args.json)?;
     print!("{output}");
     if let Some(path) = args.export_response.as_deref() {
-        let export = format_send_export(&args.command, &execution, args.json)?;
+        let export = format_send_export(&execution, args.json)?;
         export_response(path, &export)?;
     }
     send_status_result(&execution, args.ignore_at_error)
@@ -577,7 +630,13 @@ fn run_preset(args: PresetArgs) -> Result<()> {
     match args.command {
         PresetCommand::List(list_args) => {
             let presets = load_presets(&list_args.preset_locations)?;
-            print!("{}", format_preset_list(&presets));
+            print!("{}", format_preset_list(&presets, list_args.json)?);
+            Ok(())
+        }
+        PresetCommand::Show(show_args) => {
+            let presets = load_presets(&show_args.preset_locations)?;
+            let preset = find_preset(&presets, &show_args.name)?;
+            print!("{}", format_preset_show(preset, show_args.json)?);
             Ok(())
         }
         PresetCommand::Run(run_args) => {
@@ -592,21 +651,21 @@ fn run_preset(args: PresetArgs) -> Result<()> {
                 timeout: Duration::from_secs(send_args.usb.timeout),
                 probe_timeout: Duration::from_secs(ENDPOINT_PROBE_TIMEOUT_SECS),
             });
-            let classification = preset_classification(preset);
             let mut prompt = StdioConfirmationPrompt;
             let execution = execute_command_with_confirmation(
                 &send_args,
                 transport,
                 &mut prompt,
-                classification,
-                &format!("preset:{}", preset.name),
+                preset.review.clone(),
+                ExecutionSurface::Cli,
+                OperationIdentity::preset(preset),
                 external_preset_source(preset),
             )?;
-            record_command_logs(&format!("preset:{}", preset.name), &send_args, &execution)?;
+            record_command_logs(&send_args, &execution)?;
             let output = format_send_output(&execution, send_args.json)?;
             print!("{output}");
             if let Some(path) = send_args.export_response.as_deref() {
-                let export = format_send_export(&send_args.command, &execution, send_args.json)?;
+                let export = format_send_export(&execution, send_args.json)?;
                 export_response(path, &export)?;
             }
             send_status_result(&execution, send_args.ignore_at_error)
@@ -618,7 +677,13 @@ fn run_sequence(args: SequenceArgs) -> Result<()> {
     match args.command {
         SequenceCommand::List(list_args) => {
             let sequences = load_sequences(&list_args.sequence_locations)?;
-            print!("{}", format_sequence_list(&sequences));
+            print!("{}", format_sequence_list(&sequences, list_args.json)?);
+            Ok(())
+        }
+        SequenceCommand::Show(show_args) => {
+            let sequences = load_sequences(&show_args.sequence_locations)?;
+            let sequence = find_sequence(&sequences, &show_args.name)?;
+            print!("{}", format_sequence_show(sequence, show_args.json)?);
             Ok(())
         }
         SequenceCommand::Run(run_args) => {
@@ -626,26 +691,32 @@ fn run_sequence(args: SequenceArgs) -> Result<()> {
             let sequences = load_sequences(&run_args.sequence_locations)?;
             let sequence = find_sequence(&sequences, &run_args.name)?;
             let review = render_sequence_review(sequence, &run_args.params)?;
-            let confirmation =
-                validate_sequence_confirmation(sequence, run_args.yes, run_args.risk_ack)?;
+            let execution_review = review_sequence_execution(sequence, &run_args.params)?;
+            let confirmation = validate_sequence_confirmation(
+                &execution_review,
+                run_args.yes,
+                run_args.allow_unknown,
+            )?;
             let external_source = external_sequence_source(sequence);
             let mut prompt = StdioConfirmationPrompt;
-            if let DirectSendConfirmation::InteractiveRequired { .. } = confirmation {
+            if confirmation == ExecutionAuthorization::InteractiveRequired {
                 prompt.confirm_sequence(
-                    &sequence_classification(sequence),
-                    &sequence.name,
+                    &execution_review,
+                    &OperationIdentity::sequence(sequence),
                     &sequence.before_running,
                     &review,
                     external_source,
                 )?;
             } else {
-                notice_external_definition_without_interactive_confirmation(
+                notice_authorized_execution_without_interactive_confirmation(
                     &mut prompt,
                     confirmation,
+                    &OperationIdentity::sequence(sequence),
+                    &execution_review,
                     external_source,
                 )?;
             }
-            let raw_log = prepare_sequence_raw_log_config(&run_args, sequence)?;
+            let raw_log = prepare_sequence_raw_log_config(&run_args)?;
             let manual_pair = run_args.usb.manual_endpoint_pair()?;
             let transport = UsbAtTransport::new(UsbAtTransportConfig {
                 filter: run_args.usb.to_usb_filter(),
@@ -663,10 +734,12 @@ fn run_sequence(args: SequenceArgs) -> Result<()> {
                 raw_log.as_mut(),
             )?;
             record_sequence_logs(sequence, &run_args, &execution)?;
-            let output = format_sequence_output(&execution, !run_args.no_mask, run_args.json)?;
+            let output =
+                format_sequence_output(sequence, &execution, !run_args.no_mask, run_args.json)?;
             print!("{output}");
             if let Some(path) = run_args.export_response.as_deref() {
-                let export = format_sequence_export(&execution, !run_args.no_mask, run_args.json)?;
+                let export =
+                    format_sequence_export(sequence, &execution, !run_args.no_mask, run_args.json)?;
                 export_response(path, &export)?;
             }
             sequence_status_result(&execution, run_args.ignore_at_error)
@@ -710,7 +783,6 @@ fn execute_tui_preset_with_usb(
     usb: UsbOptions,
     normal_logging_enabled: bool,
 ) -> Result<SendExecution> {
-    let requires_confirmation = preset.risk.requires_confirmation();
     let send_args = SendArgs {
         command: preset.command.clone(),
         usb,
@@ -722,7 +794,7 @@ fn execute_tui_preset_with_usb(
         json: false,
         ignore_at_error: false,
         yes: confirmed,
-        risk_ack: (confirmed && requires_confirmation).then_some(preset.risk),
+        allow_unknown: confirmed && preset.review.assessment == Assessment::Unknown,
     };
     let manual_pair = send_args.usb.manual_endpoint_pair()?;
     let transport = UsbAtTransport::new(UsbAtTransportConfig {
@@ -731,17 +803,17 @@ fn execute_tui_preset_with_usb(
         timeout: Duration::from_secs(send_args.usb.timeout),
         probe_timeout: Duration::from_secs(ENDPOINT_PROBE_TIMEOUT_SECS),
     });
-    let classification = preset_classification(preset);
     let mut prompt = RejectingConfirmationPrompt;
     let execution = execute_command_with_confirmation(
         &send_args,
         transport,
         &mut prompt,
-        classification,
-        &format!("tui:{}", preset.name),
+        preset.review.clone(),
+        ExecutionSurface::Tui,
+        OperationIdentity::preset(preset),
         None,
     )?;
-    record_command_logs(&format!("tui:{}", preset.name), &send_args, &execution)?;
+    record_command_logs(&send_args, &execution)?;
     Ok(execution)
 }
 
@@ -762,13 +834,14 @@ pub(crate) fn execute_tui_sequence(
         usb.address = Some(selection.address);
     }
 
+    let execution_review = review_sequence_execution(sequence, params)?;
     let confirmation = validate_sequence_confirmation(
-        sequence,
+        &execution_review,
         confirmed,
-        (confirmed && sequence.risk.requires_confirmation()).then_some(sequence.risk),
+        confirmed && execution_review.assessment == Assessment::Unknown,
     )?;
-    if let DirectSendConfirmation::InteractiveRequired { risk } = confirmation {
-        return Err(AtctlError::ConfirmationRequired { risk });
+    if confirmation == ExecutionAuthorization::InteractiveRequired {
+        return Err(AtctlError::ConfirmationRequired);
     }
 
     let manual_pair = usb.manual_endpoint_pair()?;
@@ -849,23 +922,41 @@ where
     T: AtTransport,
     P: ConfirmationPrompt,
 {
-    let classification = classify_direct_command(&args.command);
-    execute_command_with_confirmation(args, transport, prompt, classification, "send", None)
+    let review = review_direct_command(&args.command);
+    execute_command_with_confirmation(
+        args,
+        transport,
+        prompt,
+        review,
+        ExecutionSurface::Cli,
+        OperationIdentity::command(&args.command),
+        None,
+    )
 }
 
 fn execute_command_with_confirmation<T, P>(
     args: &SendArgs,
     mut transport: T,
     prompt: &mut P,
-    classification: RiskClassification,
-    source: &str,
+    review: ExecutionReview,
+    surface: ExecutionSurface,
+    operation: OperationIdentity,
     external_source: Option<ExternalDefinitionSource<'_>>,
 ) -> Result<SendExecution>
 where
     T: AtTransport,
     P: ConfirmationPrompt,
 {
-    let confirmation = direct_send_confirmation(&classification, args.yes, args.risk_ack)?;
+    if is_prompt_required_command(&args.command) {
+        return Err(AtctlError::PromptRequiredOneShot);
+    }
+    if has_embedded_command_framing(&args.command) {
+        return Err(AtctlError::InvalidValue {
+            name: "command",
+            value: "embedded command framing or control characters are not allowed".to_owned(),
+        });
+    }
+    let confirmation = authorize_execution(&review, args.yes, args.allow_unknown)?;
     if args.usb.timeout == 0 {
         return Err(AtctlError::InvalidValue {
             name: "--timeout",
@@ -873,29 +964,43 @@ where
         });
     }
 
-    if let DirectSendConfirmation::InteractiveRequired { .. } = confirmation {
-        prompt.confirm(&classification, external_source)?;
+    if confirmation == ExecutionAuthorization::InteractiveRequired {
+        prompt.confirm(&operation, &review, external_source)?;
     } else {
-        notice_external_definition_without_interactive_confirmation(
+        notice_authorized_execution_without_interactive_confirmation(
             prompt,
             confirmation,
+            &operation,
+            &review,
             external_source,
         )?;
     }
 
-    let raw_log = prepare_raw_log_config(args, prompt, source)?;
+    let raw_log = prepare_raw_log_config(args, prompt, surface)?;
     let started = Instant::now();
     transport.open()?;
+    let current_review = review_direct_command(&args.command);
+    if current_review != review {
+        let _ = transport.close();
+        return Err(AtctlError::OperationOutsideReviewedBoundary {
+            operation: current_review.normalized_operation,
+        });
+    }
     let tx = command_with_terminator(&args.command);
     if let Err(error) = transport.write_command(&tx) {
         append_cli_raw_error(
             raw_log.as_ref(),
-            &args.command,
-            classification.risk,
-            started.elapsed(),
-            "write_command",
-            &error,
-            tx.as_bytes(),
+            RawLogTransportError {
+                operation: &operation,
+                command_name: None,
+                command: &args.command,
+                review: &review,
+                duration: started.elapsed(),
+                stage: "write_command",
+                error: &error.to_string(),
+                tx_bytes: tx.as_bytes(),
+                rx_bytes: b"",
+            },
         )?;
         let _ = transport.close();
         return Err(error);
@@ -905,12 +1010,17 @@ where
         Err(error) => {
             append_cli_raw_error(
                 raw_log.as_ref(),
-                &args.command,
-                classification.risk,
-                started.elapsed(),
-                "read_response",
-                &error,
-                tx.as_bytes(),
+                RawLogTransportError {
+                    operation: &operation,
+                    command_name: None,
+                    command: &args.command,
+                    review: &review,
+                    duration: started.elapsed(),
+                    stage: "read_response",
+                    error: &error.to_string(),
+                    tx_bytes: tx.as_bytes(),
+                    rx_bytes: b"",
+                },
             )?;
             let _ = transport.close();
             return Err(error);
@@ -925,18 +1035,32 @@ where
     let raw_text = response.text;
     let raw_lines = response.lines;
     let status = response.status;
-    let text = mask_if_needed(&raw_text, masked);
-    let lines = raw_lines
-        .iter()
-        .map(|line| mask_if_needed(line, masked))
-        .collect();
+    let masked_text = mask_sensitive_values(&raw_text);
+    let masked_lines = masked_text.lines().map(str::to_owned).collect::<Vec<_>>();
+    let text = if masked {
+        masked_text.clone()
+    } else {
+        raw_text.clone()
+    };
+    let lines = if masked {
+        masked_lines.clone()
+    } else {
+        raw_lines.clone()
+    };
+    let masked_operation = operation.masked();
+    let masked_review = review.masked();
 
     let execution = SendExecution {
-        risk: classification.risk,
+        surface,
+        operation,
+        masked_operation,
+        review,
+        masked_review,
         status,
         text,
         lines,
         raw_text,
+        masked_text,
         raw_response,
         masked,
         duration,
@@ -945,9 +1069,10 @@ where
     if let Some(raw_log) = raw_log.as_ref() {
         let mut raw_log = RawLogSink::create(raw_log.clone())?;
         raw_log.append_exchange(RawLogExchange {
+            operation: &execution.operation,
             command_name: None,
             command: &args.command,
-            risk: execution.risk,
+            review: &execution.review,
             status: &execution.status,
             duration: execution.duration,
             tx_bytes: tx.as_bytes(),
@@ -961,28 +1086,13 @@ where
 
 fn append_cli_raw_error(
     raw_log: Option<&RawLogConfig>,
-    command: &str,
-    risk: RiskLevel,
-    duration: Duration,
-    stage: &'static str,
-    error: &AtctlError,
-    tx_bytes: &[u8],
+    error: RawLogTransportError<'_>,
 ) -> Result<()> {
     let Some(raw_log) = raw_log else {
         return Ok(());
     };
-    let error = error.to_string();
     let mut raw_log = RawLogSink::create(raw_log.clone())?;
-    raw_log.append_transport_error(RawLogTransportError {
-        command_name: None,
-        command,
-        risk,
-        duration,
-        stage,
-        error: &error,
-        tx_bytes,
-        rx_bytes: b"",
-    })
+    raw_log.append_transport_error(error)
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1015,8 +1125,63 @@ fn print_external_definition_notice(source: ExternalDefinitionSource<'_>) {
     eprintln!("Source: {}", source.label);
     eprintln!("File: {}", source.path);
     eprintln!(
-        "Review this external definition before running it; atctl validates format, duplicate names, masking, and effective risk, but does not certify that the loaded commands are appropriate for your device, SIM, network, or endpoint."
+        "Review this external definition before running it; atctl validates format and duplicate names and derives the execution review from the final operation, but cannot establish device-, SIM-, network-, or endpoint-specific behavior that is not covered by a product rule."
     );
+}
+
+fn confirmation_token(review: &ExecutionReview) -> &'static str {
+    if review.assessment == Assessment::Unknown {
+        "unknown"
+    } else {
+        "run"
+    }
+}
+
+fn print_operation_identity(operation: &OperationIdentity) {
+    for line in operation_identity_output_lines(operation) {
+        eprintln!("{line}");
+    }
+}
+
+fn operation_identity_output_lines(operation: &OperationIdentity) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Type: {}",
+        match operation.kind {
+            OperationKind::Command => "Command",
+            OperationKind::Preset => "Preset",
+            OperationKind::Sequence => "Sequence",
+        }
+    )];
+    if let Some(name) = &operation.name {
+        lines.push(format!("Name: {name}"));
+    }
+    if let Some(command) = &operation.command {
+        lines.push(format!("AT command: {}", mask_sensitive_values(command)));
+    }
+    if let Some(purpose) = &operation.purpose {
+        lines.push(format!("Purpose: {purpose}"));
+    }
+    lines
+}
+
+fn print_execution_review_sections(review: &ExecutionReview) {
+    for line in execution_review_output_lines(review) {
+        eprintln!("{line}");
+    }
+}
+
+fn execution_review_output_lines(review: &ExecutionReview) -> Vec<String> {
+    let mut lines = Vec::new();
+    if review.assessment == Assessment::Unknown {
+        lines.push("! Effects are not fully known".to_owned());
+    }
+    for section in review.presentation_sections() {
+        lines.push(format!("{}:", section.kind.heading()));
+        for item in section.items {
+            lines.push(format!("  - {item}"));
+        }
+    }
+    lines
 }
 
 trait ConfirmationPrompt {
@@ -1030,19 +1195,33 @@ trait ConfirmationPrompt {
 
     fn confirm(
         &mut self,
-        classification: &RiskClassification,
+        operation: &OperationIdentity,
+        review: &ExecutionReview,
         external_source: Option<ExternalDefinitionSource<'_>>,
     ) -> Result<()>;
 
-    fn confirm_sequence(
+    fn notice_authorized_execution(
         &mut self,
-        classification: &RiskClassification,
-        _sequence_name: &str,
-        _before_running: &[String],
-        _review: &[SequenceReviewValue],
+        operation: &OperationIdentity,
+        review: &ExecutionReview,
         external_source: Option<ExternalDefinitionSource<'_>>,
     ) -> Result<()> {
-        self.confirm(classification, external_source)
+        let _ = (operation, review);
+        if let Some(source) = external_source {
+            self.notice_external_definition(source)?;
+        }
+        Ok(())
+    }
+
+    fn confirm_sequence(
+        &mut self,
+        review: &ExecutionReview,
+        operation: &OperationIdentity,
+        _before_running: &[String],
+        _review_values: &[SequenceReviewValue],
+        external_source: Option<ExternalDefinitionSource<'_>>,
+    ) -> Result<()> {
+        self.confirm(operation, review, external_source)
     }
 
     fn confirm_raw_log(&mut self, _path: &std::path::Path) -> Result<()> {
@@ -1063,23 +1242,22 @@ impl ConfirmationPrompt for StdioConfirmationPrompt {
 
     fn confirm(
         &mut self,
-        classification: &RiskClassification,
+        operation: &OperationIdentity,
+        review: &ExecutionReview,
         external_source: Option<ExternalDefinitionSource<'_>>,
     ) -> Result<()> {
         if !io::stdin().is_terminal() {
-            return Err(AtctlError::ConfirmationRequired {
-                risk: classification.risk,
-            });
+            return Err(AtctlError::ConfirmationRequired);
         }
 
         eprintln!("Command requires confirmation before sending.");
+        print_operation_identity(operation);
+        print_execution_review_sections(review);
         if let Some(source) = external_source {
             print_external_definition_notice(source);
         }
-        eprintln!("Command: {}", classification.normalized_command);
-        eprintln!("Risk: {}", classification.risk);
-        eprintln!("Reason: {}", classification.reason);
-        eprint!("Type `{}` to continue: ", classification.risk);
+        let token = confirmation_token(review);
+        eprint!("Type `{token}` to continue: ");
         io::stderr()
             .flush()
             .map_err(|error| AtctlError::Transport(format!("failed to flush prompt: {error}")))?;
@@ -1089,31 +1267,27 @@ impl ConfirmationPrompt for StdioConfirmationPrompt {
             AtctlError::Transport(format!("failed to read confirmation: {error}"))
         })?;
 
-        if input.trim() == classification.risk.to_string() {
+        if input.trim() == token {
             Ok(())
         } else {
-            Err(AtctlError::ConfirmationRequired {
-                risk: classification.risk,
-            })
+            Err(AtctlError::ConfirmationRequired)
         }
     }
 
     fn confirm_sequence(
         &mut self,
-        classification: &RiskClassification,
-        sequence_name: &str,
+        execution_review: &ExecutionReview,
+        operation: &OperationIdentity,
         before_running: &[String],
         review: &[SequenceReviewValue],
         external_source: Option<ExternalDefinitionSource<'_>>,
     ) -> Result<()> {
         if !io::stdin().is_terminal() {
-            return Err(AtctlError::ConfirmationRequired {
-                risk: classification.risk,
-            });
+            return Err(AtctlError::ConfirmationRequired);
         }
 
         eprintln!("Sequence requires confirmation before sending.");
-        eprintln!("Sequence: {sequence_name}");
+        print_operation_identity(operation);
         if let Some(source) = external_source {
             print_external_definition_notice(source);
         }
@@ -1130,9 +1304,9 @@ impl ConfirmationPrompt for StdioConfirmationPrompt {
                 eprintln!("  {}{}: {}", item.label, sensitive, item.value);
             }
         }
-        eprintln!("Risk: {}", classification.risk);
-        eprintln!("Reason: {}", classification.reason);
-        eprint!("Type `{}` to continue: ", classification.risk);
+        print_execution_review_sections(execution_review);
+        let token = confirmation_token(execution_review);
+        eprint!("Type `{token}` to continue: ");
         io::stderr()
             .flush()
             .map_err(|error| AtctlError::Transport(format!("failed to flush prompt: {error}")))?;
@@ -1142,13 +1316,26 @@ impl ConfirmationPrompt for StdioConfirmationPrompt {
             AtctlError::Transport(format!("failed to read confirmation: {error}"))
         })?;
 
-        if input.trim() == classification.risk.to_string() {
+        if input.trim() == token {
             Ok(())
         } else {
-            Err(AtctlError::ConfirmationRequired {
-                risk: classification.risk,
-            })
+            Err(AtctlError::ConfirmationRequired)
         }
+    }
+
+    fn notice_authorized_execution(
+        &mut self,
+        operation: &OperationIdentity,
+        review: &ExecutionReview,
+        external_source: Option<ExternalDefinitionSource<'_>>,
+    ) -> Result<()> {
+        eprintln!("Authorized operation review:");
+        print_operation_identity(operation);
+        print_execution_review_sections(review);
+        if let Some(source) = external_source {
+            print_external_definition_notice(source);
+        }
+        Ok(())
     }
 
     fn confirm_raw_log(&mut self, path: &std::path::Path) -> Result<()> {
@@ -1178,24 +1365,26 @@ impl ConfirmationPrompt for StdioConfirmationPrompt {
     }
 }
 
-fn notice_external_definition_without_interactive_confirmation<P>(
+fn notice_authorized_execution_without_interactive_confirmation<P>(
     prompt: &mut P,
-    confirmation: DirectSendConfirmation,
+    confirmation: ExecutionAuthorization,
+    operation: &OperationIdentity,
+    review: &ExecutionReview,
     external_source: Option<ExternalDefinitionSource<'_>>,
 ) -> Result<()>
 where
     P: ConfirmationPrompt,
 {
-    if matches!(
-        confirmation,
-        DirectSendConfirmation::InteractiveRequired { .. }
-    ) {
+    if confirmation == ExecutionAuthorization::InteractiveRequired {
         return Ok(());
     }
-    if let Some(source) = external_source {
-        prompt.notice_external_definition(source)?;
+    if confirmation == ExecutionAuthorization::NonInteractiveApproved {
+        prompt.notice_authorized_execution(operation, review, external_source)
+    } else if let Some(source) = external_source {
+        prompt.notice_external_definition(source)
+    } else {
+        Ok(())
     }
-    Ok(())
 }
 
 struct RejectingConfirmationPrompt;
@@ -1203,12 +1392,11 @@ struct RejectingConfirmationPrompt;
 impl ConfirmationPrompt for RejectingConfirmationPrompt {
     fn confirm(
         &mut self,
-        classification: &RiskClassification,
+        _operation: &OperationIdentity,
+        _review: &ExecutionReview,
         _external_source: Option<ExternalDefinitionSource<'_>>,
     ) -> Result<()> {
-        Err(AtctlError::ConfirmationRequired {
-            risk: classification.risk,
-        })
+        Err(AtctlError::ConfirmationRequired)
     }
 }
 
@@ -1219,19 +1407,18 @@ struct NonInteractiveConfirmationPrompt;
 impl ConfirmationPrompt for NonInteractiveConfirmationPrompt {
     fn confirm(
         &mut self,
-        classification: &RiskClassification,
+        _operation: &OperationIdentity,
+        _review: &ExecutionReview,
         _external_source: Option<ExternalDefinitionSource<'_>>,
     ) -> Result<()> {
-        Err(AtctlError::ConfirmationRequired {
-            risk: classification.risk,
-        })
+        Err(AtctlError::ConfirmationRequired)
     }
 }
 
 fn prepare_raw_log_config<P>(
     args: &SendArgs,
     prompt: &mut P,
-    source: &str,
+    surface: ExecutionSurface,
 ) -> Result<Option<RawLogConfig>>
 where
     P: ConfirmationPrompt,
@@ -1255,17 +1442,10 @@ where
     }
 
     validate_raw_log_target(path)?;
-    Ok(Some(RawLogConfig::new(
-        path.clone(),
-        "cli",
-        source.to_owned(),
-    )))
+    Ok(Some(RawLogConfig::new(path.clone(), surface)))
 }
 
-fn prepare_sequence_raw_log_config(
-    args: &SequenceRunArgs,
-    sequence: &Sequence,
-) -> Result<Option<RawLogConfig>> {
+fn prepare_sequence_raw_log_config(args: &SequenceRunArgs) -> Result<Option<RawLogConfig>> {
     let Some(path) = &args.raw_log_file else {
         if args.raw_log_ack.is_some() {
             return Err(AtctlError::InvalidValue {
@@ -1278,11 +1458,7 @@ fn prepare_sequence_raw_log_config(
 
     require_raw_log_ack(args.raw_log_ack.as_deref())?;
     validate_raw_log_target(path)?;
-    Ok(Some(RawLogConfig::new(
-        path.clone(),
-        "cli",
-        format!("sequence:{}", sequence.name),
-    )))
+    Ok(Some(RawLogConfig::new(path.clone(), ExecutionSurface::Cli)))
 }
 
 fn bridge_raw_log_config(args: &BridgeArgs) -> Result<Option<RawLogConfig>> {
@@ -1298,7 +1474,7 @@ fn bridge_raw_log_config(args: &BridgeArgs) -> Result<Option<RawLogConfig>> {
 
     require_raw_log_ack(args.raw_log_ack.as_deref())?;
     validate_raw_log_target(path)?;
-    Ok(Some(RawLogConfig::new(path.clone(), "bridge", "bridge")))
+    Ok(Some(RawLogConfig::new(path.clone(), ExecutionSurface::Pty)))
 }
 
 pub(crate) fn load_presets(locations: &PresetFileLocationOptions) -> Result<Vec<Preset>> {
@@ -1347,63 +1523,392 @@ fn find_sequence<'a>(sequences: &'a [Sequence], name: &str) -> Result<&'a Sequen
         })
 }
 
-fn format_preset_list(presets: &[Preset]) -> String {
-    let mut output = String::from(
-        "name\tpreset-set\tdeclared-risk\teffective-risk\ttimeout-secs\tcategories\tcommand\tsource-path\n",
-    );
-    for preset in presets {
-        let categories = if preset.categories.is_empty() {
-            "-".to_owned()
+#[derive(Debug, Serialize)]
+struct PresetDiscovery<'a> {
+    operation: OperationIdentity,
+    categories: &'a [String],
+    timeout_secs: Option<u64>,
+    execution_review: &'a ExecutionReview,
+}
+
+#[derive(Debug, Serialize)]
+struct SequenceDiscovery<'a> {
+    operation: OperationIdentity,
+    categories: &'a [String],
+    timeout_secs: Option<u64>,
+    before_running: &'a [String],
+    parameters: Vec<SequenceParameterDiscovery<'a>>,
+    execution_review: &'a ExecutionReview,
+}
+
+#[derive(Debug, Serialize)]
+struct SequenceParameterDiscovery<'a> {
+    name: &'a str,
+    label: &'a str,
+    required: bool,
+    sensitive: bool,
+    default: Option<&'a str>,
+    source: &'static str,
+    candidate: Option<&'static str>,
+    hint: Option<&'a str>,
+}
+
+fn preset_discovery(preset: &Preset) -> PresetDiscovery<'_> {
+    PresetDiscovery {
+        operation: OperationIdentity::preset(preset),
+        categories: &preset.categories,
+        timeout_secs: preset.timeout_secs,
+        execution_review: &preset.review,
+    }
+}
+
+fn sequence_discovery(sequence: &Sequence) -> SequenceDiscovery<'_> {
+    SequenceDiscovery {
+        operation: OperationIdentity::sequence(sequence),
+        categories: &sequence.categories,
+        timeout_secs: sequence.timeout_secs,
+        before_running: &sequence.before_running,
+        parameters: sequence
+            .params
+            .iter()
+            .map(|param| SequenceParameterDiscovery {
+                name: &param.name,
+                label: &param.label,
+                required: param.required,
+                sensitive: param.sensitive,
+                default: param.default_value.as_deref(),
+                source: param.source.label(),
+                candidate: param.candidate.map(|candidate| candidate.label()),
+                hint: param.hint.as_deref(),
+            })
+            .collect(),
+        execution_review: &sequence.review,
+    }
+}
+
+fn format_preset_list(presets: &[Preset], json: bool) -> Result<String> {
+    if json {
+        let rows = presets.iter().map(preset_discovery).collect::<Vec<_>>();
+        return Ok(format!("{}\n", serde_json::to_string_pretty(&rows)?));
+    }
+    Ok(format_discovery_table(
+        presets.iter().map(|preset| DiscoveryRow {
+            name: &preset.name,
+            preview: &preset.command,
+            attention: confirmation_exception_label(&preset.review),
+            source_title: (!preset.origin.is_built_in()).then(|| preset.origin.label()),
+            source_path: preset.origin.file_path(),
+        }),
+        "AT COMMAND",
+    ))
+}
+
+fn format_sequence_list(sequences: &[Sequence], json: bool) -> Result<String> {
+    if json {
+        let rows = sequences.iter().map(sequence_discovery).collect::<Vec<_>>();
+        return Ok(format!("{}\n", serde_json::to_string_pretty(&rows)?));
+    }
+    Ok(format_discovery_table(
+        sequences.iter().map(|sequence| DiscoveryRow {
+            name: &sequence.name,
+            preview: &sequence.summary,
+            attention: confirmation_exception_label(&sequence.review),
+            source_title: (!sequence.origin.is_built_in()).then(|| sequence.origin.label()),
+            source_path: sequence.origin.file_path(),
+        }),
+        "PURPOSE",
+    ))
+}
+
+fn format_preset_show(preset: &Preset, json: bool) -> Result<String> {
+    if json {
+        return Ok(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&preset_discovery(preset))?
+        ));
+    }
+    let mut lines = vec![
+        "Type: Preset".to_owned(),
+        format!("Name: {}", preset.name),
+        format!("AT command: {}", preset.command),
+    ];
+    push_definition_lines(&mut lines, &OperationIdentity::preset(preset));
+    lines.push(format!(
+        "Categories: {}",
+        category_summary(&preset.categories)
+    ));
+    lines.push(format!(
+        "Timeout: {} seconds{}",
+        preset.timeout_secs.unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS),
+        if preset.timeout_secs.is_some() {
+            ""
         } else {
-            preset.categories.join(",")
-        };
-        let timeout = preset
+            " (default)"
+        }
+    ));
+    lines.push(String::new());
+    lines.push("Execution review:".to_owned());
+    lines.extend(complete_execution_review_output_lines(&preset.review));
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
+fn format_sequence_show(sequence: &Sequence, json: bool) -> Result<String> {
+    if json {
+        return Ok(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&sequence_discovery(sequence))?
+        ));
+    }
+    let mut lines = vec![
+        "Type: Sequence".to_owned(),
+        format!("Name: {}", sequence.name),
+        format!("Purpose: {}", sequence.summary),
+    ];
+    push_definition_lines(&mut lines, &OperationIdentity::sequence(sequence));
+    lines.push(format!(
+        "Categories: {}",
+        category_summary(&sequence.categories)
+    ));
+    lines.push(format!(
+        "Timeout: {} seconds{}",
+        sequence
             .timeout_secs
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "-".to_owned());
+            .unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS),
+        if sequence.timeout_secs.is_some() {
+            ""
+        } else {
+            " (default)"
+        }
+    ));
+    if !sequence.before_running.is_empty() {
+        lines.push("Before running:".to_owned());
+        lines.extend(
+            sequence
+                .before_running
+                .iter()
+                .map(|item| format!("  - {item}")),
+        );
+    }
+    if sequence.params.is_empty() {
+        lines.push("Parameters: none".to_owned());
+    } else {
+        lines.push("Parameters:".to_owned());
+        for param in &sequence.params {
+            lines.push(format!(
+                "  - {} ({}){}{}",
+                param.name,
+                param.label,
+                if param.required {
+                    "; required"
+                } else {
+                    "; optional"
+                },
+                if param.sensitive { "; sensitive" } else { "" }
+            ));
+            lines.push(format!("    Source: {}", param.source.label()));
+            if let Some(default) = &param.default_value {
+                lines.push(format!("    Default: {default}"));
+            }
+            if let Some(candidate) = param.candidate {
+                lines.push(format!("    Candidates: {}", candidate.label()));
+            }
+            if let Some(hint) = &param.hint {
+                lines.push(format!("    Hint: {hint}"));
+            }
+        }
+    }
+    lines.push(String::new());
+    lines.push("Execution review:".to_owned());
+    lines.extend(complete_execution_review_output_lines(&sequence.review));
+    Ok(format!("{}\n", lines.join("\n")))
+}
+
+struct DiscoveryRow<'a> {
+    name: &'a str,
+    preview: &'a str,
+    attention: Option<&'static str>,
+    source_title: Option<&'a str>,
+    source_path: Option<&'a str>,
+}
+
+fn format_discovery_table<'a>(
+    rows: impl Iterator<Item = DiscoveryRow<'a>>,
+    preview_heading: &str,
+) -> String {
+    let rows = rows.collect::<Vec<_>>();
+    let width = if io::stdout().is_terminal() {
+        crossterm::terminal::size()
+            .map(|(width, _)| usize::from(width))
+            .unwrap_or(120)
+    } else {
+        120
+    };
+    let attention_width = rows
+        .iter()
+        .filter_map(|row| row.attention)
+        .map(display_width)
+        .max()
+        .unwrap_or_else(|| display_width("ATTENTION"));
+    let max_name = rows
+        .iter()
+        .map(|row| display_width(row.name))
+        .max()
+        .unwrap_or_else(|| display_width("NAME"));
+    let name_width = max_name
+        .max(display_width("NAME"))
+        .min(28)
+        .min(width.saturating_sub(attention_width + 5).max(1));
+    let preview_width = width
+        .saturating_sub(name_width + attention_width + 4)
+        .max(1);
+    let mut output = format!(
+        "{}  {}  {}\n",
+        pad_display("NAME", name_width),
+        pad_display(preview_heading, preview_width),
+        "ATTENTION"
+    );
+    let mut current_source: Option<(&str, Option<&str>)> = None;
+    for row in rows {
+        let source = row.source_title.map(|title| (title, row.source_path));
+        if source != current_source {
+            if let Some(title) = row.source_title {
+                output.push('\n');
+                output.push_str(&format!("Loaded from: {title}\n"));
+                if let Some(path) = row.source_path {
+                    output.push_str(&format!("File: {path}\n"));
+                }
+            }
+            current_source = source;
+        }
         output.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            preset.name,
-            preset.origin.label(),
-            preset.declared_risk,
-            preset.risk,
-            timeout,
-            categories,
-            preset.command,
-            preset.origin.file_path().unwrap_or("-")
+            "{}  {}  {}\n",
+            pad_display(&truncate_display(row.name, name_width), name_width),
+            pad_display(&truncate_display(row.preview, preview_width), preview_width),
+            row.attention.unwrap_or("")
         ));
     }
     output
 }
 
-fn format_sequence_list(sequences: &[Sequence]) -> String {
-    let mut output = String::from(
-        "name\tsequence-set\tdeclared-risk\teffective-risk\ttimeout-secs\tcategories\trequired-params\tsummary\tsource-path\n",
-    );
-    for sequence in sequences {
-        let categories = if sequence.categories.is_empty() {
-            "-".to_owned()
+fn category_summary(categories: &[String]) -> String {
+    if categories.is_empty() {
+        "none".to_owned()
+    } else {
+        categories.join(", ")
+    }
+}
+
+fn push_definition_lines(lines: &mut Vec<String>, operation: &OperationIdentity) {
+    let Some(definition) = &operation.definition else {
+        return;
+    };
+    lines.push(format!(
+        "Definition origin: {}",
+        match definition.origin {
+            DefinitionOrigin::Product => "product",
+            DefinitionOrigin::File => "file",
+            DefinitionOrigin::Runtime => "runtime",
+        }
+    ));
+    if let Some(title) = &definition.title {
+        lines.push(format!("Definition title: {title}"));
+    }
+    if let Some(path) = &definition.path {
+        lines.push(format!("Definition file: {path}"));
+    }
+}
+
+fn display_width(value: &str) -> usize {
+    ratatui::text::Line::from(value.to_owned()).width()
+}
+
+fn truncate_display(value: &str, width: usize) -> String {
+    if display_width(value) <= width {
+        return value.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    if width == 1 {
+        return "…".to_owned();
+    }
+    let mut output = String::new();
+    let target = width - 1;
+    for character in value.chars() {
+        let candidate = format!("{output}{character}");
+        if display_width(&candidate) > target {
+            break;
+        }
+        output.push(character);
+    }
+    output.push('…');
+    output
+}
+
+fn pad_display(value: &str, width: usize) -> String {
+    format!(
+        "{value}{}",
+        " ".repeat(width.saturating_sub(display_width(value)))
+    )
+}
+
+fn confirmation_exception_label(review: &ExecutionReview) -> Option<&'static str> {
+    if !review.requires_confirmation() {
+        None
+    } else if review.assessment == Assessment::Unknown {
+        Some("! Confirmation required (effects unknown)")
+    } else {
+        Some("! Confirmation required")
+    }
+}
+
+fn complete_execution_review_output_lines(review: &ExecutionReview) -> Vec<String> {
+    fn values<'a>(items: impl Iterator<Item = &'a str>) -> String {
+        let items = items.collect::<Vec<_>>();
+        if items.is_empty() {
+            "none".to_owned()
         } else {
-            sequence.categories.join(",")
-        };
-        let timeout = sequence
-            .timeout_secs
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "-".to_owned());
-        output.push_str(&format!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
-            sequence.name,
-            sequence.origin.label(),
-            sequence.declared_risk,
-            sequence.risk,
-            timeout,
-            categories,
-            required_param_summary(sequence),
-            sequence.summary,
-            sequence.origin.file_path().unwrap_or("-")
+            items.join("; ")
+        }
+    }
+
+    let mut lines = vec![
+        format!("Assessment: {}", review.assessment),
+        format!(
+            "Effects: {}",
+            values(review.effects.iter().map(|effect| effect.label()))
+        ),
+        format!(
+            "Data handling: {}",
+            values(review.data_handling.iter().map(|item| item.label()))
+        ),
+        format!("Reversibility: {}", review.reversibility.label()),
+        format!(
+            "Consequences: {}",
+            values(review.consequences.iter().map(String::as_str))
+        ),
+    ];
+    if !review.not_established.is_empty() {
+        lines.push(format!(
+            "Not established: {}",
+            values(review.not_established.iter().map(String::as_str))
         ));
     }
-    output
+    lines.push(format!(
+        "Confirmation: {}",
+        if review.requires_confirmation() {
+            "required"
+        } else {
+            "not required"
+        }
+    ));
+    if !review.confirmation_reasons.is_empty() {
+        lines.push(format!(
+            "Confirmation reasons: {}",
+            values(review.confirmation_reasons.iter().map(String::as_str))
+        ));
+    }
+    lines
 }
 
 fn send_args_from_preset(preset: &Preset, args: &PresetRunArgs) -> SendArgs {
@@ -1425,15 +1930,7 @@ fn send_args_from_preset(preset: &Preset, args: &PresetRunArgs) -> SendArgs {
         json: args.json,
         ignore_at_error: args.ignore_at_error,
         yes: args.yes,
-        risk_ack: args.risk_ack,
-    }
-}
-
-fn preset_classification(preset: &Preset) -> RiskClassification {
-    RiskClassification {
-        normalized_command: normalize_command(&preset.command),
-        risk: preset.risk,
-        reason: "preset effective risk level",
+        allow_unknown: args.allow_unknown,
     }
 }
 
@@ -1443,18 +1940,18 @@ pub(crate) struct LoggingPaths {
     pub(crate) session_dir: PathBuf,
 }
 
-fn record_command_logs(source: &str, args: &SendArgs, execution: &SendExecution) -> Result<()> {
+fn record_command_logs(args: &SendArgs, execution: &SendExecution) -> Result<()> {
     let Some(paths) = normal_logging_paths(args.no_log)? else {
         return Ok(());
     };
     let record = CommandLogRecord {
         timestamp: now_timestamp(),
-        source: source.to_owned(),
-        command: args.command.clone(),
-        risk: execution.risk,
+        surface: execution.surface,
+        masked_operation: execution.masked_operation.clone(),
+        masked_review: execution.masked_review.clone(),
         status: execution.status.clone(),
         duration: execution.duration,
-        response: execution.text.clone(),
+        masked_response: execution.masked_text.clone(),
         device: LogDeviceSelection {
             requested_vendor_id: args.usb.vid.map(hex_u16),
             requested_product_id: args.usb.pid.map(hex_u16),
@@ -1481,12 +1978,12 @@ fn record_sequence_logs(
     };
     let record = CommandLogRecord {
         timestamp: now_timestamp(),
-        source: format!("sequence:{}", sequence.name),
-        command: format!("sequence {}", sequence.name),
-        risk: execution.risk,
+        surface: ExecutionSurface::Cli,
+        masked_operation: OperationIdentity::sequence(sequence).masked(),
+        masked_review: execution.masked_review.clone(),
         status: execution.status.clone(),
         duration: execution.duration,
-        response: execution.masked_transcript.clone(),
+        masked_response: execution.masked_transcript.clone(),
         device: LogDeviceSelection {
             requested_vendor_id: args.usb.vid.map(hex_u16),
             requested_product_id: args.usb.pid.map(hex_u16),
@@ -1514,12 +2011,12 @@ fn record_tui_sequence_logs(
     };
     let record = CommandLogRecord {
         timestamp: now_timestamp(),
-        source: format!("tui-sequence:{}", sequence.name),
-        command: format!("sequence {}", sequence.name),
-        risk: execution.risk,
+        surface: ExecutionSurface::Tui,
+        masked_operation: OperationIdentity::sequence(sequence).masked(),
+        masked_review: execution.masked_review.clone(),
         status: execution.status.clone(),
         duration: execution.duration,
-        response: execution.masked_transcript.clone(),
+        masked_response: execution.masked_transcript.clone(),
         device: LogDeviceSelection {
             requested_vendor_id: usb.vid.map(hex_u16),
             requested_product_id: usb.pid.map(hex_u16),
@@ -1576,8 +2073,20 @@ fn sequence_status_result(execution: &SequenceExecution, ignore_at_error: bool) 
 
 fn format_send_output(execution: &SendExecution, json: bool) -> Result<String> {
     if json {
+        let review = if execution.masked {
+            execution.masked_review.clone()
+        } else {
+            execution.review.clone()
+        };
+        let operation = if execution.masked {
+            execution.masked_operation.clone()
+        } else {
+            execution.operation.clone()
+        };
         let output = SendJsonOutput {
-            risk: execution.risk,
+            surface: execution.surface,
+            operation,
+            execution_review: &review,
             status: &execution.status,
             masked: execution.masked,
             response: &execution.text,
@@ -1591,24 +2100,31 @@ fn format_send_output(execution: &SendExecution, json: bool) -> Result<String> {
 
 #[derive(Debug, Serialize)]
 struct SendExportJsonOutput<'a> {
-    command: String,
-    risk: RiskLevel,
+    surface: ExecutionSurface,
+    operation: OperationIdentity,
+    execution_review: &'a ExecutionReview,
     status: &'a AtStatus,
     masked: bool,
     response: &'a str,
     lines: &'a [String],
 }
 
-fn format_send_export(command: &str, execution: &SendExecution, json: bool) -> Result<String> {
-    let command = if execution.masked {
-        mask_sensitive_values(command)
+fn format_send_export(execution: &SendExecution, json: bool) -> Result<String> {
+    let operation = if execution.masked {
+        execution.masked_operation.clone()
     } else {
-        command.to_owned()
+        execution.operation.clone()
     };
     if json {
+        let review = if execution.masked {
+            execution.masked_review.clone()
+        } else {
+            execution.review.clone()
+        };
         let output = SendExportJsonOutput {
-            command: command.clone(),
-            risk: execution.risk,
+            surface: execution.surface,
+            operation,
+            execution_review: &review,
             status: &execution.status,
             masked: execution.masked,
             response: &execution.text,
@@ -1618,10 +2134,11 @@ fn format_send_export(command: &str, execution: &SendExecution, json: bool) -> R
     }
 
     let response = execution.text.trim_end_matches(['\r', '\n']);
+    let command = operation.command.as_deref().unwrap_or("AT command");
     let starts_with_command = response
         .lines()
         .find(|line| !line.trim().is_empty())
-        .is_some_and(|line| normalize_command(line) == normalize_command(&command));
+        .is_some_and(|line| normalize_command(line) == normalize_command(command));
     if starts_with_command {
         Ok(format!("{response}\n"))
     } else {
@@ -1631,8 +2148,9 @@ fn format_send_export(command: &str, execution: &SendExecution, json: bool) -> R
 
 #[derive(Debug, Serialize)]
 struct SequenceJsonOutput<'a> {
-    name: &'a str,
-    risk: RiskLevel,
+    surface: ExecutionSurface,
+    operation: OperationIdentity,
+    execution_review: &'a ExecutionReview,
     status: &'a AtStatus,
     masked: bool,
     transcript: &'a str,
@@ -1649,6 +2167,7 @@ struct SequenceStepJsonOutput<'a> {
 }
 
 fn format_sequence_output(
+    sequence: &Sequence,
     execution: &SequenceExecution,
     masked: bool,
     json: bool,
@@ -1659,6 +2178,11 @@ fn format_sequence_output(
         &execution.raw_transcript
     };
     if json {
+        let review = if masked {
+            execution.masked_review.clone()
+        } else {
+            execution.review.clone()
+        };
         let steps = execution
             .steps
             .iter()
@@ -1670,8 +2194,9 @@ fn format_sequence_output(
             execution.raw_notes.iter().map(String::as_str).collect()
         };
         let output = SequenceJsonOutput {
-            name: &execution.name,
-            risk: execution.risk,
+            surface: ExecutionSurface::Cli,
+            operation: OperationIdentity::sequence(sequence),
+            execution_review: &review,
             status: &execution.status,
             masked,
             transcript,
@@ -1685,12 +2210,13 @@ fn format_sequence_output(
 }
 
 fn format_sequence_export(
+    sequence: &Sequence,
     execution: &SequenceExecution,
     masked: bool,
     json: bool,
 ) -> Result<String> {
     if json {
-        return format_sequence_output(execution, masked, true);
+        return format_sequence_output(sequence, execution, masked, true);
     }
 
     let transcript = if masked {
@@ -1699,8 +2225,9 @@ fn format_sequence_export(
         &execution.raw_transcript
     };
     Ok(format!(
-        "Sequence: {}\n\n{}\n",
-        execution.name,
+        "Sequence: {}\nPurpose: {}\n\n{}\n",
+        sequence.name,
+        sequence.summary,
         transcript.trim_end_matches(['\r', '\n'])
     ))
 }
@@ -1731,14 +2258,6 @@ fn sequence_step_json_output(
         } else {
             step.raw_analysis.as_deref()
         },
-    }
-}
-
-fn mask_if_needed(value: &str, masked: bool) -> String {
-    if masked {
-        mask_sensitive_values(value)
-    } else {
-        value.to_owned()
     }
 }
 
@@ -1952,7 +2471,7 @@ fn print_optional(name: &str, value: Option<&str>) {
 
 fn print_optional_masked(name: &str, value: Option<&str>) {
     if let Some(value) = value {
-        println!("  {name}={}", mask_identifier(value));
+        println!("  {name}={}", mask_declared_sensitive_value(value));
     }
 }
 
@@ -1986,10 +2505,6 @@ fn parse_decimal_u8(value: &str) -> std::result::Result<u8, String> {
     value
         .parse::<u8>()
         .map_err(|_| format!("expected decimal u8 value, got {value}"))
-}
-
-fn parse_risk_level(value: &str) -> std::result::Result<RiskLevel, String> {
-    value.parse()
 }
 
 fn parse_sequence_param_value(value: &str) -> std::result::Result<SequenceParamValue, String> {

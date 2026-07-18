@@ -1,6 +1,7 @@
 use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::app::operation::ExecutionSurface;
 use crate::log::raw::{RAW_LOG_ACK, RawLogConfig};
 use crate::sequences::builtin::builtins;
 use crate::transport::test_support::MockTransport;
@@ -39,7 +40,7 @@ fn sms_send_sequence_waits_for_prompt_writes_payload_and_masks_params() {
     .unwrap();
 
     assert_eq!(execution.status, AtStatus::Ok);
-    assert!(execution.masked_transcript.contains("+819*******78"));
+    assert!(execution.masked_transcript.contains("+************"));
     assert!(!execution.masked_transcript.contains("+819012345678"));
     assert!(!execution.masked_transcript.contains("hello from atctl"));
     assert!(execution.masked_transcript.contains("+CMGS"));
@@ -567,7 +568,7 @@ fn sms_receive_sequence_decodes_listed_bodies_in_unmasked_transcript() {
     assert!(candidate.raw_label.contains("901001"));
     assert!(candidate.raw_label.contains("26/06/23,06:03:02+00"));
     assert!(candidate.raw_label.contains("hello! soracom"));
-    assert!(candidate.masked_label.contains("90****"));
+    assert!(candidate.masked_label.contains("******"));
     assert!(candidate.masked_label.contains("<masked sensitive body>"));
 }
 
@@ -708,6 +709,178 @@ fn sequence_defaults_are_bound_before_review_and_execution() {
 }
 
 #[test]
+fn sequence_execution_review_uses_bound_command_values() {
+    let sequence = Sequence::built_in(
+        "dynamic-functionality",
+        "Set the requested modem functionality.",
+        vec!["test".to_owned()],
+        Some(30),
+        vec![SequenceParam {
+            name: "mode".to_owned(),
+            label: "Mode".to_owned(),
+            required: true,
+            sensitive: false,
+            default_value: None,
+            source: crate::sequences::model::SequenceParamSource::User,
+            candidate: None,
+            hint: None,
+        }],
+        vec![SequenceStep {
+            id: "set-mode".to_owned(),
+            label: None,
+            ensure_pdp_context_active: None,
+            send: Some("AT+CFUN={{mode}}".to_owned()),
+            expect: Some("OK".to_owned()),
+            expect_prompt: None,
+            expect_urc: None,
+            payload: None,
+            terminator: StepTerminator::None,
+            require_tcp_ack: false,
+            require_ping_success: false,
+            timeout_secs: None,
+            evidence: None,
+            cleanup_on_failure: None,
+        }],
+    );
+    let params = vec![SequenceParamValue {
+        name: "mode".to_owned(),
+        value: "1,1".to_owned(),
+    }];
+
+    assert!(
+        !sequence
+            .review
+            .effects
+            .contains(&crate::at::review::Effect::DeleteResetOrRecover)
+    );
+    let review = review_sequence_execution(&sequence, &params).unwrap();
+    assert!(
+        review
+            .effects
+            .contains(&crate::at::review::Effect::DeleteResetOrRecover)
+    );
+
+    let execution = execute_sequence(
+        &sequence,
+        &params,
+        MockTransport::with_response(b"\r\nOK\r\n".to_vec()),
+        Duration::from_secs(30),
+        true,
+        None,
+    )
+    .unwrap();
+    assert_eq!(execution.review, review);
+}
+
+#[test]
+fn sensitive_template_positions_are_masked_without_blanket_short_number_masking() {
+    let mut sequence = Sequence::built_in(
+        "sensitive-template",
+        "Exercise sensitive template provenance.",
+        vec!["test".to_owned()],
+        Some(30),
+        vec![SequenceParam {
+            name: "token".to_owned(),
+            label: "Token".to_owned(),
+            required: true,
+            sensitive: true,
+            default_value: None,
+            source: crate::sequences::model::SequenceParamSource::User,
+            candidate: None,
+            hint: None,
+        }],
+        vec![SequenceStep {
+            id: "send-token".to_owned(),
+            label: None,
+            ensure_pdp_context_active: None,
+            send: Some("AT+VENDOR={{token}},7".to_owned()),
+            expect: Some("OK".to_owned()),
+            expect_prompt: None,
+            expect_urc: None,
+            payload: None,
+            terminator: StepTerminator::None,
+            require_tcp_ack: false,
+            require_ping_success: false,
+            timeout_secs: None,
+            evidence: None,
+            cleanup_on_failure: None,
+        }],
+    );
+    sequence.success_notes = vec!["credential={{token}} result=7".to_owned()];
+    let params = [SequenceParamValue {
+        name: "token".to_owned(),
+        value: "901001".to_owned(),
+    }];
+    let transport =
+        MockTransport::with_response(b"AT+VENDOR=901001,7\r\n+VENDOR: 1,7\r\nOK\r\n".to_vec());
+
+    let execution = execute_sequence(
+        &sequence,
+        &params,
+        transport,
+        Duration::from_secs(30),
+        true,
+        None,
+    )
+    .unwrap();
+
+    assert!(execution.raw_transcript.contains("AT+VENDOR=901001,7"));
+    assert!(execution.masked_transcript.contains("AT+VENDOR=******,7"));
+    assert!(
+        execution
+            .masked_transcript
+            .contains("credential=****** result=7")
+    );
+    assert!(execution.masked_transcript.contains("+VENDOR: 1,7"));
+    assert!(!execution.masked_transcript.contains("901001"));
+}
+
+#[test]
+fn sequence_execution_review_rejects_bound_command_framing_before_transport() {
+    let mut sequence = builtins()
+        .into_iter()
+        .find(|sequence| sequence.name == "sms-read-message")
+        .unwrap();
+    sequence.steps[0].send = Some("AT+CMGR={{index}}".to_owned());
+    let params = vec![SequenceParamValue {
+        name: "index".to_owned(),
+        value: "1\rAT+CFUN=1,1".to_owned(),
+    }];
+
+    assert!(matches!(
+        review_sequence_execution(&sequence, &params),
+        Err(AtctlError::OperationOutsideReviewedBoundary { .. })
+    ));
+}
+
+#[test]
+fn sequence_execution_review_keeps_runtime_derived_command_boundaries() {
+    let sequence = builtins()
+        .into_iter()
+        .find(|sequence| sequence.name == "sms-reply-check")
+        .unwrap();
+    let params = vec![
+        SequenceParamValue {
+            name: "index".to_owned(),
+            value: "7".to_owned(),
+        },
+        SequenceParamValue {
+            name: "message".to_owned(),
+            value: "reply".to_owned(),
+        },
+    ];
+
+    let review = review_sequence_execution(&sequence, &params).unwrap();
+
+    assert_eq!(review.assessment, Assessment::Known);
+    assert!(
+        review
+            .effects
+            .contains(&crate::at::review::Effect::CommunicateExternally)
+    );
+}
+
+#[test]
 fn raw_log_records_each_sequence_exchange() {
     let sequence = builtins()
         .into_iter()
@@ -730,7 +903,7 @@ fn raw_log_records_each_sequence_exchange() {
     ];
     let path = unique_temp_dir("sequence-raw").join("case.rawlog");
     let mut raw_log =
-        RawLogSink::create(RawLogConfig::new(path.clone(), "cli", "sequence:sms")).unwrap();
+        RawLogSink::create(RawLogConfig::new(path.clone(), ExecutionSurface::Cli)).unwrap();
     let _ = RAW_LOG_ACK;
     execute_sequence(
         &sequence,
@@ -744,6 +917,9 @@ fn raw_log_records_each_sequence_exchange() {
 
     let raw = fs::read_to_string(path).unwrap();
     assert!(raw.contains("\"event\":\"exchange\""));
+    assert!(raw.contains("\"operation\":{\"kind\":\"sequence\""));
+    assert!(raw.contains("\"name\":\"sms-send-check\""));
+    assert!(!raw.contains("\"source\""));
     assert!(raw.contains("\"command_name\":\"set-text-mode\""));
     assert!(raw.contains("\"command_name\":\"write-message\""));
     assert!(raw.contains("hello from atctl"));
@@ -769,7 +945,7 @@ fn tcp_sequence_fixed_length_payload_does_not_append_ctrl_z() {
     ]);
     let path = unique_temp_dir("tcp-raw").join("case.rawlog");
     let mut raw_log =
-        RawLogSink::create(RawLogConfig::new(path.clone(), "cli", "sequence:tcp")).unwrap();
+        RawLogSink::create(RawLogConfig::new(path.clone(), ExecutionSurface::Cli)).unwrap();
     execute_sequence(
         &sequence,
         &tcp_params(),

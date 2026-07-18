@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::at::mask::mask_sensitive_values;
+use crate::app::operation::{ExecutionSurface, OperationIdentity};
 use crate::log::session::{CommandLogRecord, create_private_dir_all};
 use crate::{AtctlError, Result};
 
@@ -23,9 +23,9 @@ pub enum LogListingKind {
 #[derive(Debug, Serialize)]
 struct HistoryLine<'a> {
     timestamp: &'a str,
-    source: &'a str,
-    command: String,
-    risk: crate::at::risk::RiskLevel,
+    surface: ExecutionSurface,
+    operation: OperationIdentity,
+    execution_review: crate::at::review::ExecutionReview,
     status: &'a crate::at::response::AtStatus,
     duration_ms: u128,
     masked: bool,
@@ -38,9 +38,9 @@ pub fn append_command_history(state_dir: &Path, record: &CommandLogRecord) -> Re
     let path = history_path(state_dir);
     let line = HistoryLine {
         timestamp: record.timestamp.display(),
-        source: &record.source,
-        command: mask_sensitive_values(&record.command),
-        risk: record.risk,
+        surface: record.surface,
+        operation: record.masked_operation.clone(),
+        execution_review: record.masked_review.clone(),
         status: &record.status,
         duration_ms: record.duration.as_millis(),
         masked: true,
@@ -135,25 +135,27 @@ mod tests {
     use std::fs;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+    use crate::app::operation::{ExecutionSurface, OperationIdentity};
     use crate::at::response::AtStatus;
-    use crate::at::risk::RiskLevel;
+    use crate::at::review::review_direct_command;
     use crate::log::session::{
         CommandLogRecord, LogDeviceSelection, now_timestamp, write_masked_session_log,
     };
 
     use super::*;
+    use crate::at::mask::mask_sensitive_values;
 
     #[test]
     fn appends_masked_history_without_response_body() {
         let dir = unique_temp_dir("history");
         let record = CommandLogRecord {
             timestamp: now_timestamp(),
-            source: "send".to_owned(),
-            command: "AT+CIMI".to_owned(),
-            risk: RiskLevel::Sensitive,
+            surface: ExecutionSurface::Cli,
+            masked_operation: OperationIdentity::command("AT+CIMI").masked(),
+            masked_review: review_direct_command("AT+CIMI").masked(),
             status: AtStatus::Ok,
             duration: Duration::from_millis(3),
-            response: "\r\n898110001234567\r\nOK\r\n".to_owned(),
+            masked_response: mask_sensitive_values("\r\n898110001234567\r\nOK\r\n"),
             device: LogDeviceSelection {
                 requested_vendor_id: None,
                 requested_product_id: None,
@@ -169,9 +171,45 @@ mod tests {
         let contents = fs::read_to_string(path).unwrap();
 
         assert!(contents.contains("\"command\":\"AT+CIMI\""));
+        assert!(contents.contains("\"surface\":\"cli\""));
+        assert!(contents.contains("\"operation\":{\"kind\":\"command\""));
+        assert!(!contents.contains("\"source\""));
         assert!(!contents.contains("898110001234567"));
         assert!(!contents.contains("response"));
         assert!(contents.contains("\"raw_log\":false"));
+        assert!(contents.contains("\"assessment\":\"known\""));
+        assert!(!contents.contains("\"risk\""));
+    }
+
+    #[test]
+    fn masks_sensitive_operation_inside_history_review() {
+        let dir = unique_temp_dir("history-review-mask");
+        let command = "AT+CGAUTH=1,2,\"user\",\"secret\"";
+        let record = CommandLogRecord {
+            timestamp: now_timestamp(),
+            surface: ExecutionSurface::Cli,
+            masked_operation: OperationIdentity::command(command).masked(),
+            masked_review: review_direct_command(command).masked(),
+            status: AtStatus::Ok,
+            duration: Duration::from_millis(3),
+            masked_response: mask_sensitive_values("\r\nOK\r\n"),
+            device: LogDeviceSelection {
+                requested_vendor_id: None,
+                requested_product_id: None,
+                requested_bus: None,
+                requested_address: None,
+                interface: None,
+                bulk_in: None,
+                bulk_out: None,
+            },
+        };
+
+        let path = append_command_history(&dir, &record).unwrap();
+        let contents = fs::read_to_string(path).unwrap().to_ascii_lowercase();
+
+        assert!(!contents.contains("user"));
+        assert!(!contents.contains("secret"));
+        assert!(contents.contains('*'));
     }
 
     #[test]
@@ -180,12 +218,12 @@ mod tests {
         let session_dir = state_dir.join("logs");
         let record = CommandLogRecord {
             timestamp: now_timestamp(),
-            source: "send".to_owned(),
-            command: "AT".to_owned(),
-            risk: RiskLevel::Safe,
+            surface: ExecutionSurface::Cli,
+            masked_operation: OperationIdentity::command("AT").masked(),
+            masked_review: review_direct_command("AT").masked(),
             status: AtStatus::Ok,
             duration: Duration::from_millis(1),
-            response: "\r\nOK\r\n".to_owned(),
+            masked_response: mask_sensitive_values("\r\nOK\r\n"),
             device: LogDeviceSelection {
                 requested_vendor_id: None,
                 requested_product_id: None,
@@ -213,12 +251,12 @@ mod tests {
         let session_dir = state_dir.join("logs");
         let record = CommandLogRecord {
             timestamp: now_timestamp(),
-            source: "send".to_owned(),
-            command: "AT".to_owned(),
-            risk: RiskLevel::Safe,
+            surface: ExecutionSurface::Cli,
+            masked_operation: OperationIdentity::command("AT").masked(),
+            masked_review: review_direct_command("AT").masked(),
             status: AtStatus::Ok,
             duration: Duration::from_millis(1),
-            response: "\r\nOK\r\n".to_owned(),
+            masked_response: mask_sensitive_values("\r\nOK\r\n"),
             device: LogDeviceSelection {
                 requested_vendor_id: None,
                 requested_product_id: None,

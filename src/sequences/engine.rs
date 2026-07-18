@@ -2,12 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::at::command::command_with_terminator;
-use crate::at::mask::{mask_identifier, mask_sensitive_values};
+use crate::app::operation::OperationIdentity;
+use crate::at::command::{command_with_terminator, has_embedded_command_framing};
+use crate::at::mask::{mask_declared_sensitive_value, mask_phone_number, mask_sensitive_values};
 use crate::at::parser::parse_response;
 use crate::at::response::AtStatus;
-use crate::at::risk::{
-    DirectSendConfirmation, RiskClassification, RiskLevel, direct_send_confirmation,
+use crate::at::review::{
+    Assessment, ExecutionAuthorization, ExecutionReview, authorize_execution, review_direct_command,
 };
 use crate::log::raw::{RawLogExchange, RawLogSink, RawLogTransportError};
 use crate::sequences::model::{
@@ -67,7 +68,8 @@ pub struct SequenceValueCandidateSet {
 #[derive(Debug, Clone)]
 pub struct SequenceExecution {
     pub name: String,
-    pub risk: RiskLevel,
+    pub review: ExecutionReview,
+    pub masked_review: ExecutionReview,
     pub status: AtStatus,
     pub steps: Vec<SequenceStepResult>,
     pub masked_notes: Vec<String>,
@@ -98,6 +100,13 @@ struct DeferredCleanup {
     id: String,
     label: String,
     command: String,
+    masked_command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RenderedTemplate {
+    raw: String,
+    masked: String,
 }
 
 pub fn execute_sequence<T>(
@@ -112,6 +121,10 @@ where
     T: AtTransport,
 {
     let mut bindings = validate_and_bind_params(sequence, params)?;
+    let execution_review = review_sequence_execution_with_bindings(sequence, &bindings)?;
+    let mut reviewed_sequence = sequence.clone();
+    reviewed_sequence.review = execution_review;
+    let sequence = &reviewed_sequence;
     let started = Instant::now();
     let total_timeout = sequence
         .timeout_secs
@@ -172,12 +185,13 @@ where
         if failure_reason.is_none()
             && let Some(template) = &step.send
         {
-            let command = render_template(template, &bindings, sequence, &step.id)?;
-            rendered_send = Some(command.clone());
+            let command = render_template_pair(template, &bindings, sequence, &step.id)?;
+            rendered_send = Some(command.raw.clone());
             let outcome = execute_command_step(
                 sequence,
                 step,
-                &command,
+                &command.raw,
+                &command.masked,
                 &mut transport,
                 step_timeout(step, timeout, deadline)?,
                 raw_log.as_deref_mut(),
@@ -194,11 +208,12 @@ where
         if failure_reason.is_none()
             && let Some(template) = &step.payload
         {
-            let payload = render_template(template, &bindings, sequence, &step.id)?;
+            let payload = render_template_pair(template, &bindings, sequence, &step.id)?;
             let outcome = execute_payload_step(
                 sequence,
                 step,
-                &payload,
+                &payload.raw,
+                &payload.masked,
                 &mut transport,
                 step_timeout(step, timeout, deadline)?,
                 raw_log.as_deref_mut(),
@@ -248,12 +263,13 @@ where
             push_failure_result(
                 &mut masked_transcript,
                 duration,
-                &mask_sequence_text(&reason, &bindings),
+                &mask_sequence_failure_reason(&reason, &bindings),
             );
             close_result?;
             return Ok(SequenceExecution {
                 name: sequence.name.clone(),
-                risk: sequence.risk,
+                review: sequence.review.clone(),
+                masked_review: sequence.review.masked(),
                 status,
                 steps: step_results,
                 masked_notes: Vec::new(),
@@ -269,14 +285,15 @@ where
             deferred_cleanups.retain(|cleanup: &DeferredCleanup| cleanup.command != *command);
         }
         if let Some(template) = &step.cleanup_on_failure {
-            let command = render_template(template, &bindings, sequence, &step.id)?;
+            let command = render_template_pair(template, &bindings, sequence, &step.id)?;
             deferred_cleanups.push(DeferredCleanup {
                 id: format!("cleanup-{}", step.id),
                 label: format!(
                     "Cleanup after {}",
                     step.label.as_deref().unwrap_or(&step.id)
                 ),
-                command,
+                command: command.raw,
+                masked_command: command.masked,
             });
         }
     }
@@ -301,7 +318,8 @@ where
 
     Ok(SequenceExecution {
         name: sequence.name.clone(),
-        risk: sequence.risk,
+        review: sequence.review.clone(),
+        masked_review: sequence.review.masked(),
         status: AtStatus::Ok,
         steps: step_results,
         masked_notes,
@@ -314,19 +332,19 @@ where
 }
 
 pub fn validate_sequence_confirmation(
-    sequence: &Sequence,
+    review: &ExecutionReview,
     yes: bool,
-    acknowledged: Option<RiskLevel>,
-) -> Result<DirectSendConfirmation> {
-    direct_send_confirmation(&sequence_classification(sequence), yes, acknowledged)
+    allow_unknown: bool,
+) -> Result<ExecutionAuthorization> {
+    authorize_execution(review, yes, allow_unknown)
 }
 
-pub fn sequence_classification(sequence: &Sequence) -> RiskClassification {
-    RiskClassification {
-        normalized_command: format!("SEQUENCE {}", sequence.name),
-        risk: sequence.risk,
-        reason: "sequence effective risk level",
-    }
+pub fn review_sequence_execution(
+    sequence: &Sequence,
+    values: &[SequenceParamValue],
+) -> Result<ExecutionReview> {
+    let bindings = validate_and_bind_params(sequence, values)?;
+    review_sequence_execution_with_bindings(sequence, &bindings)
 }
 
 pub fn render_sequence_review(
@@ -359,6 +377,56 @@ pub fn render_sequence_review(
             })
         })
         .collect()
+}
+
+fn review_sequence_execution_with_bindings(
+    sequence: &Sequence,
+    bindings: &BTreeMap<String, BoundParam>,
+) -> Result<ExecutionReview> {
+    let mut components = Vec::new();
+    for step in &sequence.steps {
+        if let Some(context_id_template) = &step.ensure_pdp_context_active {
+            let context_id =
+                render_review_template(context_id_template, bindings, sequence, &step.id)?;
+            components.push(review_direct_command("AT+QIACT?"));
+            components.push(review_direct_command(&format!("AT+QIACT={context_id}")));
+        }
+        if let Some(template) = &step.send {
+            let command = render_review_template(template, bindings, sequence, &step.id)?;
+            ensure_reviewable_command(&command)?;
+            components.push(review_direct_command(&command));
+        }
+        if let Some(template) = &step.payload {
+            let _ = render_review_template(template, bindings, sequence, &step.id)?;
+        }
+        if let Some(template) = &step.cleanup_on_failure {
+            let command = render_review_template(template, bindings, sequence, &step.id)?;
+            ensure_reviewable_command(&command)?;
+            components.push(review_direct_command(&command));
+        }
+    }
+
+    let has_sensitive_input = sequence.params.iter().any(|param| {
+        param.sensitive
+            && bindings
+                .get(&param.name)
+                .is_some_and(|value| !value.value.is_empty())
+    });
+    Ok(ExecutionReview::sequence(
+        &sequence.name,
+        components,
+        has_sensitive_input,
+        sequence.steps.iter().any(|step| step.payload.is_some()),
+    ))
+}
+
+fn ensure_reviewable_command(command: &str) -> Result<()> {
+    if has_embedded_command_framing(command) {
+        return Err(AtctlError::OperationOutsideReviewedBoundary {
+            operation: "command containing embedded framing or control characters".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 pub fn validate_and_bind_params(
@@ -441,6 +509,7 @@ fn execute_command_step<T>(
     sequence: &Sequence,
     step: &SequenceStep,
     command: &str,
+    masked_command: &str,
     transport: &mut T,
     timeout: Duration,
     mut raw_log: Option<&mut RawLogSink>,
@@ -460,10 +529,11 @@ where
         push_transcript_section(
             masked_transcript,
             "Command:",
-            [format!("> {}", mask_sequence_text(command, bindings))],
+            [format!("> {masked_command}")],
         );
         let started = Instant::now();
         let tx = command_with_terminator(command);
+        ensure_operation_within_review(&sequence.review, command)?;
         if let Err(error) = transport.write_command(&tx) {
             append_sequence_raw_error(
                 raw_log,
@@ -502,7 +572,13 @@ where
             };
         let response = parse_response(&raw_response);
         let duration = started.elapsed();
-        push_response_transcript(raw_transcript, masked_transcript, &response.text, bindings);
+        push_response_transcript(
+            raw_transcript,
+            masked_transcript,
+            &response.text,
+            bindings,
+            Some((command, masked_command)),
+        );
         let mut expectation_failure =
             step_expectation_failure(sequence, step, &response.text, bindings)?;
         let mut status = step_status(sequence, step, bindings, &response.text, &response.status)?;
@@ -523,10 +599,12 @@ where
             last_tcp_ack_failure = expectation_failure.clone();
         }
         if let Some(raw_log) = raw_log.as_deref_mut() {
+            let operation = OperationIdentity::sequence(sequence);
             raw_log.append_exchange(RawLogExchange {
+                operation: &operation,
                 command_name: Some(&step.id),
                 command,
-                risk: sequence.risk,
+                review: &sequence.review,
                 status: &status,
                 duration,
                 tx_bytes: tx.as_bytes(),
@@ -561,6 +639,7 @@ fn execute_payload_step<T>(
     sequence: &Sequence,
     step: &SequenceStep,
     payload: &str,
+    masked_payload: &str,
     transport: &mut T,
     timeout: Duration,
     raw_log: Option<&mut RawLogSink>,
@@ -575,13 +654,23 @@ where
     push_transcript_section(
         masked_transcript,
         "Payload:",
-        [format!(
-            "> payload {}",
-            mask_sequence_text(payload, bindings)
-        )],
+        [format!("> payload {masked_payload}")],
     );
     let tx = payload_with_terminator(payload, step.terminator);
     let started = Instant::now();
+    if sequence.review.assessment == Assessment::Known
+        && !sequence.review.effects.iter().any(|effect| {
+            matches!(
+                effect,
+                crate::at::review::Effect::CommunicateExternally
+                    | crate::at::review::Effect::ChangePersistentState
+            )
+        })
+    {
+        return Err(AtctlError::OperationOutsideReviewedBoundary {
+            operation: "payload".to_owned(),
+        });
+    }
     if let Err(error) = transport.write_command(&tx) {
         append_sequence_raw_error(
             raw_log,
@@ -615,17 +704,25 @@ where
     };
     let response = parse_response(&raw_response);
     let duration = started.elapsed();
-    push_response_transcript(raw_transcript, masked_transcript, &response.text, bindings);
+    push_response_transcript(
+        raw_transcript,
+        masked_transcript,
+        &response.text,
+        bindings,
+        Some((payload, masked_payload)),
+    );
     let expectation_failure = step_expectation_failure(sequence, step, &response.text, bindings)?;
     let mut status = step_status(sequence, step, bindings, &response.text, &response.status)?;
     if expectation_failure.is_some() {
         status = AtStatus::Error;
     }
     if let Some(raw_log) = raw_log {
+        let operation = OperationIdentity::sequence(sequence);
         raw_log.append_exchange(RawLogExchange {
+            operation: &operation,
             command_name: Some(&step.id),
             command: "payload",
-            risk: sequence.risk,
+            review: &sequence.review,
             status: &status,
             duration,
             tx_bytes: tx.as_bytes(),
@@ -663,6 +760,7 @@ where
     let check = execute_command_step(
         sequence,
         &check_step,
+        "AT+QIACT?",
         "AT+QIACT?",
         transport,
         timeout,
@@ -707,6 +805,7 @@ where
             sequence,
             &activate_step,
             &command,
+            &mask_sensitive_values(&command),
             transport,
             timeout,
             raw_log,
@@ -769,12 +868,11 @@ fn push_step_analysis(
 ) -> Result<(Option<String>, Option<String>)> {
     let mut analysis = Vec::new();
     if include_step_evidence && let Some(template) = &step.evidence {
-        let raw = render_template(template, bindings, sequence, &step.id)?;
-        let masked = mask_sequence_text(&raw, bindings);
+        let rendered = render_template_pair(template, bindings, sequence, &step.id)?;
         analysis.push(SequenceAnalysisLine {
             kind: SequenceAnalysisKind::General,
-            raw,
-            masked,
+            raw: rendered.raw,
+            masked: rendered.masked,
         });
     }
     analysis.extend(extra_analysis);
@@ -812,10 +910,9 @@ fn push_success_notes(
     let mut raw_notes = Vec::new();
     let mut masked_notes = Vec::new();
     for note in &sequence.success_notes {
-        let raw = render_template(note, bindings, sequence, "success_notes")?;
-        let masked = mask_sequence_text(&raw, bindings);
-        raw_notes.push(raw);
-        masked_notes.push(masked);
+        let rendered = render_template_pair(note, bindings, sequence, "success_notes")?;
+        raw_notes.push(rendered.raw);
+        masked_notes.push(rendered.masked);
     }
     if !raw_notes.is_empty() {
         push_transcript_section(
@@ -1020,7 +1117,7 @@ fn sms_candidate_from_message(message: &SmsMessage) -> Option<SmsMessageCandidat
         masked_sender: message
             .sender
             .as_ref()
-            .map(|sender| mask_identifier(sender)),
+            .map(|sender| mask_phone_number(sender)),
         timestamp: message.timestamp.clone(),
         raw_body_preview,
         masked_body_preview,
@@ -1157,7 +1254,7 @@ fn sms_metadata_analysis(message: &SmsMessage) -> SequenceAnalysisLine {
     }
     if let Some(sender) = &message.sender {
         raw_parts.push(format!("sender={sender}"));
-        masked_parts.push(format!("sender={}", mask_identifier(sender)));
+        masked_parts.push(format!("sender={}", mask_phone_number(sender)));
     }
     if let Some(timestamp) = &message.timestamp {
         raw_parts.push(format!("timestamp={timestamp}"));
@@ -1696,7 +1793,7 @@ fn mask_sms_header_sender(line: &str) -> Option<String> {
     if let Some(field) = fields.get_mut(sender_index)
         && !field.value.is_empty()
     {
-        field.value = mask_identifier(&field.value);
+        field.value = mask_phone_number(&field.value);
         field.quoted = true;
     }
     Some(format!("{prefix} {}", render_csv_fields(&fields)))
@@ -1838,6 +1935,86 @@ fn render_template(
     Ok(output)
 }
 
+fn render_template_pair(
+    template: &str,
+    bindings: &BTreeMap<String, BoundParam>,
+    sequence: &Sequence,
+    step: &str,
+) -> Result<RenderedTemplate> {
+    let mut raw = String::with_capacity(template.len());
+    let mut masked = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        raw.push_str(&rest[..start]);
+        masked.push_str(&rest[..start]);
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find("}}") else {
+            return Err(AtctlError::InvalidSequenceParam {
+                param: step.to_owned(),
+                reason: "unterminated template placeholder".to_owned(),
+            });
+        };
+        let name = after_start[..end].trim();
+        let value = bindings
+            .get(name)
+            .ok_or_else(|| AtctlError::InvalidSequenceParam {
+                param: name.to_owned(),
+                reason: format!(
+                    "sequence `{}` does not define this parameter",
+                    sequence.name
+                ),
+            })?;
+        raw.push_str(&value.value);
+        if value.sensitive {
+            masked.push_str(&mask_declared_sensitive_value(&value.value));
+        } else {
+            masked.push_str(&value.value);
+        }
+        rest = &after_start[end + 2..];
+    }
+    raw.push_str(rest);
+    masked.push_str(rest);
+    Ok(RenderedTemplate {
+        raw,
+        masked: mask_sensitive_values(&masked),
+    })
+}
+
+fn render_review_template(
+    template: &str,
+    bindings: &BTreeMap<String, BoundParam>,
+    sequence: &Sequence,
+    step: &str,
+) -> Result<String> {
+    let mut output = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        output.push_str(&rest[..start]);
+        let after_start = &rest[start + 2..];
+        let Some(end) = after_start.find("}}") else {
+            return Err(AtctlError::InvalidSequenceParam {
+                param: step.to_owned(),
+                reason: format!(
+                    "sequence `{}` contains an unterminated template placeholder",
+                    sequence.name
+                ),
+            });
+        };
+        let placeholder = &after_start[..end];
+        let name = placeholder.trim();
+        if let Some(value) = bindings.get(name) {
+            output.push_str(&value.value);
+        } else {
+            output.push_str("{{");
+            output.push_str(placeholder);
+            output.push_str("}}");
+        }
+        rest = &after_start[end + 2..];
+    }
+    output.push_str(rest);
+    Ok(output)
+}
+
 fn push_transcript_header(
     transcript: &mut Vec<String>,
     index: usize,
@@ -1881,6 +2058,7 @@ fn push_response_transcript(
     masked_transcript: &mut Vec<String>,
     response: &str,
     bindings: &BTreeMap<String, BoundParam>,
+    rendered_echo: Option<(&str, &str)>,
 ) {
     let raw = response.trim_matches(['\r', '\n']);
     if !raw.is_empty() {
@@ -1891,10 +2069,20 @@ fn push_response_transcript(
                 "Modem response:",
                 response_lines_preserving_empty(&modem_response),
             );
+            let masked_response = rendered_echo.map_or_else(
+                || modem_response.clone(),
+                |(raw, masked)| {
+                    if raw.is_empty() {
+                        modem_response.clone()
+                    } else {
+                        modem_response.replace(raw, masked)
+                    }
+                },
+            );
             push_transcript_section(
                 masked_transcript,
                 "Modem response:",
-                response_lines_preserving_empty(&mask_sequence_text(&modem_response, bindings)),
+                response_lines_preserving_empty(&mask_sequence_text(&masked_response, bindings)),
             );
         }
     }
@@ -1997,6 +2185,7 @@ where
             sequence,
             &cleanup_step,
             &cleanup.command,
+            &cleanup.masked_command,
             transport,
             timeout,
             raw_log.as_deref_mut(),
@@ -2064,14 +2253,33 @@ fn cleanup_timeout(deadline: Instant) -> Duration {
 }
 
 fn mask_sequence_text(text: &str, bindings: &BTreeMap<String, BoundParam>) -> String {
-    let mut output = text.to_owned();
+    let _ = bindings;
+    let output = mask_sequence_protocol_data(text);
+    mask_sensitive_values(&output)
+}
+
+fn mask_sequence_failure_reason(reason: &str, bindings: &BTreeMap<String, BoundParam>) -> String {
+    let Some(end) = reason.rfind('`') else {
+        return mask_sequence_text(reason, bindings);
+    };
+    let Some(start) = reason[..end].rfind('`') else {
+        return mask_sequence_text(reason, bindings);
+    };
+    let marker = &reason[start + 1..end];
+    let mut masked_marker = marker.to_owned();
     for value in bindings.values().filter(|value| value.sensitive) {
         if !value.value.is_empty() {
-            output = output.replace(&value.value, &mask_identifier(&value.value));
+            masked_marker =
+                masked_marker.replace(&value.value, &mask_declared_sensitive_value(&value.value));
         }
     }
-    output = mask_sequence_protocol_data(&output);
-    mask_sensitive_values(&output)
+    let rendered = format!(
+        "{}{}{}",
+        &reason[..start + 1],
+        masked_marker,
+        &reason[end..]
+    );
+    mask_sequence_text(&rendered, bindings)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2089,16 +2297,43 @@ fn append_sequence_raw_error(
         return Ok(());
     };
     let error = error.to_string();
+    let operation = OperationIdentity::sequence(sequence);
     raw_log.append_transport_error(RawLogTransportError {
+        operation: &operation,
         command_name: Some(&step.id),
         command,
-        risk: sequence.risk,
+        review: &sequence.review,
         duration,
         stage,
         error: &error,
         tx_bytes,
         rx_bytes: b"",
     })
+}
+
+fn ensure_operation_within_review(review: &ExecutionReview, command: &str) -> Result<()> {
+    if has_embedded_command_framing(command) {
+        return Err(AtctlError::OperationOutsideReviewedBoundary {
+            operation: "command containing embedded framing or control characters".to_owned(),
+        });
+    }
+    let current = review_direct_command(command);
+    if review.assessment == Assessment::Known
+        && (current.assessment == Assessment::Unknown
+            || current
+                .effects
+                .iter()
+                .any(|effect| !review.effects.contains(effect))
+            || current
+                .data_handling
+                .iter()
+                .any(|handling| !review.data_handling.contains(handling)))
+    {
+        return Err(AtctlError::OperationOutsideReviewedBoundary {
+            operation: current.normalized_operation,
+        });
+    }
+    Ok(())
 }
 
 pub fn required_param_summary(sequence: &Sequence) -> String {

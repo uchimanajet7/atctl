@@ -6,6 +6,38 @@ use crate::transport::test_support::MockTransport;
 use super::*;
 
 #[test]
+fn cli_confirmation_output_uses_consequence_hierarchy() {
+    let mut known = operation_identity_output_lines(&OperationIdentity::command("AT+CMEE=2"));
+    known.extend(execution_review_output_lines(&review_direct_command(
+        "AT+CMEE=2",
+    )));
+    assert_eq!(known.first().map(String::as_str), Some("Type: Command"));
+    assert!(known.iter().any(|line| line == "AT command: AT+CMEE=2"));
+    assert!(known.iter().any(|line| line == "What will happen:"));
+    assert!(!known.iter().any(|line| line.starts_with("Assessment:")));
+    assert!(!known.iter().any(|line| line.starts_with("Confirmation:")));
+
+    let mut unknown = operation_identity_output_lines(&OperationIdentity::command("AT+VENDOR=1"));
+    unknown.extend(execution_review_output_lines(&review_direct_command(
+        "AT+VENDOR=1",
+    )));
+    let positions = [
+        "AT command: AT+VENDOR=1",
+        "! Effects are not fully known",
+        "Known:",
+        "Possible consequences:",
+        "Not established:",
+    ]
+    .map(|expected| {
+        unknown
+            .iter()
+            .position(|line| line == expected)
+            .unwrap_or_else(|| panic!("missing {expected:?} in {unknown:?}"))
+    });
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
+#[test]
 fn parses_hex_vid_pid_with_or_without_prefix() {
     let cli =
         Cli::try_parse_from(["atctl", "send", "AT", "--vid", "0x2c7c", "--pid", "0125"]).unwrap();
@@ -217,7 +249,7 @@ fn help_describes_primary_product_options() {
     command.write_long_help(&mut root_help).unwrap();
     let root_help = String::from_utf8(root_help).unwrap();
     assert!(root_help.contains("Send one AT command"));
-    assert!(root_help.contains("List or run product and loaded multi-step Sequences"));
+    assert!(root_help.contains("List, inspect, or run product and loaded multi-step Sequences"));
     assert!(root_help.contains("Examples:\n  atctl devices\n  atctl send AT\n  atctl tui"));
     assert!(!root_help.contains("Show configuration paths"));
 
@@ -349,22 +381,16 @@ fn rejects_partial_manual_endpoint_override() {
 }
 
 #[test]
-fn accepts_risk_ack_values() {
-    let cli = Cli::try_parse_from([
-        "atctl",
-        "send",
-        "AT+CFUN=0",
-        "--yes",
-        "--risk-ack",
-        "dangerous",
-    ])
-    .unwrap();
+fn accepts_allow_unknown_flag() {
+    let cli =
+        Cli::try_parse_from(["atctl", "send", "AT+VENDOR=1", "--yes", "--allow-unknown"]).unwrap();
 
     let Command::Send(args) = cli.command else {
         panic!("expected send command");
     };
 
-    assert_eq!(args.risk_ack, Some(RiskLevel::Dangerous));
+    assert!(args.yes);
+    assert!(args.allow_unknown);
 }
 
 #[test]
@@ -401,7 +427,7 @@ fn user_command_timeout_defaults_to_thirty_seconds() {
 }
 
 #[test]
-fn parses_preset_run_transport_and_ack_options() {
+fn parses_preset_run_transport_and_confirmation_options() {
     let cli = Cli::try_parse_from([
         "atctl",
         "preset",
@@ -412,8 +438,6 @@ fn parses_preset_run_transport_and_ack_options() {
         "--pid",
         "0x0125",
         "--yes",
-        "--risk-ack",
-        "write",
     ])
     .unwrap();
 
@@ -428,7 +452,7 @@ fn parses_preset_run_transport_and_ack_options() {
     assert_eq!(args.usb.vid, Some(0x2c7c));
     assert_eq!(args.usb.pid, Some(0x0125));
     assert!(args.yes);
-    assert_eq!(args.risk_ack, Some(RiskLevel::Write));
+    assert!(!args.allow_unknown);
 }
 
 #[test]
@@ -471,6 +495,30 @@ fn parses_preset_file_locations_for_list_run_and_tui() {
         list_args.preset_locations.preset_dirs,
         vec![PathBuf::from("presets.d")]
     );
+    assert!(!list_args.json);
+
+    let show_cli = Cli::try_parse_from([
+        "atctl",
+        "preset",
+        "show",
+        "custom-modem-response",
+        "--json",
+        "--preset-file",
+        "custom.toml",
+    ])
+    .unwrap();
+    let Command::Preset(PresetArgs {
+        command: PresetCommand::Show(show_args),
+    }) = show_cli.command
+    else {
+        panic!("expected preset show command");
+    };
+    assert_eq!(show_args.name, "custom-modem-response");
+    assert!(show_args.json);
+    assert_eq!(
+        show_args.preset_locations.preset_files,
+        vec![PathBuf::from("custom.toml")]
+    );
 
     let run_cli = Cli::try_parse_from([
         "atctl",
@@ -504,7 +552,7 @@ fn parses_preset_file_locations_for_list_run_and_tui() {
 }
 
 #[test]
-fn parses_sequence_run_transport_ack_params_and_locations() {
+fn parses_sequence_run_transport_confirmation_params_and_locations() {
     let cli = Cli::try_parse_from([
         "atctl",
         "sequence",
@@ -521,8 +569,6 @@ fn parses_sequence_run_transport_ack_params_and_locations() {
         "--param",
         "message=hello",
         "--yes",
-        "--risk-ack",
-        "write",
         "--sequence-file",
         "examples/sequences/quectel.toml",
     ])
@@ -540,7 +586,7 @@ fn parses_sequence_run_transport_ack_params_and_locations() {
     assert_eq!(args.usb.pid, Some(0x0125));
     assert_eq!(args.usb.timeout, 180);
     assert!(args.yes);
-    assert_eq!(args.risk_ack, Some(RiskLevel::Write));
+    assert!(!args.allow_unknown);
     assert_eq!(
         args.params,
         vec![
@@ -586,6 +632,30 @@ fn parses_sequence_locations_for_list_run_and_tui() {
         list_args.sequence_locations.sequence_dirs,
         vec![PathBuf::from("sequences.d")]
     );
+    assert!(!list_args.json);
+
+    let show_cli = Cli::try_parse_from([
+        "atctl",
+        "sequence",
+        "show",
+        "custom-sequence",
+        "--json",
+        "--sequence-file",
+        "custom-sequences.toml",
+    ])
+    .unwrap();
+    let Command::Sequence(SequenceArgs {
+        command: SequenceCommand::Show(show_args),
+    }) = show_cli.command
+    else {
+        panic!("expected sequence show command");
+    };
+    assert_eq!(show_args.name, "custom-sequence");
+    assert!(show_args.json);
+    assert_eq!(
+        show_args.sequence_locations.sequence_files,
+        vec![PathBuf::from("custom-sequences.toml")]
+    );
 
     let run_cli = Cli::try_parse_from([
         "atctl",
@@ -620,27 +690,37 @@ fn parses_sequence_locations_for_list_run_and_tui() {
 
 #[test]
 fn formats_sequence_list_with_sms_product_sequences() {
-    let output = format_sequence_list(&sequence_builtins());
+    let sequences = sequence_builtins();
+    let output = format_sequence_list(&sequences, false).unwrap();
 
-    assert!(output.contains(
-            "name\tsequence-set\tdeclared-risk\teffective-risk\ttimeout-secs\tcategories\trequired-params\tsummary\tsource-path"
-        ));
-    assert!(output.contains("sms-send-check\tProduct Sequences\twrite\twrite\t180\tsms\trecipient(sensitive),message(sensitive)"));
-    assert!(output.contains("Send a standard SMS and report modem submit evidence.\t-"));
-    assert!(output.contains("sms-receive-check\tProduct Sequences\twrite\twrite\t120\tsms"));
-    assert!(output.contains(
-        "sms-read-message\tProduct Sequences\twrite\twrite\t120\tsms\tindex(select,sms-message)"
-    ));
-    assert!(output.contains(
-            "sms-reply-check\tProduct Sequences\twrite\twrite\t180\tsms\tindex(select,sms-message),message(sensitive)"
-        ));
+    assert!(output.starts_with("NAME"));
+    assert!(output.contains("PURPOSE"));
+    assert!(output.contains("ATTENTION"));
+    assert!(output.contains("sms-send-check"));
+    assert!(output.contains("Send a standard SMS"));
+    assert!(output.contains("sms-receive-check"));
+    assert!(output.contains("sms-read-message"));
+    assert!(output.contains("sms-reply-check"));
+    assert!(output.contains("! Confirmation required"));
+    assert!(!output.contains("Product Sequences"));
+    assert!(!output.contains("not required"));
+
+    let json = format_sequence_list(&sequences, true).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(value[0]["operation"]["kind"], "sequence");
+    assert!(value.as_array().unwrap().iter().any(|row| {
+        row["operation"]["name"] == "sms-read-message"
+            && row["parameters"][0]["candidate"] == "sms-message"
+    }));
 }
 
 #[test]
 fn sequence_json_output_includes_structured_steps_and_notes() {
+    let review = review_direct_command("AT+CMGS=1");
     let execution = SequenceExecution {
         name: "sms-send-check".to_owned(),
-        risk: RiskLevel::Write,
+        masked_review: review.masked(),
+        review,
         status: AtStatus::Ok,
         steps: vec![SequenceStepResult {
             id: "write-message".to_owned(),
@@ -657,10 +737,20 @@ fn sequence_json_output_includes_structured_steps_and_notes() {
         duration: Duration::from_millis(1),
     };
 
-    let output = format_sequence_output(&execution, true, true).unwrap();
+    let sequence = sequence_builtins()
+        .into_iter()
+        .find(|sequence| sequence.name == "sms-send-check")
+        .unwrap();
+    let output = format_sequence_output(&sequence, &execution, true, true).unwrap();
     let json: serde_json::Value = serde_json::from_str(&output).unwrap();
 
-    assert_eq!(json["name"], "sms-send-check");
+    assert_eq!(json["surface"], "cli");
+    assert_eq!(json["operation"]["kind"], "sequence");
+    assert_eq!(json["operation"]["name"], "sms-send-check");
+    assert_eq!(json["operation"]["purpose"], sequence.summary);
+    assert_eq!(json["execution_review"]["assessment"], "known");
+    assert_eq!(json["execution_review"]["confirmation_required"], true);
+    assert!(json.get("risk").is_none());
     assert_eq!(json["masked"], true);
     assert_eq!(json["transcript"], "masked transcript");
     assert_eq!(json["steps"][0]["id"], "write-message");
@@ -672,10 +762,44 @@ fn sequence_json_output_includes_structured_steps_and_notes() {
 }
 
 #[test]
+fn noninteractive_sequence_review_does_not_repeat_resolved_values() {
+    let sequence = sequence_builtins()
+        .into_iter()
+        .find(|sequence| sequence.name == "sms-send-check")
+        .unwrap();
+    let params = vec![
+        SequenceParamValue {
+            name: "recipient".to_owned(),
+            value: "+819012345678".to_owned(),
+        },
+        SequenceParamValue {
+            name: "message".to_owned(),
+            value: "private message body".to_owned(),
+        },
+    ];
+    let review = review_sequence_execution(&sequence, &params).unwrap();
+    let mut lines = operation_identity_output_lines(&OperationIdentity::sequence(&sequence));
+    lines.extend(execution_review_output_lines(&review));
+    let notice = lines.join("\n");
+
+    assert!(notice.contains("Name: sms-send-check"));
+    assert!(notice.contains("Purpose:"));
+    assert!(!notice.contains("+819012345678"));
+    assert!(!notice.contains("private message body"));
+    assert!(!notice.contains("Payload:"));
+}
+
+#[test]
 fn sequence_text_export_includes_identity_and_selected_transcript() {
+    let sequence = sequence_builtins()
+        .into_iter()
+        .find(|sequence| sequence.name == "sms-send-check")
+        .unwrap();
+    let review = review_direct_command("AT+CMGS=1");
     let execution = SequenceExecution {
         name: "sms-send-check".to_owned(),
-        risk: RiskLevel::Write,
+        masked_review: review.masked(),
+        review,
         status: AtStatus::Ok,
         steps: Vec::new(),
         masked_notes: Vec::new(),
@@ -687,12 +811,18 @@ fn sequence_text_export_includes_identity_and_selected_transcript() {
     };
 
     assert_eq!(
-        format_sequence_export(&execution, true, false).unwrap(),
-        "Sequence: sms-send-check\n\nmasked transcript\n"
+        format_sequence_export(&sequence, &execution, true, false).unwrap(),
+        format!(
+            "Sequence: sms-send-check\nPurpose: {}\n\nmasked transcript\n",
+            sequence.summary
+        )
     );
     assert_eq!(
-        format_sequence_export(&execution, false, false).unwrap(),
-        "Sequence: sms-send-check\n\nraw transcript\n"
+        format_sequence_export(&sequence, &execution, false, false).unwrap(),
+        format!(
+            "Sequence: sms-send-check\nPurpose: {}\n\nraw transcript\n",
+            sequence.summary
+        )
     );
 }
 
@@ -724,7 +854,6 @@ fn explicit_sequence_locations_load_add_on_sequences() {
             [[sequences]]
             name = "file-sequence"
             summary = "File sequence"
-            risk = "safe"
             categories = ["diagnostics"]
 
             [[sequences.steps]]
@@ -742,7 +871,6 @@ fn explicit_sequence_locations_load_add_on_sequences() {
             [[sequences]]
             name = "dir-sequence"
             summary = "Directory sequence"
-            risk = "safe"
             categories = ["diagnostics"]
 
             [[sequences.steps]]
@@ -768,7 +896,7 @@ fn explicit_sequence_locations_load_add_on_sequences() {
     assert!(names.contains(&"file-sequence"));
     assert!(names.contains(&"dir-sequence"));
 
-    let output = format_sequence_list(&sequences);
+    let output = format_sequence_list(&sequences, false).unwrap();
     assert!(output.contains(locations.sequence_files[0].to_string_lossy().as_ref()));
     assert!(
         output.contains(
@@ -807,7 +935,6 @@ fn explicit_preset_locations_load_add_on_presets() {
             [[presets]]
             name = "file-modem-response"
             command = "AT"
-            risk = "safe"
             categories = ["file"]
             "#,
     )
@@ -820,7 +947,6 @@ fn explicit_preset_locations_load_add_on_presets() {
             [[presets]]
             name = "dir-signal"
             command = "AT+CSQ"
-            risk = "safe"
             categories = ["dir"]
             "#,
     )
@@ -840,7 +966,7 @@ fn explicit_preset_locations_load_add_on_presets() {
     assert!(names.contains(&"file-modem-response"));
     assert!(names.contains(&"dir-signal"));
 
-    let output = format_preset_list(&presets);
+    let output = format_preset_list(&presets, false).unwrap();
     assert!(output.contains(locations.preset_files[0].to_string_lossy().as_ref()));
     assert!(
         output.contains(
@@ -866,23 +992,23 @@ fn explicit_missing_preset_location_is_an_error() {
 }
 
 #[test]
-fn formats_preset_list_with_risk_categories_and_command() {
+fn formats_preset_list_with_review_categories_and_command() {
     let presets = vec![Preset::new(
         "custom-modem-response",
         "AT",
-        RiskLevel::Safe,
         vec!["custom".to_owned()],
         PresetOrigin::file("Custom commands", "presets.toml", None),
     )];
 
-    let output = format_preset_list(&presets);
+    let output = format_preset_list(&presets, false).unwrap();
 
-    assert!(output.contains(
-        "name\tpreset-set\tdeclared-risk\teffective-risk\ttimeout-secs\tcategories\tcommand\tsource-path"
-    ));
-    assert!(output.contains(
-        "custom-modem-response\tCustom commands\tsafe\tsafe\t-\tcustom\tAT\tpresets.toml"
-    ));
+    assert!(output.starts_with("NAME"));
+    assert!(output.contains("AT COMMAND"));
+    assert!(output.contains("ATTENTION"));
+    assert!(output.contains("Loaded from: Custom commands"));
+    assert!(output.contains("File: presets.toml"));
+    assert!(output.contains("custom-modem-response"));
+    assert!(!output.contains("not required"));
 }
 
 #[test]
@@ -890,16 +1016,47 @@ fn formats_product_preset_list_label() {
     let presets = vec![Preset::new(
         "modem-response",
         "AT",
-        RiskLevel::Safe,
         vec!["basic".to_owned()],
         PresetOrigin::BuiltIn,
     )];
 
-    let output = format_preset_list(&presets);
+    let output = format_preset_list(&presets, false).unwrap();
 
-    assert!(output.contains("modem-response\tProduct presets\tsafe\tsafe\t-\tbasic\tAT"));
-    assert!(output.contains("modem-response\tProduct presets\tsafe\tsafe\t-\tbasic\tAT\t-"));
+    assert!(output.contains("modem-response"));
+    assert!(output.contains("AT"));
+    assert!(!output.contains("Product presets"));
     assert!(!output.contains("Built-in presets"));
+    assert!(!output.contains("not required"));
+}
+
+#[test]
+fn show_outputs_are_complete_structured_and_read_only_formatters() {
+    let preset = Preset::new_with_timeout(
+        "external-command",
+        "AT+CMEE=2",
+        vec!["diagnostics".to_owned()],
+        PresetOrigin::file("External commands", "/tmp/external.toml", None),
+        Some(45),
+    );
+    let preset_text = format_preset_show(&preset, false).unwrap();
+    assert!(preset_text.contains("Name: external-command"));
+    assert!(preset_text.contains("AT command: AT+CMEE=2"));
+    assert!(preset_text.contains("Definition origin: file"));
+    assert!(preset_text.contains("Definition file: /tmp/external.toml"));
+    assert!(preset_text.contains("Categories: diagnostics"));
+    assert!(preset_text.contains("Execution review:"));
+
+    let sequence = sequence_builtins()
+        .into_iter()
+        .find(|sequence| sequence.name == "sms-read-message")
+        .unwrap();
+    let sequence_json = format_sequence_show(&sequence, true).unwrap();
+    let value: serde_json::Value = serde_json::from_str(&sequence_json).unwrap();
+    assert_eq!(value["operation"]["kind"], "sequence");
+    assert_eq!(value["operation"]["name"], "sms-read-message");
+    assert_eq!(value["parameters"][0]["source"], "select");
+    assert_eq!(value["parameters"][0]["candidate"], "sms-message");
+    assert!(value.get("execution_review").is_some());
 }
 
 #[test]
@@ -907,7 +1064,6 @@ fn preset_lookup_uses_exact_name_instead_of_category() {
     let presets = vec![Preset::new(
         "current-operator",
         "AT+COPS?",
-        RiskLevel::Safe,
         vec!["network".to_owned()],
         PresetOrigin::BuiltIn,
     )];
@@ -942,15 +1098,14 @@ fn sequence_lookup_error_points_to_the_exact_loaded_name_list() {
 }
 
 #[test]
-fn preset_execution_uses_explicit_preset_risk() {
+fn preset_execution_uses_product_derived_review() {
     let preset = Preset::new(
-        "write-labelled-at",
-        "AT",
-        RiskLevel::Write,
+        "verbose-errors",
+        "AT+CMEE=2",
         Vec::new(),
         PresetOrigin::file("Custom commands", "presets.toml", None),
     );
-    let run_args = preset_run_args("write-labelled-at");
+    let run_args = preset_run_args("verbose-errors");
     let send_args = send_args_from_preset(&preset, &run_args);
     let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
     let mut prompt = TestConfirmationPrompt {
@@ -963,29 +1118,29 @@ fn preset_execution_uses_explicit_preset_risk() {
         &send_args,
         transport,
         &mut prompt,
-        preset_classification(&preset),
-        "preset:write-labelled-at",
+        preset.review.clone(),
+        ExecutionSurface::Cli,
+        OperationIdentity::preset(&preset),
         external_preset_source(&preset),
     )
     .unwrap();
 
-    assert_eq!(execution.risk, RiskLevel::Write);
+    assert_eq!(execution.review.assessment, Assessment::Known);
+    assert!(execution.review.confirmation_required);
     assert_eq!(prompt.calls, 1);
     assert_eq!(prompt.notices, 0);
 }
 
 #[test]
-fn file_preset_yes_risk_ack_still_reports_external_notice_before_transport() {
+fn file_preset_yes_still_reports_external_notice_before_transport() {
     let preset = Preset::new(
-        "write-labelled-at",
-        "AT",
-        RiskLevel::Write,
+        "verbose-errors",
+        "AT+CMEE=2",
         Vec::new(),
         PresetOrigin::file("Custom commands", "presets.toml", None),
     );
-    let mut run_args = preset_run_args("write-labelled-at");
+    let mut run_args = preset_run_args("verbose-errors");
     run_args.yes = true;
-    run_args.risk_ack = Some(RiskLevel::Write);
     let send_args = send_args_from_preset(&preset, &run_args);
     let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
     let mut prompt = TestConfirmationPrompt {
@@ -998,19 +1153,20 @@ fn file_preset_yes_risk_ack_still_reports_external_notice_before_transport() {
         &send_args,
         transport,
         &mut prompt,
-        preset_classification(&preset),
-        "preset:write-labelled-at",
+        preset.review.clone(),
+        ExecutionSurface::Cli,
+        OperationIdentity::preset(&preset),
         external_preset_source(&preset),
     )
     .unwrap();
 
-    assert_eq!(execution.risk, RiskLevel::Write);
+    assert!(execution.review.confirmation_required);
     assert_eq!(prompt.calls, 0);
     assert_eq!(prompt.notices, 1);
 }
 
 #[test]
-fn external_notice_helper_reports_only_when_confirmation_is_not_interactive() {
+fn authorized_notice_helper_reports_only_for_noninteractive_approval() {
     let source = Some(ExternalDefinitionSource {
         label: "Custom commands",
         path: "presets.toml",
@@ -1021,19 +1177,23 @@ fn external_notice_helper_reports_only_when_confirmation_is_not_interactive() {
         notices: 0,
     };
 
-    notice_external_definition_without_interactive_confirmation(
+    let operation = OperationIdentity::command("AT+CMEE=2");
+    let review = review_direct_command("AT+CMEE=2");
+    notice_authorized_execution_without_interactive_confirmation(
         &mut prompt,
-        DirectSendConfirmation::InteractiveRequired {
-            risk: RiskLevel::Write,
-        },
+        ExecutionAuthorization::InteractiveRequired,
+        &operation,
+        &review,
         source,
     )
     .unwrap();
     assert_eq!(prompt.notices, 0);
 
-    notice_external_definition_without_interactive_confirmation(
+    notice_authorized_execution_without_interactive_confirmation(
         &mut prompt,
-        DirectSendConfirmation::AutomationBypassApproved,
+        ExecutionAuthorization::NonInteractiveApproved,
+        &operation,
+        &review,
         source,
     )
     .unwrap();
@@ -1045,7 +1205,6 @@ fn preset_timeout_hint_replaces_default_timeout() {
     let preset = Preset::new_with_timeout(
         "long-scan",
         "AT+COPS=?",
-        RiskLevel::Safe,
         Vec::new(),
         PresetOrigin::BuiltIn,
         Some(180),
@@ -1063,7 +1222,6 @@ fn explicit_preset_timeout_overrides_timeout_hint() {
     let preset = Preset::new_with_timeout(
         "long-scan",
         "AT+COPS=?",
-        RiskLevel::Safe,
         Vec::new(),
         PresetOrigin::BuiltIn,
         Some(180),
@@ -1078,13 +1236,7 @@ fn explicit_preset_timeout_overrides_timeout_hint() {
 
 #[test]
 fn preset_no_log_option_is_forwarded_to_shared_send_execution() {
-    let preset = Preset::new(
-        "modem-info",
-        "ATI",
-        RiskLevel::Safe,
-        Vec::new(),
-        PresetOrigin::BuiltIn,
-    );
+    let preset = Preset::new("modem-info", "ATI", Vec::new(), PresetOrigin::BuiltIn);
     let mut run_args = preset_run_args("modem-info");
     run_args.no_log = true;
 
@@ -1101,7 +1253,8 @@ fn send_at_uses_transport_and_returns_masked_text_output() {
     let execution = execute_send_with_transport(&args, transport).unwrap();
 
     assert_eq!(execution.status, AtStatus::Ok);
-    assert_eq!(execution.risk, RiskLevel::Safe);
+    assert_eq!(execution.review.assessment, Assessment::Known);
+    assert!(!execution.review.confirmation_required);
     assert_eq!(execution.text, "AT\r\r\nOK\r\n");
     assert!(send_status_result(&execution, false).is_ok());
 }
@@ -1128,6 +1281,28 @@ fn send_masks_sensitive_response_by_default() {
 }
 
 #[test]
+fn send_pairs_short_phone_masking_with_visible_operational_fields() {
+    let mut args = send_args("AT+CNUM");
+    args.yes = true;
+    args.allow_unknown = true;
+    let transport = MockTransport::with_response(
+        b"\r\n+CNUM: \"line\",\"901001\",129\r\n+CMGS: 7\r\nOK\r\n".to_vec(),
+    );
+
+    let execution = execute_send_with_transport(&args, transport).unwrap();
+
+    assert!(execution.raw_text.contains("\"901001\",129"));
+    assert!(execution.masked_text.contains("\"******\",129"));
+    assert!(execution.masked_text.contains("+CMGS: 7"));
+    assert_eq!(execution.text, execution.masked_text);
+    assert!(
+        !format_send_output(&execution, true)
+            .unwrap()
+            .contains("901001")
+    );
+}
+
+#[test]
 fn send_no_mask_preserves_sensitive_response_for_display() {
     let mut args = send_args("AT+CIMI");
     args.no_mask = true;
@@ -1136,6 +1311,7 @@ fn send_no_mask_preserves_sensitive_response_for_display() {
     let execution = execute_send_with_transport(&args, transport).unwrap();
 
     assert!(execution.text.contains("898110001234567"));
+    assert!(execution.masked_text.contains("89811000*******"));
     assert!(!execution.masked);
 }
 
@@ -1158,14 +1334,16 @@ fn send_export_includes_command_and_selected_masking_state() {
     let transport = MockTransport::with_response(b"\r\n898110001234567\r\nOK\r\n".to_vec());
     let execution = execute_send_with_transport(&args, transport).unwrap();
 
-    let text = format_send_export(&args.command, &execution, false).unwrap();
+    let text = format_send_export(&execution, false).unwrap();
     assert!(text.starts_with("AT+CIMI\n"));
     assert!(text.contains("89811000*******"));
     assert!(!text.contains("898110001234567"));
 
-    let json = format_send_export(&args.command, &execution, true).unwrap();
+    let json = format_send_export(&execution, true).unwrap();
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(value["command"], "AT+CIMI");
+    assert_eq!(value["surface"], "cli");
+    assert_eq!(value["operation"]["kind"], "command");
+    assert_eq!(value["operation"]["command"], "AT+CIMI");
     assert_eq!(value["masked"], true);
     assert!(
         value["response"]
@@ -1180,33 +1358,40 @@ fn send_export_masks_sensitive_command_values_by_default() {
     let command = "AT+CGAUTH=1,1,\"user\",\"password\"";
     let mut args = send_args(command);
     args.yes = true;
-    args.risk_ack = Some(RiskLevel::Write);
     let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
     let execution = execute_send_with_transport(&args, transport).unwrap();
 
-    let text = format_send_export(command, &execution, false).unwrap();
-    let json = format_send_export(command, &execution, true).unwrap();
+    let text = format_send_export(&execution, false).unwrap();
+    let json = format_send_export(&execution, true).unwrap();
 
     assert!(!text.contains("user"));
     assert!(!text.contains("password"));
-    assert!(!json.contains("user"));
-    assert!(!json.contains("password"));
+    assert!(!json.to_ascii_lowercase().contains("user"));
+    assert!(!json.to_ascii_lowercase().contains("password"));
+    assert!(!json.contains("\"risk\""));
+    assert!(json.contains("\"execution_review\""));
+    assert!(json.contains("\"assessment\":\"known\""));
+    assert!(json.contains("\"effects\""));
+    assert!(json.contains("\"data_handling\""));
+    assert!(json.contains("\"reversibility\""));
+    assert!(json.contains("\"consequences\""));
+    assert!(json.contains("\"confirmation_required\""));
+    assert!(json.contains("\"reasons\""));
     assert!(text.contains("AT+CGAUTH=1,1"));
 
     let mut unmasked_args = send_args(command);
     unmasked_args.no_mask = true;
     unmasked_args.yes = true;
-    unmasked_args.risk_ack = Some(RiskLevel::Write);
     let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
     let unmasked_execution = execute_send_with_transport(&unmasked_args, transport).unwrap();
-    let unmasked = format_send_export(command, &unmasked_execution, false).unwrap();
+    let unmasked = format_send_export(&unmasked_execution, false).unwrap();
     assert!(unmasked.contains("user"));
     assert!(unmasked.contains("password"));
 }
 
 #[test]
 fn send_at_error_is_failure_unless_ignored() {
-    let args = send_args("AT+EXAMPLE?");
+    let args = send_args("AT+CSQ");
     let transport = MockTransport::with_response(b"\r\nERROR\r\n".to_vec());
 
     let execution = execute_send_with_transport(&args, transport).unwrap();
@@ -1308,22 +1493,28 @@ fn send_raw_log_file_records_transport_error_when_response_is_missing() {
 }
 
 #[test]
-fn send_write_command_requires_confirmation_without_yes() {
+fn known_material_command_requires_confirmation_without_yes() {
     let args = send_args("ATE0");
     let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
 
     let error = execute_send_with_transport(&args, transport).unwrap_err();
 
-    assert!(matches!(
-        error,
-        AtctlError::ConfirmationRequired {
-            risk: RiskLevel::Write
-        }
-    ));
+    assert!(matches!(error, AtctlError::ConfirmationRequired));
 }
 
 #[test]
-fn send_write_command_runs_after_interactive_confirmation() {
+fn one_shot_send_rejects_prompt_required_data_entry_before_transport_access() {
+    let mut args = send_args("AT+QISEND=0,4");
+    args.yes = true;
+    let transport = MockTransport::with_response(b"\r\n> ".to_vec());
+
+    let error = execute_send_with_transport(&args, transport).unwrap_err();
+
+    assert!(matches!(error, AtctlError::PromptRequiredOneShot));
+}
+
+#[test]
+fn known_material_command_runs_after_interactive_confirmation() {
     let args = send_args("ATE0");
     let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
     let mut prompt = TestConfirmationPrompt {
@@ -1335,12 +1526,13 @@ fn send_write_command_runs_after_interactive_confirmation() {
     let execution = execute_send_with_confirmation(&args, transport, &mut prompt).unwrap();
 
     assert_eq!(execution.status, AtStatus::Ok);
-    assert_eq!(execution.risk, RiskLevel::Write);
+    assert_eq!(execution.review.assessment, Assessment::Known);
+    assert!(execution.review.confirmation_required);
     assert_eq!(prompt.calls, 1);
 }
 
 #[test]
-fn send_write_command_stops_when_interactive_confirmation_is_rejected() {
+fn known_material_command_stops_when_interactive_confirmation_is_rejected() {
     let args = send_args("ATE0");
     let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
     let mut prompt = TestConfirmationPrompt {
@@ -1352,19 +1544,13 @@ fn send_write_command_stops_when_interactive_confirmation_is_rejected() {
     let error = execute_send_with_confirmation(&args, transport, &mut prompt).unwrap_err();
 
     assert_eq!(prompt.calls, 1);
-    assert!(matches!(
-        error,
-        AtctlError::ConfirmationRequired {
-            risk: RiskLevel::Write
-        }
-    ));
+    assert!(matches!(error, AtctlError::ConfirmationRequired));
 }
 
 #[test]
-fn send_yes_and_matching_risk_ack_bypass_interactive_confirmation() {
+fn send_yes_bypasses_known_interactive_confirmation() {
     let mut args = send_args("AT+CFUN=0");
     args.yes = true;
-    args.risk_ack = Some(RiskLevel::Dangerous);
     let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
     let mut prompt = TestConfirmationPrompt {
         allow: false,
@@ -1375,49 +1561,37 @@ fn send_yes_and_matching_risk_ack_bypass_interactive_confirmation() {
     let execution = execute_send_with_confirmation(&args, transport, &mut prompt).unwrap();
 
     assert_eq!(execution.status, AtStatus::Ok);
-    assert_eq!(execution.risk, RiskLevel::Dangerous);
+    assert_eq!(execution.review.assessment, Assessment::Known);
     assert_eq!(prompt.calls, 0);
 }
 
 #[test]
-fn send_risk_ack_without_yes_does_not_bypass_interactive_confirmation() {
-    let mut args = send_args("ATE0");
-    args.risk_ack = Some(RiskLevel::Write);
+fn allow_unknown_without_yes_is_rejected_before_transport_access() {
+    let mut args = send_args("AT+VENDOR=1");
+    args.allow_unknown = true;
     let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
-    let mut prompt = TestConfirmationPrompt {
-        allow: true,
-        calls: 0,
-        notices: 0,
-    };
 
-    let execution = execute_send_with_confirmation(&args, transport, &mut prompt).unwrap();
+    let error = execute_send_with_transport(&args, transport).unwrap_err();
 
-    assert_eq!(execution.status, AtStatus::Ok);
-    assert_eq!(prompt.calls, 1);
+    assert!(matches!(error, AtctlError::AllowUnknownRequiresYes));
 }
 
 #[test]
-fn send_mismatched_risk_ack_fails_before_transport_access() {
+fn allow_unknown_is_rejected_for_known_operation() {
     let mut args = send_args("AT");
     args.yes = true;
-    args.risk_ack = Some(RiskLevel::Dangerous);
+    args.allow_unknown = true;
     let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
 
     let error = execute_send_with_transport(&args, transport).unwrap_err();
 
-    assert!(matches!(
-        error,
-        AtctlError::RiskAckMismatch {
-            classified: RiskLevel::Safe,
-            acknowledged: RiskLevel::Dangerous
-        }
-    ));
+    assert!(matches!(error, AtctlError::AllowUnknownNotApplicable));
 }
 
 #[test]
-fn send_validates_risk_before_raw_log_option() {
-    let mut args = send_args("AT+CFUN=0");
-    args.raw_log_file = Some(unique_temp_dir("raw-log-risk").join("case.rawlog"));
+fn unknown_noninteractive_send_requires_allow_unknown_before_raw_log_option() {
+    let mut args = send_args("AT+VENDOR=1");
+    args.raw_log_file = Some(unique_temp_dir("raw-log-review").join("case.rawlog"));
     args.yes = true;
     let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
 
@@ -1425,10 +1599,21 @@ fn send_validates_risk_before_raw_log_option() {
 
     assert!(matches!(
         error,
-        AtctlError::MissingRiskAck {
-            risk: RiskLevel::Dangerous
-        }
+        AtctlError::UnknownOperationRequiresAllowance
     ));
+}
+
+#[test]
+fn unknown_noninteractive_send_runs_with_yes_and_allow_unknown() {
+    let mut args = send_args("AT+VENDOR=1");
+    args.yes = true;
+    args.allow_unknown = true;
+    let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
+
+    let execution = execute_send_with_transport(&args, transport).unwrap();
+
+    assert_eq!(execution.review.assessment, Assessment::Unknown);
+    assert!(execution.review.confirmation_required);
 }
 
 #[test]
@@ -1459,16 +1644,15 @@ impl ConfirmationPrompt for TestConfirmationPrompt {
 
     fn confirm(
         &mut self,
-        classification: &RiskClassification,
+        _operation: &OperationIdentity,
+        _review: &ExecutionReview,
         _external_source: Option<ExternalDefinitionSource<'_>>,
     ) -> Result<()> {
         self.calls += 1;
         if self.allow {
             Ok(())
         } else {
-            Err(AtctlError::ConfirmationRequired {
-                risk: classification.risk,
-            })
+            Err(AtctlError::ConfirmationRequired)
         }
     }
 }
@@ -1488,7 +1672,7 @@ fn send_args(command: &str) -> SendArgs {
         json: false,
         ignore_at_error: false,
         yes: false,
-        risk_ack: None,
+        allow_unknown: false,
     }
 }
 
@@ -1507,7 +1691,7 @@ fn preset_run_args(name: &str) -> PresetRunArgs {
         json: false,
         ignore_at_error: false,
         yes: false,
-        risk_ack: None,
+        allow_unknown: false,
         preset_locations: PresetFileLocationOptions::default(),
     }
 }

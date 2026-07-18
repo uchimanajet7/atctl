@@ -4,7 +4,6 @@ use std::path::Path;
 
 use serde::de::Error as _;
 
-use crate::at::risk::RiskLevel;
 use crate::sequences::definition::{SequenceDefinition, definitions_into_sequences};
 use crate::sequences::model::{
     Sequence, SequenceOrigin, SequenceParam, SequenceParamSource, SequenceReviewItem, SequenceStep,
@@ -25,7 +24,6 @@ struct SequenceFile {
 struct TomlSequenceDefinition {
     name: String,
     summary: String,
-    risk: RiskLevel,
     #[serde(default)]
     categories: Vec<String>,
     timeout_secs: Option<u64>,
@@ -183,7 +181,6 @@ impl TomlSequenceDefinition {
         SequenceDefinition::new(
             self.name,
             self.summary,
-            self.risk,
             self.categories,
             self.timeout_secs,
             self.params
@@ -377,7 +374,6 @@ mod tests {
             [[sequences]]
             name = "custom-sequence"
             summary = "Custom check."
-            risk = "write"
             categories = ["data"]
             timeout_secs = 180
             success_notes = ["Custom note for {{payload}}."]
@@ -433,7 +429,10 @@ mod tests {
             sequences[0].steps[0].cleanup_on_failure.as_deref(),
             Some("AT+EXAMPLECLOSE")
         );
-        assert_eq!(sequences[0].risk, RiskLevel::Unknown);
+        assert_eq!(
+            sequences[0].review.assessment,
+            crate::at::review::Assessment::Unknown
+        );
     }
 
     #[test]
@@ -445,7 +444,6 @@ mod tests {
             [[sequences]]
             name = "bad-ping"
             summary = "Bad ping."
-            risk = "write"
 
             [[sequences.steps]]
             id = "ping"
@@ -463,6 +461,29 @@ mod tests {
     }
 
     #[test]
+    fn rejects_removed_risk_field() {
+        let error = parse_sequences(
+            r#"
+            title = "Legacy Sequences"
+
+            [[sequences]]
+            name = "legacy"
+            summary = "Legacy Sequence."
+            risk = "write"
+
+            [[sequences.steps]]
+            id = "read"
+            send = "AT"
+            expect = "OK"
+            "#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("unknown field `risk`"));
+    }
+
+    #[test]
     fn rejects_tcp_ack_steps_without_qisend_counter_marker() {
         let error = parse_sequences(
             r#"
@@ -471,7 +492,6 @@ mod tests {
             [[sequences]]
             name = "bad-tcp-ack"
             summary = "Bad TCP ack."
-            risk = "write"
 
             [[sequences.steps]]
             id = "ack"
@@ -498,7 +518,6 @@ mod tests {
             [[sequences]]
             name = "second"
             summary = "Second."
-            risk = "safe"
 
             [[sequences.steps]]
             id = "at"
@@ -515,7 +534,6 @@ mod tests {
             [[sequences]]
             name = "first"
             summary = "First."
-            risk = "safe"
 
             [[sequences.steps]]
             id = "at"
@@ -542,7 +560,6 @@ mod tests {
             Sequence::built_in(
                 "sms-send-check",
                 "A.",
-                RiskLevel::Write,
                 Vec::new(),
                 None,
                 Vec::new(),
@@ -566,7 +583,6 @@ mod tests {
             Sequence::new(
                 "sms-send-check",
                 "B.",
-                RiskLevel::Safe,
                 Vec::new(),
                 SequenceOrigin::file("Custom Sequences", "custom.toml", None),
                 None,
@@ -619,7 +635,7 @@ mod tests {
         assert!(sequences.iter().any(|sequence| {
             sequence.name == "quectel-tcp-send-check"
                 && sequence.origin.label() == "Quectel Sequences"
-                && sequence.risk == RiskLevel::Write
+                && sequence.review.confirmation_required
         }));
         assert!(
             sequences
@@ -640,7 +656,7 @@ mod tests {
         assert!(sequences.iter().any(|sequence| {
             sequence.name == "soracom-unified-endpoint-tcp-send-check"
                 && sequence.origin.label() == "SORACOM Sequences"
-                && sequence.risk == RiskLevel::Write
+                && sequence.review.confirmation_required
         }));
         assert!(
             !sequences

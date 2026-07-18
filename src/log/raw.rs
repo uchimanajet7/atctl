@@ -5,8 +5,9 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::app::operation::{ExecutionSurface, OperationIdentity};
 use crate::at::response::AtStatus;
-use crate::at::risk::RiskLevel;
+use crate::at::review::ExecutionReview;
 use crate::log::session::now_timestamp;
 use crate::{AtctlError, Result};
 
@@ -16,20 +17,14 @@ pub const RAW_LOG_WARNING: &str = "This raw diagnostic export may contain sensit
 #[derive(Debug, Clone)]
 pub struct RawLogConfig {
     path: PathBuf,
-    surface: String,
-    source: String,
+    surface: ExecutionSurface,
 }
 
 impl RawLogConfig {
-    pub fn new(
-        path: impl Into<PathBuf>,
-        surface: impl Into<String>,
-        source: impl Into<String>,
-    ) -> Self {
+    pub fn new(path: impl Into<PathBuf>, surface: ExecutionSurface) -> Self {
         Self {
             path: path.into(),
-            surface: surface.into(),
-            source: source.into(),
+            surface,
         }
     }
 }
@@ -37,8 +32,7 @@ impl RawLogConfig {
 #[derive(Debug, Clone)]
 pub struct RawLogSink {
     path: PathBuf,
-    surface: String,
-    source: String,
+    surface: ExecutionSurface,
     next_sequence: u64,
 }
 
@@ -48,7 +42,6 @@ impl RawLogSink {
         let sink = Self {
             path: config.path,
             surface: config.surface,
-            source: config.source,
             next_sequence: 1,
         };
         sink.create_header()?;
@@ -61,14 +54,14 @@ impl RawLogSink {
 
     pub fn append_exchange(&mut self, exchange: RawLogExchange<'_>) -> Result<()> {
         let event = RawLogLine::Exchange {
-            schema_version: 1,
+            schema_version: 3,
             sequence: self.next_sequence,
             timestamp: now_timestamp().display().to_owned(),
-            surface: &self.surface,
-            source: &self.source,
+            surface: self.surface,
+            operation: exchange.operation,
             command_name: exchange.command_name,
             command: exchange.command,
-            risk: exchange.risk,
+            execution_review: exchange.review,
             status: exchange.status,
             duration_ms: exchange.duration.as_millis(),
             tx_base64: base64_encode(exchange.tx_bytes),
@@ -83,14 +76,14 @@ impl RawLogSink {
 
     pub fn append_transport_error(&mut self, error: RawLogTransportError<'_>) -> Result<()> {
         let event = RawLogLine::TransportError {
-            schema_version: 1,
+            schema_version: 3,
             sequence: self.next_sequence,
             timestamp: now_timestamp().display().to_owned(),
-            surface: &self.surface,
-            source: &self.source,
+            surface: self.surface,
+            operation: error.operation,
             command_name: error.command_name,
             command: error.command,
-            risk: error.risk,
+            execution_review: error.review,
             duration_ms: error.duration.as_millis(),
             stage: error.stage,
             error: error.error,
@@ -106,10 +99,9 @@ impl RawLogSink {
 
     fn create_header(&self) -> Result<()> {
         let header = RawLogLine::Header {
-            schema_version: 1,
+            schema_version: 3,
             created_at: now_timestamp().display().to_owned(),
-            surface: &self.surface,
-            source: &self.source,
+            surface: self.surface,
             warning: RAW_LOG_WARNING,
         };
         create_json_line(&self.path, &header)
@@ -131,9 +123,10 @@ pub fn validate_raw_log_target(path: &Path) -> Result<()> {
 
 #[derive(Debug, Copy, Clone)]
 pub struct RawLogExchange<'a> {
+    pub operation: &'a OperationIdentity,
     pub command_name: Option<&'a str>,
     pub command: &'a str,
-    pub risk: RiskLevel,
+    pub review: &'a ExecutionReview,
     pub status: &'a AtStatus,
     pub duration: Duration,
     pub tx_bytes: &'a [u8],
@@ -142,9 +135,10 @@ pub struct RawLogExchange<'a> {
 
 #[derive(Debug, Copy, Clone)]
 pub struct RawLogTransportError<'a> {
+    pub operation: &'a OperationIdentity,
     pub command_name: Option<&'a str>,
     pub command: &'a str,
-    pub risk: RiskLevel,
+    pub review: &'a ExecutionReview,
     pub duration: Duration,
     pub stage: &'a str,
     pub error: &'a str,
@@ -158,19 +152,18 @@ enum RawLogLine<'a> {
     Header {
         schema_version: u8,
         created_at: String,
-        surface: &'a str,
-        source: &'a str,
+        surface: ExecutionSurface,
         warning: &'static str,
     },
     Exchange {
         schema_version: u8,
         sequence: u64,
         timestamp: String,
-        surface: &'a str,
-        source: &'a str,
+        surface: ExecutionSurface,
+        operation: &'a OperationIdentity,
         command_name: Option<&'a str>,
         command: &'a str,
-        risk: RiskLevel,
+        execution_review: &'a ExecutionReview,
         status: &'a AtStatus,
         duration_ms: u128,
         tx_base64: String,
@@ -182,11 +175,11 @@ enum RawLogLine<'a> {
         schema_version: u8,
         sequence: u64,
         timestamp: String,
-        surface: &'a str,
-        source: &'a str,
+        surface: ExecutionSurface,
+        operation: &'a OperationIdentity,
         command_name: Option<&'a str>,
         command: &'a str,
-        risk: RiskLevel,
+        execution_review: &'a ExecutionReview,
         duration_ms: u128,
         stage: &'a str,
         error: &'a str,
@@ -298,7 +291,7 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use crate::at::response::AtStatus;
-    use crate::at::risk::RiskLevel;
+    use crate::at::review::review_direct_command;
 
     use super::*;
 
@@ -306,12 +299,15 @@ mod tests {
     fn raw_log_sink_writes_header_and_exchange_without_overwrite() {
         let dir = unique_temp_dir("raw-log");
         let path = dir.join("case.rawlog");
-        let mut sink = RawLogSink::create(RawLogConfig::new(&path, "send", "send")).unwrap();
+        let mut sink = RawLogSink::create(RawLogConfig::new(&path, ExecutionSurface::Cli)).unwrap();
+        let review = review_direct_command("AT+CIMI");
+        let operation = OperationIdentity::command("AT+CIMI");
 
         sink.append_exchange(RawLogExchange {
+            operation: &operation,
             command_name: None,
             command: "AT+CIMI",
-            risk: RiskLevel::Sensitive,
+            review: &review,
             status: &AtStatus::Ok,
             duration: Duration::from_millis(12),
             tx_bytes: b"AT+CIMI\r",
@@ -324,8 +320,15 @@ mod tests {
         assert!(contents.contains("\"event\":\"exchange\""));
         assert!(contents.contains("\"tx_base64\":\"QVQrQ0lNSQ0=\""));
         assert!(contents.contains("898110001234567"));
+        assert!(contents.contains("\"schema_version\":3"));
+        assert!(contents.contains("\"surface\":\"cli\""));
+        assert!(contents.contains("\"operation\":{\"kind\":\"command\""));
+        assert!(!contents.contains("\"source\""));
+        assert!(contents.contains("\"assessment\":\"known\""));
+        assert!(!contents.contains("\"risk\""));
 
-        let error = RawLogSink::create(RawLogConfig::new(&path, "send", "send")).unwrap_err();
+        let error =
+            RawLogSink::create(RawLogConfig::new(&path, ExecutionSurface::Cli)).unwrap_err();
         assert!(matches!(&error, AtctlError::RawLogFileExists { .. }));
         assert!(
             error
@@ -338,12 +341,15 @@ mod tests {
     fn raw_log_sink_writes_transport_error_event() {
         let dir = unique_temp_dir("raw-log-error");
         let path = dir.join("case.rawlog");
-        let mut sink = RawLogSink::create(RawLogConfig::new(&path, "send", "send")).unwrap();
+        let mut sink = RawLogSink::create(RawLogConfig::new(&path, ExecutionSurface::Cli)).unwrap();
+        let review = review_direct_command("AT+COPS?");
+        let operation = OperationIdentity::command("AT+COPS?");
 
         sink.append_transport_error(RawLogTransportError {
+            operation: &operation,
             command_name: None,
             command: "AT+COPS?",
-            risk: RiskLevel::Safe,
+            review: &review,
             duration: Duration::from_millis(30),
             stage: "read_response",
             error: "AT response timed out",
