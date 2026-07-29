@@ -126,11 +126,7 @@ where
     reviewed_sequence.review = execution_review;
     let sequence = &reviewed_sequence;
     let started = Instant::now();
-    let total_timeout = sequence
-        .timeout_secs
-        .map(Duration::from_secs)
-        .unwrap_or(timeout)
-        .max(Duration::from_secs(1));
+    let total_timeout = timeout.max(Duration::from_secs(1));
     let deadline = started + total_timeout;
     let mut raw_transcript = Vec::new();
     let mut masked_transcript = Vec::new();
@@ -169,7 +165,7 @@ where
                 step,
                 template,
                 &mut transport,
-                step_timeout(step, timeout, deadline)?,
+                step_timeout(sequence, step, timeout, deadline)?,
                 raw_log.as_deref_mut(),
                 &mut raw_transcript,
                 &mut masked_transcript,
@@ -193,7 +189,7 @@ where
                 &command.raw,
                 &command.masked,
                 &mut transport,
-                step_timeout(step, timeout, deadline)?,
+                step_timeout(sequence, step, timeout, deadline)?,
                 raw_log.as_deref_mut(),
                 &mut raw_transcript,
                 &mut masked_transcript,
@@ -215,7 +211,7 @@ where
                 &payload.raw,
                 &payload.masked,
                 &mut transport,
-                step_timeout(step, timeout, deadline)?,
+                step_timeout(sequence, step, timeout, deadline)?,
                 raw_log.as_deref_mut(),
                 &mut raw_transcript,
                 &mut masked_transcript,
@@ -545,31 +541,30 @@ where
                 &error,
                 tx.as_bytes(),
             )?;
-            return Err(error);
+            return Err(sequence_step_error(sequence, step, error));
         }
 
         let matcher = response_matcher_for_step(sequence, step, bindings)?;
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let raw_response =
-            match transport.read_until(remaining.max(Duration::from_secs(1)), matcher) {
-                Ok(raw) => raw,
-                Err(error) => {
-                    if step.require_tcp_ack && last_tcp_ack_failure.is_some() {
-                        break (AtStatus::Error, last_tcp_ack_failure);
-                    }
-                    append_sequence_raw_error(
-                        raw_log,
-                        sequence,
-                        step,
-                        command,
-                        started.elapsed(),
-                        "read_response",
-                        &error,
-                        tx.as_bytes(),
-                    )?;
-                    return Err(error);
+        let raw_response = match transport.read_until(remaining, matcher) {
+            Ok(raw) => raw,
+            Err(error) => {
+                if step.require_tcp_ack && last_tcp_ack_failure.is_some() {
+                    break (AtStatus::Error, last_tcp_ack_failure);
                 }
-            };
+                append_sequence_raw_error(
+                    raw_log,
+                    sequence,
+                    step,
+                    command,
+                    started.elapsed(),
+                    "read_response",
+                    &error,
+                    tx.as_bytes(),
+                )?;
+                return Err(sequence_step_error(sequence, step, error));
+            }
+        };
         let response = parse_response(&raw_response);
         let duration = started.elapsed();
         push_response_transcript(
@@ -682,7 +677,7 @@ where
             &error,
             tx.as_bytes(),
         )?;
-        return Err(error);
+        return Err(sequence_step_error(sequence, step, error));
     }
 
     let matcher = response_matcher_for_step(sequence, step, bindings)?;
@@ -699,7 +694,7 @@ where
                 &error,
                 tx.as_bytes(),
             )?;
-            return Err(error);
+            return Err(sequence_step_error(sequence, step, error));
         }
     };
     let response = parse_response(&raw_response);
@@ -1877,20 +1872,36 @@ fn step_status(
 }
 
 fn step_timeout(
+    sequence: &Sequence,
     step: &SequenceStep,
     default_timeout: Duration,
     deadline: Instant,
 ) -> Result<Duration> {
     let now = Instant::now();
     if now >= deadline {
-        return Err(AtctlError::Timeout);
+        return Err(AtctlError::SequenceStepTimeout {
+            sequence: sequence.name.clone(),
+            step: step.id.clone(),
+            timeout_secs: default_timeout.as_secs().max(1),
+        });
     }
     let remaining = deadline - now;
     let step_timeout = step
         .timeout_secs
         .map(Duration::from_secs)
         .unwrap_or(default_timeout);
-    Ok(step_timeout.min(remaining).max(Duration::from_secs(1)))
+    Ok(step_timeout.min(remaining))
+}
+
+fn sequence_step_error(sequence: &Sequence, step: &SequenceStep, error: AtctlError) -> AtctlError {
+    match error {
+        AtctlError::Timeout { timeout_secs } => AtctlError::SequenceStepTimeout {
+            sequence: sequence.name.clone(),
+            step: step.id.clone(),
+            timeout_secs,
+        },
+        error => error,
+    }
 }
 
 fn payload_with_terminator(payload: &str, terminator: StepTerminator) -> String {
@@ -2336,44 +2347,6 @@ fn ensure_operation_within_review(review: &ExecutionReview, command: &str) -> Re
     Ok(())
 }
 
-pub fn required_param_summary(sequence: &Sequence) -> String {
-    let required = sequence
-        .params
-        .iter()
-        .filter(|param| param.required)
-        .map(param_display)
-        .collect::<Vec<_>>();
-    if required.is_empty() {
-        "-".to_owned()
-    } else {
-        required.join(",")
-    }
-}
-
-fn param_display(param: &SequenceParam) -> String {
-    let mut display = if let Some(default_value) = &param.default_value {
-        format!("{}={default_value}", param.name)
-    } else {
-        param.name.clone()
-    };
-    let mut flags = Vec::new();
-    if param.sensitive {
-        flags.push("sensitive");
-    }
-    if param.source != crate::sequences::model::SequenceParamSource::User {
-        flags.push(param.source.label());
-    }
-    if let Some(candidate) = param.candidate {
-        flags.push(candidate.label());
-    }
-    if !flags.is_empty() {
-        display.push('(');
-        display.push_str(&flags.join(","));
-        display.push(')');
-    }
-    display
-}
-
 pub fn format_missing_sequence_param(param: &SequenceParam) -> String {
     let mut message = format!("Sequence parameter `{}` is required.", param.name);
     if let Some(hint) = param.hint.as_deref() {
@@ -2383,6 +2356,15 @@ pub fn format_missing_sequence_param(param: &SequenceParam) -> String {
         message.push_str(&format!(" Default value: `{default_value}`."));
     } else if let Some(candidate) = param.candidate {
         message.push_str(&format!(" Candidate source: {}.", candidate.label()));
+        let providers = candidate
+            .providers()
+            .iter()
+            .map(|provider| format!("{} `{}`", provider.kind.label(), provider.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !providers.is_empty() {
+            message.push_str(&format!(" Providers: {providers}."));
+        }
     } else if param.source != crate::sequences::model::SequenceParamSource::User {
         message.push_str(&format!(" Value source: {}.", param.source.label()));
     }
@@ -2399,6 +2381,15 @@ fn missing_param_hint_suffix(param: &SequenceParam) -> String {
     }
     if let Some(candidate) = param.candidate {
         parts.push(format!("candidate={}", candidate.label()));
+        let providers = candidate
+            .providers()
+            .iter()
+            .map(|provider| format!("{} `{}`", provider.kind.label(), provider.name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        if !providers.is_empty() {
+            parts.push(format!("providers: {providers}"));
+        }
     }
     if let Some(hint) = &param.hint {
         parts.push(hint.clone());

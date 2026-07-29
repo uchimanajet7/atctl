@@ -82,12 +82,34 @@ for the masking, sensitive-metadata, and raw-diagnostic boundaries.
 
 ## Safety
 
-Command rows use `name │ AT: command`; Sequence rows use
-`name │ Purpose: preview`, and selection never changes row height. Only items
-needing attention append a confirmation warning. Press `d` for complete
-read-only details; no modem access occurs when Details opens. Every Sequence
-input and confirmation phase keeps the complete name and purpose visible, and
-long context scrolls without hiding the active input or confirmation action.
+Human-readable CLI lists and TUI rows show `name` and the AT command or purpose
+preview. Only items that require an explicit confirmation before execution
+append `[confirm]`; the tag describes the next interaction, not risk severity.
+In mixed results, human CLI lists, TUI rows, and TUI candidate-loading actions
+align the tag in a fixed trailing lane so it can be scanned independently of
+variable command or purpose text. TUI adds a dedicated confirmation-flow color
+while retaining the complete text and bold emphasis in no-color mode. TUI
+selection never changes row height. Use CLI `show` or press TUI `d` for the
+complete read-only execution review; no modem access occurs when these details
+open. TUI Details and human CLI `show` group complete information as Overview,
+Definition, Before running, Inputs, and Execution, omitting empty sections.
+Sequence value input identifies the Sequence and keeps only the active value,
+relevant assistance, candidates, errors, and exact next action visible. Final
+review shows resolved values, applicable before-running notes, and execution
+consequences. If that review is long, `PageUp`/`PageDown` scrolls its Review
+region while the run instruction and current input remain visible. A
+multi-value Sequence keeps `Value <current> of <total>` at the modal's top
+right while values are being resolved; single-value and final-review phases
+omit it.
+For candidate-backed Sequence values, TUI and interactive `sequence run` offer
+manual entry plus existing executable providers: `sms-receive-check` for SMS
+storage indexes and `active-pdp-contexts` / `pdp-contexts` for PDP context IDs.
+They never substitute copied one-command actions or run a provider merely
+because input is missing. In TUI, pressing `Enter` on a loaded candidate accepts
+it and immediately continues to the next value or Sequence review; it does not
+run the selected Sequence. Candidate-provider completion returns to value
+selection without choosing a value automatically. Non-interactive and JSON runs
+report the provider and the required `--param` retry instead.
 When confirmation is required, the review explains what will happen and shows
 sensitive-data or recovery information only when relevant. Unknown operations
 separate what is known, possible consequences, and what atctl could not
@@ -116,8 +138,10 @@ atctl sequence show sms-receive-check
 atctl sequence run sms-receive-check
 ```
 
-Human-readable lists keep only the name, AT command or purpose preview, and an
-exception warning when confirmation is required. `show` provides complete
+Human-readable lists keep only the name, AT command or purpose preview, and
+`[confirm]` when confirmation is required. Mixed lists align the tag in a
+fixed trailing lane; lists with no confirmation-required item reclaim that
+space. `show` provides complete
 read-only details without USB access. Add `--json` to `list` or `show` for
 complete structured data.
 

@@ -1,5 +1,6 @@
 use std::fs;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::app::operation::ExecutionSurface;
 use crate::log::raw::{RAW_LOG_ACK, RawLogConfig};
@@ -7,6 +8,161 @@ use crate::sequences::builtin::builtins;
 use crate::transport::test_support::MockTransport;
 
 use super::*;
+
+struct TimeoutRecordingTransport {
+    timeouts: Arc<Mutex<Vec<Duration>>>,
+}
+
+impl AtTransport for TimeoutRecordingTransport {
+    fn open(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn close(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn write_command(&mut self, _command: &str) -> Result<()> {
+        Ok(())
+    }
+
+    fn read_response(&mut self, timeout: Duration) -> Result<Vec<u8>> {
+        self.timeouts.lock().unwrap().push(timeout);
+        Ok(b"\r\nOK\r\n".to_vec())
+    }
+
+    fn read_until(&mut self, timeout: Duration, _matcher: ResponseMatcher) -> Result<Vec<u8>> {
+        self.timeouts.lock().unwrap().push(timeout);
+        Ok(b"\r\nOK\r\n".to_vec())
+    }
+}
+
+#[test]
+fn resolved_total_timeout_caps_sequence_definition_and_step_hint() {
+    let sequence = Sequence::built_in(
+        "bounded-sequence",
+        "Verify resolved total timeout ownership.",
+        vec!["test".to_owned()],
+        Some(180),
+        Vec::new(),
+        vec![SequenceStep {
+            id: "bounded-step".to_owned(),
+            label: None,
+            ensure_pdp_context_active: None,
+            send: Some("AT".to_owned()),
+            expect: Some("OK".to_owned()),
+            expect_prompt: None,
+            expect_urc: None,
+            payload: None,
+            terminator: StepTerminator::None,
+            require_tcp_ack: false,
+            require_ping_success: false,
+            timeout_secs: Some(90),
+            evidence: None,
+            cleanup_on_failure: None,
+        }],
+    );
+    let timeouts = Arc::new(Mutex::new(Vec::new()));
+    let transport = TimeoutRecordingTransport {
+        timeouts: Arc::clone(&timeouts),
+    };
+
+    execute_sequence(
+        &sequence,
+        &[],
+        transport,
+        Duration::from_secs(7),
+        true,
+        None,
+    )
+    .unwrap();
+
+    let observed = timeouts.lock().unwrap();
+    assert_eq!(observed.len(), 1);
+    assert!(observed[0] <= Duration::from_secs(7));
+    assert!(observed[0] > Duration::from_secs(6));
+}
+
+#[test]
+fn sequence_timeout_error_identifies_failing_step() {
+    let sequence = Sequence::built_in(
+        "timeout-sequence",
+        "Verify timeout step identity.",
+        vec!["test".to_owned()],
+        None,
+        Vec::new(),
+        vec![SequenceStep {
+            id: "wait-for-modem".to_owned(),
+            label: None,
+            ensure_pdp_context_active: None,
+            send: Some("AT".to_owned()),
+            expect: Some("OK".to_owned()),
+            expect_prompt: None,
+            expect_urc: None,
+            payload: None,
+            terminator: StepTerminator::None,
+            require_tcp_ack: false,
+            require_ping_success: false,
+            timeout_secs: None,
+            evidence: None,
+            cleanup_on_failure: None,
+        }],
+    );
+    let transport = MockTransport::with_responses(Vec::<Vec<u8>>::new());
+
+    let error = execute_sequence(
+        &sequence,
+        &[],
+        transport,
+        Duration::from_secs(5),
+        true,
+        None,
+    )
+    .unwrap_err();
+
+    assert!(matches!(
+        error,
+        AtctlError::SequenceStepTimeout {
+            ref sequence,
+            ref step,
+            timeout_secs: 5,
+        } if sequence == "timeout-sequence" && step == "wait-for-modem"
+    ));
+}
+
+#[test]
+fn step_timeout_never_extends_a_subsecond_remaining_total_budget() {
+    let sequence = Sequence::built_in(
+        "subsecond-budget",
+        "Verify the total deadline remains authoritative.",
+        vec!["test".to_owned()],
+        None,
+        Vec::new(),
+        vec![SequenceStep {
+            id: "bounded-step".to_owned(),
+            label: None,
+            ensure_pdp_context_active: None,
+            send: Some("AT".to_owned()),
+            expect: Some("OK".to_owned()),
+            expect_prompt: None,
+            expect_urc: None,
+            payload: None,
+            terminator: StepTerminator::None,
+            require_tcp_ack: false,
+            require_ping_success: false,
+            timeout_secs: Some(30),
+            evidence: None,
+            cleanup_on_failure: None,
+        }],
+    );
+    let step = &sequence.steps[0];
+    let deadline = Instant::now() + Duration::from_millis(500);
+
+    let timeout = step_timeout(&sequence, step, Duration::from_secs(30), deadline).unwrap();
+
+    assert!(timeout <= Duration::from_millis(500));
+    assert!(!timeout.is_zero());
+}
 
 #[test]
 fn sms_send_sequence_waits_for_prompt_writes_payload_and_masks_params() {
@@ -199,7 +355,7 @@ fn quectel_sequence_fails_when_tcp_ack_remains_incomplete() {
         &sequence,
         &tcp_params(),
         transport,
-        Duration::from_secs(1),
+        Duration::from_secs(sequence.timeout_secs.expect("Sequence timeout")),
         true,
         None,
     )
@@ -674,6 +830,36 @@ fn missing_select_param_includes_resolution_hint() {
 
     assert!(error.to_string().contains("sms-receive-check"));
     assert!(error.to_string().contains("AT+CMGL"));
+    assert!(
+        error
+            .to_string()
+            .contains("providers: Sequence `sms-receive-check`")
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("help: rerun with `--param index=<VALUE>`")
+    );
+}
+
+#[test]
+fn product_candidate_sources_reference_existing_sequence_and_presets() {
+    let sms = SequenceCandidateSource::SmsMessage.providers();
+    assert_eq!(sms.len(), 1);
+    assert_eq!(
+        sms[0].kind,
+        crate::sequences::model::SequenceCandidateProviderKind::Sequence
+    );
+    assert_eq!(sms[0].name, "sms-receive-check");
+
+    let pdp = SequenceCandidateSource::PdpContext.providers();
+    assert_eq!(
+        pdp.iter().map(|provider| provider.name).collect::<Vec<_>>(),
+        vec!["active-pdp-contexts", "pdp-contexts"]
+    );
+    assert!(pdp.iter().all(|provider| {
+        provider.kind == crate::sequences::model::SequenceCandidateProviderKind::Preset
+    }));
 }
 
 #[test]

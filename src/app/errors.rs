@@ -172,6 +172,13 @@ pub enum AtctlError {
     #[error("AT command failed with status {status}")]
     AtCommandFailed { status: AtStatus },
 
-    #[error("AT response timed out")]
-    Timeout,
+    #[error("AT operation timed out after {timeout_secs} seconds.")]
+    Timeout { timeout_secs: u64 },
+
+    #[error("sequence `{sequence}` step `{step}` timed out after {timeout_secs} seconds.")]
+    SequenceStepTimeout {
+        sequence: String,
+        step: String,
+        timeout_secs: u64,
+    },
 }

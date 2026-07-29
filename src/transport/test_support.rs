@@ -57,10 +57,12 @@ impl AtTransport for MockTransport {
         Ok(())
     }
 
-    fn read_response(&mut self, _timeout: Duration) -> Result<Vec<u8>> {
+    fn read_response(&mut self, timeout: Duration) -> Result<Vec<u8>> {
         if !self.opened {
             return Err(AtctlError::Transport("mock transport is closed".into()));
         }
-        self.responses.pop_front().ok_or(AtctlError::Timeout)
+        self.responses.pop_front().ok_or(AtctlError::Timeout {
+            timeout_secs: timeout.as_secs().max(1),
+        })
     }
 }

@@ -37,17 +37,27 @@ pub trait AtTransport {
 
     fn read_until(&mut self, timeout: Duration, matcher: ResponseMatcher) -> Result<Vec<u8>> {
         let deadline = Instant::now() + timeout;
+        let timeout_secs = timeout
+            .as_secs()
+            .saturating_add(u64::from(timeout.subsec_nanos() > 0))
+            .max(1);
         let mut raw = Vec::new();
 
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(crate::AtctlError::Timeout);
+                return Err(crate::AtctlError::Timeout { timeout_secs });
             }
 
-            let chunk = self.read_response(remaining)?;
+            let chunk = match self.read_response(remaining) {
+                Ok(chunk) => chunk,
+                Err(crate::AtctlError::Timeout { .. }) => {
+                    return Err(crate::AtctlError::Timeout { timeout_secs });
+                }
+                Err(error) => return Err(error),
+            };
             if chunk.is_empty() {
-                return Err(crate::AtctlError::Timeout);
+                return Err(crate::AtctlError::Timeout { timeout_secs });
             }
             raw.extend_from_slice(&chunk);
             if matcher.is_match(&raw) {

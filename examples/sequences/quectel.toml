@@ -8,7 +8,7 @@ categories = ["data", "network"]
 timeout_secs = 300
 before_running = [
   "Uses Quectel TCP/IP AT commands.",
-  "Confirm the PDP context before sending; this Sequence can load standard AT+CGACT? and AT+CGDCONT? candidates in the TUI.",
+  "Confirm the PDP context before sending; the TUI and interactive sequence run can obtain candidates through the active-pdp-contexts and pdp-contexts Presets.",
   "During execution, atctl checks AT+QIACT? and sends AT+QIACT=<contextID> only when the selected Quectel PDP context is not active.",
   "Socket connect ID defaults to 0. If needed, run the Quectel socket-state add-on command and edit this value before sending."
 ]
@@ -146,7 +146,7 @@ categories = ["data", "network", "diagnostics"]
 timeout_secs = 120
 before_running = [
   "Uses Quectel AT+QPING to check IP reachability.",
-  "Confirm the PDP context before sending; this Sequence can load standard AT+CGACT? and AT+CGDCONT? candidates in the TUI.",
+  "Confirm the PDP context before sending; the TUI and interactive sequence run can obtain candidates through the active-pdp-contexts and pdp-contexts Presets.",
   "During execution, atctl checks AT+QIACT? and sends AT+QIACT=<contextID> only when the selected Quectel PDP context is not active."
 ]
 success_notes = [

@@ -29,7 +29,8 @@ use crate::app::operation::{ExecutionSurface, OperationIdentity};
 use crate::at::command::{command_with_terminator, normalize_command};
 use crate::at::mask::mask_sensitive_values;
 use crate::at::review::{
-    Assessment, ExecutionReview, ReviewPresentationSectionKind, is_prompt_required_command,
+    Assessment, ExecutionReview, ReviewPresentationSectionKind, UNKNOWN_EFFECTS_NOTICE,
+    is_prompt_required_command,
 };
 use crate::cli::{
     DEFAULT_COMMAND_TIMEOUT_SECS, LoggingPaths, PresetFileLocationOptions, SendExecution,
@@ -47,10 +48,12 @@ use crate::presets::model::{Preset, PresetOrigin};
 use crate::response_export::{response_export_path, write_response_export};
 use crate::sequences::engine::{
     SequenceExecution, SequenceParamValue, SequenceValueCandidate, SequenceValueCandidateSet,
-    format_missing_sequence_param, render_sequence_review, required_param_summary,
-    review_sequence_execution, value_candidate_sets_from_text,
+    format_missing_sequence_param, render_sequence_review, review_sequence_execution,
+    value_candidate_sets_from_text,
 };
-use crate::sequences::model::{Sequence, SequenceOrigin};
+#[cfg(test)]
+use crate::sequences::model::SequenceOrigin;
+use crate::sequences::model::{Sequence, SequenceCandidateProvider, SequenceCandidateProviderKind};
 use crate::sequences::model::{SequenceCandidateSource, SequenceParam, SequenceParamSource};
 use crate::usb::device::UsbDeviceInfo;
 use crate::usb::transport::{UsbDeviceListMode, list_devices};
@@ -73,6 +76,8 @@ const EXTERNAL_DEFINITION_CONFIRMATION_NOTICE: &str = "Review external definitio
 struct TuiState {
     focus: Pane,
     show_help: bool,
+    help_scroll: usize,
+    help_visible_height: usize,
     selected_category: usize,
     selected_command: usize,
     selected_control: usize,
@@ -325,6 +330,44 @@ enum SequenceInputPhase {
     Confirmation,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum SequenceParamEnterAction {
+    NextValue { next: usize, total: usize },
+    ReviewSequence,
+    UseCandidateAndNext { next: usize, total: usize },
+    UseCandidateAndReview,
+    ReviewCandidateAction,
+    RunCandidateAction,
+}
+
+impl SequenceParamEnterAction {
+    fn modal_instruction(self) -> String {
+        match self {
+            Self::NextValue { next, total } => {
+                format!("Enter: Next value ({next} of {total}).")
+            }
+            Self::ReviewSequence => "Enter: Review Sequence.".to_owned(),
+            Self::UseCandidateAndNext { next, total } => {
+                format!("Enter: Use value and continue to Value {next} of {total}.")
+            }
+            Self::UseCandidateAndReview => "Enter: Use value and review Sequence.".to_owned(),
+            Self::ReviewCandidateAction => "Enter: Review action.".to_owned(),
+            Self::RunCandidateAction => "Enter: Run action.".to_owned(),
+        }
+    }
+
+    fn footer_segment(self) -> &'static str {
+        match self {
+            Self::NextValue { .. } => "Enter Next value",
+            Self::ReviewSequence => "Enter Review",
+            Self::UseCandidateAndNext { .. } => "Enter Use and next",
+            Self::UseCandidateAndReview => "Enter Use and review",
+            Self::ReviewCandidateAction => "Enter Review action",
+            Self::RunCandidateAction => "Enter Run action",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct SearchInputState {
     input: String,
@@ -347,6 +390,7 @@ struct RawLogAckInputState {
 struct EditInputState {
     input: String,
     error: Option<String>,
+    timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -485,10 +529,7 @@ enum CommandListRow<'a> {
 enum ExecutableItem {
     Preset(Preset),
     Sequence(Sequence),
-    CandidateAction {
-        action: SequenceCandidateAction,
-        preset: Preset,
-    },
+    CandidateAction(SequenceCandidateAction),
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -518,7 +559,7 @@ impl ExecutableItem {
         match self {
             Self::Preset(_) => ExecutableKind::Command,
             Self::Sequence(_) => ExecutableKind::Sequence,
-            Self::CandidateAction { .. } => ExecutableKind::CandidateAction,
+            Self::CandidateAction(_) => ExecutableKind::CandidateAction,
         }
     }
 
@@ -526,7 +567,7 @@ impl ExecutableItem {
         match self {
             Self::Preset(preset) => &preset.name,
             Self::Sequence(sequence) => &sequence.name,
-            Self::CandidateAction { action, .. } => action.label,
+            Self::CandidateAction(action) => action.item.name(),
         }
     }
 
@@ -534,7 +575,7 @@ impl ExecutableItem {
         match self {
             Self::Preset(preset) => &preset.categories,
             Self::Sequence(sequence) => &sequence.categories,
-            Self::CandidateAction { preset, .. } => &preset.categories,
+            Self::CandidateAction(action) => action.item.categories(),
         }
     }
 
@@ -542,7 +583,7 @@ impl ExecutableItem {
         match self {
             Self::Preset(preset) => &preset.review,
             Self::Sequence(sequence) => &sequence.review,
-            Self::CandidateAction { preset, .. } => &preset.review,
+            Self::CandidateAction(action) => action.item.review(),
         }
     }
 
@@ -550,7 +591,7 @@ impl ExecutableItem {
         match self {
             Self::Preset(preset) => preset.timeout_secs,
             Self::Sequence(sequence) => sequence.timeout_secs,
-            Self::CandidateAction { preset, .. } => preset.timeout_secs,
+            Self::CandidateAction(action) => action.item.timeout_secs(),
         }
     }
 
@@ -558,7 +599,7 @@ impl ExecutableItem {
         match self {
             Self::Preset(preset) => Some(&preset.command),
             Self::Sequence(_) => None,
-            Self::CandidateAction { preset, .. } => Some(&preset.command),
+            Self::CandidateAction(action) => action.item.command_text(),
         }
     }
 
@@ -566,15 +607,7 @@ impl ExecutableItem {
         match self {
             Self::Preset(_) => None,
             Self::Sequence(sequence) => Some(&sequence.summary),
-            Self::CandidateAction { .. } => None,
-        }
-    }
-
-    fn source_label(&self) -> &str {
-        match self {
-            Self::Preset(preset) => preset.origin.label(),
-            Self::Sequence(sequence) => sequence.origin.label(),
-            Self::CandidateAction { .. } => "candidate action",
+            Self::CandidateAction(action) => action.item.summary(),
         }
     }
 
@@ -582,7 +615,7 @@ impl ExecutableItem {
         match self {
             Self::Preset(preset) => preset.origin.detail(),
             Self::Sequence(sequence) => sequence.origin.detail(),
-            Self::CandidateAction { .. } => None,
+            Self::CandidateAction(action) => action.item.source_detail(),
         }
     }
 
@@ -590,7 +623,7 @@ impl ExecutableItem {
         match self {
             Self::Preset(preset) => preset.origin.file_path(),
             Self::Sequence(sequence) => sequence.origin.file_path(),
-            Self::CandidateAction { .. } => None,
+            Self::CandidateAction(action) => action.item.source_file_path(),
         }
     }
 
@@ -604,7 +637,7 @@ impl ExecutableItem {
                 let (kind, label) = sequence.origin.sort_key();
                 (1, kind, label)
             }
-            Self::CandidateAction { action, .. } => (2, 0, action.label.to_owned()),
+            Self::CandidateAction(action) => (2, 0, action.item.name().to_owned()),
         }
     }
 
@@ -612,7 +645,7 @@ impl ExecutableItem {
         match self {
             Self::Preset(preset) => Some(preset),
             Self::Sequence(_) => None,
-            Self::CandidateAction { preset, .. } => Some(preset),
+            Self::CandidateAction(action) => action.item.as_preset(),
         }
     }
 
@@ -620,7 +653,7 @@ impl ExecutableItem {
         match self {
             Self::Preset(_) => None,
             Self::Sequence(sequence) => Some(sequence),
-            Self::CandidateAction { .. } => None,
+            Self::CandidateAction(action) => action.item.as_sequence(),
         }
     }
 }
@@ -744,14 +777,29 @@ impl TuiCommandExecutor for UsbTuiCommandExecutor {
                 pending.normal_logging_enabled,
             )
             .map(|execution| ExecutionOutput::Command(Box::new(execution))),
-            ExecutableItem::CandidateAction { preset, .. } => execute_tui_preset(
-                preset,
-                pending.confirmed,
-                pending.timeout_secs,
-                pending.device_selection,
-                pending.normal_logging_enabled,
-            )
-            .map(|execution| ExecutionOutput::Command(Box::new(execution))),
+            ExecutableItem::CandidateAction(action) => match action.item.as_ref() {
+                ExecutableItem::Preset(preset) => execute_tui_preset(
+                    preset,
+                    pending.confirmed,
+                    pending.timeout_secs,
+                    pending.device_selection,
+                    pending.normal_logging_enabled,
+                )
+                .map(|execution| ExecutionOutput::Command(Box::new(execution))),
+                ExecutableItem::Sequence(sequence) => execute_tui_sequence(
+                    sequence,
+                    &[],
+                    pending.confirmed,
+                    pending.timeout_secs,
+                    pending.device_selection,
+                    pending.normal_logging_enabled,
+                    raw_log,
+                )
+                .map(|execution| ExecutionOutput::Sequence(Box::new(execution))),
+                ExecutableItem::CandidateAction(_) => Err(AtctlError::Transport(
+                    "candidate provider cannot reference another candidate action".to_owned(),
+                )),
+            },
             ExecutableItem::Sequence(sequence) => execute_tui_sequence(
                 sequence,
                 &pending.sequence_params,
@@ -1099,6 +1147,8 @@ impl TuiState {
         Self {
             focus,
             show_help: false,
+            help_scroll: 0,
+            help_visible_height: 1,
             selected_category: 0,
             selected_command: 0,
             selected_control: 0,
@@ -1267,7 +1317,9 @@ fn command_matches_search(command: &ExecutableItem, query: &str) -> bool {
         || command
             .summary()
             .is_some_and(|value| value.to_ascii_lowercase().contains(&query))
-        || command.source_label().to_ascii_lowercase().contains(&query)
+        || command
+            .source_detail()
+            .is_some_and(|value| value.to_ascii_lowercase().contains(&query))
         || command
             .categories()
             .iter()
@@ -1288,10 +1340,6 @@ fn has_file_sequence_sets(state: &TuiState) -> bool {
 }
 
 fn should_show_preset_source_detail(origin: &PresetOrigin) -> bool {
-    origin.detail().is_some()
-}
-
-fn should_show_sequence_source_detail(origin: &SequenceOrigin) -> bool {
     origin.detail().is_some()
 }
 
@@ -1519,6 +1567,7 @@ fn handle_key_code(state: &mut TuiState, key: KeyCode) -> TuiAction {
         KeyCode::Char('q') => TuiAction::Quit,
         KeyCode::Char('?') => {
             state.show_help = true;
+            state.help_scroll = 0;
             TuiAction::Continue
         }
         KeyCode::Left => {
@@ -1637,10 +1686,33 @@ fn handle_help_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
         key if ModalDismissal::Help.accepts(key) => {
             state.show_help = false;
-            TuiAction::Continue
+            state.help_scroll = 0;
         }
-        _ => TuiAction::Continue,
+        KeyCode::Up => {
+            state.help_scroll = state.help_scroll.saturating_sub(1);
+        }
+        KeyCode::Down => {
+            state.help_scroll = state.help_scroll.saturating_add(1);
+        }
+        KeyCode::PageUp => {
+            state.help_scroll = state
+                .help_scroll
+                .saturating_sub(state.help_visible_height.max(1));
+        }
+        KeyCode::PageDown => {
+            state.help_scroll = state
+                .help_scroll
+                .saturating_add(state.help_visible_height.max(1));
+        }
+        KeyCode::Home => {
+            state.help_scroll = 0;
+        }
+        KeyCode::End => {
+            state.help_scroll = usize::MAX;
+        }
+        _ => {}
     }
+    TuiAction::Continue
 }
 
 fn handle_executable_details_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
@@ -1949,6 +2021,7 @@ fn open_edit_input(state: &mut TuiState) -> TuiAction {
         state.status_role = TuiStyleRole::Warning;
         return TuiAction::Continue;
     };
+    let timeout_secs = effective_timeout_secs(state, &command);
     if let ExecutableItem::Sequence(sequence) = command {
         open_sequence_input(state, sequence);
         return TuiAction::Continue;
@@ -1959,6 +2032,7 @@ fn open_edit_input(state: &mut TuiState) -> TuiAction {
     state.edit_input = Some(EditInputState {
         input: preset.command.clone(),
         error: None,
+        timeout_secs,
     });
     state.status = "Edit command before execution.".to_owned();
     state.status_role = TuiStyleRole::Status;
@@ -1966,16 +2040,14 @@ fn open_edit_input(state: &mut TuiState) -> TuiAction {
 }
 
 fn open_timeout_input(state: &mut TuiState) -> TuiAction {
-    let timeout_secs = state
-        .selected_command()
-        .map(|command| effective_timeout_secs(state, command))
-        .unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS);
+    clear_controls_feedback(state);
     state.timeout_input = Some(TimeoutInputState {
-        input: timeout_secs.to_string(),
+        input: state
+            .timeout_override_secs
+            .map(|timeout_secs| timeout_secs.to_string())
+            .unwrap_or_default(),
         error: None,
     });
-    state.status = "Timeout input.".to_owned();
-    state.status_role = TuiStyleRole::Status;
     TuiAction::Continue
 }
 
@@ -1983,7 +2055,8 @@ fn open_executable_details(state: &mut TuiState) {
     let Some(item) = state.selected_command().cloned() else {
         return;
     };
-    let visible_row = command_row_plain_text(false, &item, state.commands_visible_width);
+    let commands = state.visible_commands();
+    let visible_row = command_row_plain_text(false, &item, &commands, state.commands_visible_width);
     let search_match = hidden_search_match(&item, &state.search_query, &visible_row);
     state.executable_details = Some(ExecutableDetailsState {
         item,
@@ -2642,7 +2715,13 @@ fn handle_edit_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
             let command = input_state.input.trim();
             match validate_ad_hoc_command(command) {
                 Ok(()) => {
-                    let preset = one_shot_preset("edited", "edited", "edited", command);
+                    let preset = one_shot_preset(
+                        "edited",
+                        "edited",
+                        "edited",
+                        command,
+                        input_state.timeout_secs,
+                    );
                     begin_item_execution(
                         state,
                         ExecutableItem::Preset(preset),
@@ -2653,6 +2732,7 @@ fn handle_edit_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
                     state.edit_input = Some(EditInputState {
                         input: input_state.input,
                         error: Some(message.clone()),
+                        timeout_secs: input_state.timeout_secs,
                     });
                     state.status = message;
                     state.status_role = TuiStyleRole::Error;
@@ -2681,32 +2761,34 @@ fn handle_timeout_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
     match key {
         key if ModalDismissal::Cancel.accepts(key) => {
             state.timeout_input = None;
-            state.status = "Timeout change cancelled.".to_owned();
-            state.status_role = TuiStyleRole::Status;
         }
         KeyCode::Enter => {
             let Some(input_state) = state.timeout_input.take() else {
                 return TuiAction::Continue;
             };
             let input = input_state.input.trim();
-            if input.eq_ignore_ascii_case("default") {
+            if input.is_empty() {
                 state.timeout_override_secs = None;
-                state.status = "Timeout override cleared.".to_owned();
-                state.status_role = TuiStyleRole::Status;
+                set_controls_feedback(
+                    state,
+                    TuiStyleRole::Status,
+                    "Using each Command or Sequence timeout.",
+                );
             } else {
                 match input.parse::<u64>() {
                     Ok(value) if value > 0 => {
                         state.timeout_override_secs = Some(value);
-                        state.status = format!("Timeout override set to {value}s.");
-                        state.status_role = TuiStyleRole::Status;
+                        set_controls_feedback(
+                            state,
+                            TuiStyleRole::Status,
+                            format!("Timeout set to {value} seconds."),
+                        );
                     }
                     _ => {
                         state.timeout_input = Some(TimeoutInputState {
                             input: input_state.input,
-                            error: Some("Enter seconds greater than 0 or `default`.".to_owned()),
+                            error: Some("Enter seconds greater than 0, or leave blank.".to_owned()),
                         });
-                        state.status = "Invalid timeout value.".to_owned();
-                        state.status_role = TuiStyleRole::Error;
                     }
                 }
             }
@@ -2751,7 +2833,7 @@ fn handle_confirmation_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
             let Some(confirmation) = state.confirmation.take() else {
                 return TuiAction::Continue;
             };
-            let expected = confirmation_token(&confirmation.preset.review);
+            let expected = confirmation.preset.review.confirmation_token();
             if confirmation.input.trim() == expected {
                 let item = ExecutableItem::Preset(confirmation.preset);
                 let timeout_secs = effective_timeout_secs(state, &item);
@@ -2833,14 +2915,14 @@ fn handle_sequence_input_key(state: &mut TuiState, key: KeyCode) -> TuiAction {
                 input.error = None;
             }
         }
-        KeyCode::PageUp => {
+        KeyCode::PageUp if !matches_sequence_phase(state, SequenceInputPhase::Params) => {
             if let Some(input) = state.sequence_input.as_mut() {
                 input.detail_scroll = input
                     .detail_scroll
                     .saturating_sub(input.detail_visible_height.max(1));
             }
         }
-        KeyCode::PageDown => {
+        KeyCode::PageDown if !matches_sequence_phase(state, SequenceInputPhase::Params) => {
             if let Some(input) = state.sequence_input.as_mut() {
                 input.detail_scroll = input
                     .detail_scroll
@@ -2920,6 +3002,7 @@ fn sequence_input_has_visible_text_field(input: &SequenceInputState) -> bool {
         SequenceInputPhase::Params => true,
         SequenceInputPhase::CandidateActionConfirmation => input
             .pending_candidate_action
+            .as_ref()
             .map(candidate_action_item)
             .is_some_and(|item| item.review().requires_confirmation()),
         SequenceInputPhase::Confirmation => sequence_input_param_values(input)
@@ -2946,7 +3029,7 @@ fn active_sequence_candidate_count(state: &TuiState) -> usize {
     let Some(candidate) = active_sequence_candidate_source(state) else {
         return 0;
     };
-    let action_count = candidate_actions(candidate).len();
+    let action_count = candidate_actions(state, candidate).len();
     if let Some(candidate_set) = candidate_set_for_source(state, candidate)
         && !candidate_set.is_empty()
     {
@@ -2977,14 +3060,14 @@ fn select_active_sequence_candidate(state: &mut TuiState) -> bool {
             .as_ref()
             .is_some_and(|input| input.active_candidate < candidate_set.len())
         {
-            return select_active_sequence_value_candidate(state, &candidate_set);
+            return accept_active_sequence_value_candidate(state, &candidate_set);
         }
         return run_active_sequence_candidate_action(state, candidate, candidate_set.len());
     }
     run_active_sequence_candidate_action(state, candidate, 1)
 }
 
-fn select_active_sequence_value_candidate(
+fn accept_active_sequence_value_candidate(
     state: &mut TuiState,
     candidate_set: &TuiSequenceCandidateSet,
 ) -> bool {
@@ -3007,19 +3090,18 @@ fn select_active_sequence_value_candidate(
         .get(input.active_param)
         .map(|value| value.trim())
         .unwrap_or("");
-    if current == candidate.value {
-        return false;
-    }
-    if let Some(input) = state.sequence_input.as_mut()
-        && let Some(value) = input.values.get_mut(input.active_param)
-    {
+    if current != candidate.value {
+        let Some(input) = state.sequence_input.as_mut() else {
+            return false;
+        };
+        let Some(value) = input.values.get_mut(input.active_param) else {
+            return false;
+        };
         *value = candidate.value;
         input.error = None;
-        state.status = "Sequence candidate selected.".to_owned();
-        state.status_role = TuiStyleRole::Status;
-        return true;
     }
-    false
+    submit_sequence_input(state);
+    true
 }
 
 fn run_active_sequence_candidate_action(
@@ -3034,10 +3116,13 @@ fn run_active_sequence_candidate_action(
         return false;
     }
     let action_index = input.active_candidate - action_start_index;
-    let Some(action) = candidate_actions(candidate).get(action_index).cloned() else {
+    let Some(action) = candidate_actions(state, candidate)
+        .get(action_index)
+        .cloned()
+    else {
         return false;
     };
-    let item = candidate_action_item(action);
+    let item = candidate_action_item(&action);
     if item.review().requires_confirmation() {
         if let Some(input) = state.sequence_input.as_mut() {
             input.phase = SequenceInputPhase::CandidateActionConfirmation;
@@ -3050,22 +3135,13 @@ fn run_active_sequence_candidate_action(
         state.status_role = TuiStyleRole::Warning;
         return true;
     }
-    schedule_item_execution(state, item, false, DEFAULT_COMMAND_TIMEOUT_SECS, Vec::new());
+    let timeout_secs = effective_timeout_secs(state, &item);
+    schedule_item_execution(state, item, false, timeout_secs, Vec::new());
     true
 }
 
-fn candidate_action_item(action: SequenceCandidateAction) -> ExecutableItem {
-    let preset = Preset::new(
-        action.label,
-        action.command,
-        action
-            .categories
-            .iter()
-            .map(|category| (*category).to_owned())
-            .collect(),
-        PresetOrigin::runtime("candidate action"),
-    );
-    ExecutableItem::CandidateAction { action, preset }
+fn candidate_action_item(action: &SequenceCandidateAction) -> ExecutableItem {
+    ExecutableItem::CandidateAction(action.clone())
 }
 
 fn cancel_sequence_input(state: &mut TuiState, message: &str) {
@@ -3142,7 +3218,7 @@ fn submit_sequence_input(state: &mut TuiState) {
             }
         }
         SequenceInputPhase::CandidateActionConfirmation => {
-            let Some(action) = input.pending_candidate_action else {
+            let Some(action) = input.pending_candidate_action.clone() else {
                 input.phase = SequenceInputPhase::Params;
                 input.detail_scroll = 0;
                 input.error = Some("No candidate action is selected.".to_owned());
@@ -3151,8 +3227,8 @@ fn submit_sequence_input(state: &mut TuiState) {
                 state.sequence_input = Some(input);
                 return;
             };
-            let item = candidate_action_item(action);
-            let expected = confirmation_token(item.review());
+            let item = candidate_action_item(&action);
+            let expected = item.review().confirmation_token();
             if item.review().requires_confirmation() && input.confirmation_input.trim() != expected
             {
                 input.error = Some(format!("Type `{expected}` exactly."));
@@ -3167,7 +3243,8 @@ fn submit_sequence_input(state: &mut TuiState) {
             input.confirmation_input.clear();
             input.error = None;
             state.sequence_input = Some(input);
-            schedule_item_execution(state, item, true, DEFAULT_COMMAND_TIMEOUT_SECS, Vec::new());
+            let timeout_secs = effective_timeout_secs(state, &item);
+            schedule_item_execution(state, item, true, timeout_secs, Vec::new());
         }
         SequenceInputPhase::Confirmation => match sequence_input_param_values(&input) {
             Ok(params) => {
@@ -3184,7 +3261,7 @@ fn submit_sequence_input(state: &mut TuiState) {
                         return;
                     }
                 };
-                let expected = confirmation_token(&execution_review);
+                let expected = execution_review.confirmation_token();
                 if execution_review.requires_confirmation()
                     && input.confirmation_input.trim() != expected
                 {
@@ -3317,12 +3394,19 @@ fn validate_ad_hoc_command(command: &str) -> std::result::Result<(), String> {
     Ok(())
 }
 
-fn one_shot_preset(name: &str, preset_set: &str, category: &str, command: &str) -> Preset {
-    Preset::new(
+fn one_shot_preset(
+    name: &str,
+    preset_set: &str,
+    category: &str,
+    command: &str,
+    timeout_secs: u64,
+) -> Preset {
+    Preset::new_with_timeout(
         name,
         command,
         vec![category.to_owned()],
         PresetOrigin::runtime(preset_set),
+        Some(timeout_secs),
     )
 }
 
@@ -3638,7 +3722,7 @@ fn finish_execution_result(
             } else {
                 TuiStyleRole::Error
             };
-            if matches!(item, ExecutableItem::CandidateAction { .. })
+            if matches!(item, ExecutableItem::CandidateAction(_))
                 && let Some(input) = state.sequence_input.as_mut()
             {
                 input.phase = SequenceInputPhase::Params;
@@ -3651,10 +3735,13 @@ fn finish_execution_result(
                 (ExecutableItem::Preset(preset), ExecutionOutput::Command(execution)) => {
                     append_tui_raw_capture(state, preset, execution)
                 }
-                (
-                    ExecutableItem::CandidateAction { preset, .. },
-                    ExecutionOutput::Command(execution),
-                ) => append_tui_raw_capture(state, preset, execution),
+                (ExecutableItem::CandidateAction(action), ExecutionOutput::Command(execution)) => {
+                    if let Some(preset) = action.item.as_preset() {
+                        append_tui_raw_capture(state, preset, execution)
+                    } else {
+                        Ok(())
+                    }
+                }
                 (ExecutableItem::Sequence(_), ExecutionOutput::Sequence(_)) => Ok(()),
                 _ => Ok(()),
             };
@@ -3684,15 +3771,17 @@ fn finish_execution_result(
             let detail = error.to_string();
             let raw_log_error =
                 append_tui_raw_error_for_item(state, &item, failed_duration, &detail);
-            let raw_failure = format!(
-                "Result: failed\n\n{} failed before response.\n{detail}",
-                item.kind().noun()
-            );
+            let raw_failure = timeout_failure_response(&error).unwrap_or_else(|| {
+                format!(
+                    "Result: failed\n\n{} failed before response.\n{detail}",
+                    item.kind().noun()
+                )
+            });
             set_response(
                 state,
                 ResponseState::with_raw(mask_sensitive_values(&raw_failure), raw_failure),
             );
-            if matches!(item, ExecutableItem::CandidateAction { .. })
+            if matches!(item, ExecutableItem::CandidateAction(_))
                 && let Some(input) = state.sequence_input.as_mut()
             {
                 input.phase = SequenceInputPhase::Params;
@@ -3722,6 +3811,27 @@ fn finish_execution_result(
         }
     }
     refresh_log_summaries_after_execution(state);
+}
+
+fn timeout_failure_response(error: &AtctlError) -> Option<String> {
+    let (timeout_secs, step) = match error {
+        AtctlError::Timeout { timeout_secs } => (*timeout_secs, None),
+        AtctlError::SequenceStepTimeout {
+            step, timeout_secs, ..
+        } => (*timeout_secs, Some(step.as_str())),
+        _ => return None,
+    };
+    let mut lines = vec![
+        "Result: failed".to_owned(),
+        String::new(),
+        format!("Timed out after {timeout_secs} seconds."),
+    ];
+    if let Some(step) = step {
+        lines.push(format!("Sequence step: {step}"));
+    }
+    lines.push("The modem may still be processing the operation.".to_owned());
+    lines.push("Wait for it to settle before deciding whether to retry.".to_owned());
+    Some(lines.join("\n"))
 }
 
 fn update_sequence_candidates_from_execution(state: &mut TuiState, execution: &ExecutionOutput) {
@@ -3818,8 +3928,10 @@ fn append_tui_raw_error_for_item(
 ) -> Result<()> {
     match item {
         ExecutableItem::Preset(preset) => append_tui_raw_error(state, preset, duration, error),
-        ExecutableItem::CandidateAction { preset, .. } => {
-            append_tui_raw_error(state, preset, duration, error)
+        ExecutableItem::CandidateAction(action) => {
+            action.item.as_preset().map_or(Ok(()), |preset| {
+                append_tui_raw_error(state, preset, duration, error)
+            })
         }
         ExecutableItem::Sequence(_) => Ok(()),
     }
@@ -3881,23 +3993,15 @@ fn format_confirmation_summary(command: &Preset) -> String {
         String::new(),
         format!(
             "Type `{}` to send, or press Esc to cancel.",
-            confirmation_token(&command.review)
+            command.review.confirmation_token()
         ),
     ]);
     lines.join("\n")
 }
 
-fn confirmation_token(review: &ExecutionReview) -> &'static str {
-    if review.assessment == Assessment::Unknown {
-        "unknown"
-    } else {
-        "run"
-    }
-}
-
 fn append_execution_review_text(lines: &mut Vec<String>, review: &ExecutionReview) {
     if review.assessment == Assessment::Unknown {
-        lines.push("! Effects are not fully known".to_owned());
+        lines.push(UNKNOWN_EFFECTS_NOTICE.to_owned());
     }
     for section in review.presentation_sections() {
         lines.push(format!("{}:", section.kind.heading()));
@@ -3909,7 +4013,7 @@ fn execution_review_lines(review: &ExecutionReview, theme: &TuiTheme) -> Vec<Lin
     let mut lines = Vec::new();
     if review.assessment == Assessment::Unknown {
         lines.push(Line::from(Span::styled(
-            "! Effects are not fully known",
+            UNKNOWN_EFFECTS_NOTICE,
             theme.style(TuiStyleRole::Warning),
         )));
     }
@@ -4221,43 +4325,43 @@ fn render_frame(frame: &mut Frame<'_>, state: &mut TuiState) {
     render_footer(frame, root[1], state, &theme);
 
     if let Some(confirmation) = &state.confirmation {
-        render_confirmation(frame, centered_rect(76, 64, area), confirmation, &theme);
+        render_confirmation(frame, area, confirmation, &theme);
     }
     if state.output_masking_ack_input.is_some() {
-        render_output_masking_confirmation(frame, centered_rect(76, 64, area), state, &theme);
+        render_output_masking_confirmation(frame, area, state, &theme);
     }
     if state.response_action_confirmation.is_some() {
-        render_response_action_confirmation(frame, centered_rect(76, 64, area), state, &theme);
+        render_response_action_confirmation(frame, area, state, &theme);
     }
     if state.raw_log_path_input.is_some() {
-        render_raw_log_path_input(frame, centered_rect(76, 36, area), state, &theme);
+        render_raw_log_path_input(frame, area, state, &theme);
     }
     if state.raw_log_ack_input.is_some() {
-        render_raw_log_ack_input(frame, centered_rect(76, 48, area), state, &theme);
+        render_raw_log_ack_input(frame, area, state, &theme);
     }
     if state.search_input.is_some() {
-        render_search_input(frame, centered_rect(64, 32, area), state, &theme);
+        render_search_input(frame, area, state, &theme);
     }
     if state.edit_input.is_some() {
-        render_edit_input(frame, centered_rect(76, 42, area), state, &theme);
+        render_edit_input(frame, area, state, &theme);
     }
     if state.executable_details.is_some() {
-        render_executable_details(frame, centered_rect(76, 70, area), state, &theme);
+        render_executable_details(frame, area, state, &theme);
     }
     if state.sequence_input.is_some() {
-        render_sequence_input(frame, centered_rect(76, 86, area), state, &theme);
+        render_sequence_input(frame, area, state, &theme);
     }
     if state.ad_hoc_input.is_some() {
-        render_ad_hoc_input(frame, centered_rect(76, 42, area), state, &theme);
+        render_ad_hoc_input(frame, area, state, &theme);
     }
     if state.timeout_input.is_some() {
-        render_timeout_input(frame, centered_rect(64, 32, area), state, &theme);
+        render_timeout_input(frame, area, state, &theme);
     }
     if state.action_menu.is_some() {
-        render_action_menu(frame, centered_rect(76, 80, area), state, &theme);
+        render_action_menu(frame, area, state, &theme);
     }
     if state.show_help {
-        render_help(frame, centered_rect(76, 90, area), &theme);
+        render_help(frame, area, state, &theme);
     }
 }
 
@@ -4568,7 +4672,7 @@ fn controls_inner_areas(inner: Rect, feedback: Option<&ControlsFeedback>) -> (Re
 
     let areas = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(2)])
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(inner);
     (areas[0], Some(areas[1]))
 }
@@ -4651,18 +4755,7 @@ fn control_rows(state: &TuiState) -> Vec<ControlRow> {
                 "Select a device first."
             },
         ),
-        control_row(
-            ControlAction::SetTimeout,
-            "Timeout",
-            Some(
-                state
-                    .selected_command()
-                    .map(|command| format!("{}s", effective_timeout_secs(state, command)))
-                    .unwrap_or_else(|| format!("{}s", DEFAULT_COMMAND_TIMEOUT_SECS)),
-            ),
-            true,
-            "",
-        ),
+        control_row(ControlAction::SetTimeout, "Timeout", None, true, ""),
         control_row(ControlAction::RawExport, raw_export_label, None, true, ""),
         control_row(
             ControlAction::ToggleOutputMasking,
@@ -4881,6 +4974,7 @@ fn render_commands(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &
         );
         return;
     };
+    let confirmation_lane_width = executable_confirmation_lane_width(&commands);
     let rows = command_list_rows(&commands);
     let visible_slots = pane_inner_height(area).max(1);
     let selected_row = selected_command_row_index(&rows, state.selected_command);
@@ -4889,7 +4983,16 @@ fn render_commands(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &
         .iter()
         .skip(start)
         .take(visible_slots)
-        .map(|row| command_row_item(row, state.selected_command, row_width, name_width, theme))
+        .map(|row| {
+            command_row_item(
+                row,
+                state.selected_command,
+                row_width,
+                name_width,
+                confirmation_lane_width,
+                theme,
+            )
+        })
         .collect::<Vec<_>>();
     frame.render_widget(
         List::new(items)
@@ -4906,21 +5009,27 @@ fn render_commands(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &
 
 fn render_executable_details(
     frame: &mut Frame<'_>,
-    area: Rect,
+    screen: Rect,
     state: &mut TuiState,
     theme: &TuiTheme,
 ) {
     let Some(details) = state.executable_details.as_ref() else {
         return;
     };
-    let inner_width = area.width.saturating_sub(2) as usize;
-    let inner_height = area.height.saturating_sub(2) as usize;
-    if inner_width < 20 || inner_height < 2 {
-        render_safe_resize_modal(frame, area, "Details", TuiStyleRole::Focus, theme);
+    let width_area = centered_rect(76, 100, screen);
+    let inner_width = width_area.width.saturating_sub(2) as usize;
+    if inner_width < 20 {
+        render_safe_resize_modal(
+            frame,
+            centered_rect(76, 70, screen),
+            "Details",
+            TuiStyleRole::Focus,
+            theme,
+        );
         return;
     }
 
-    let mut lines = vec![
+    let mut overview = vec![
         Line::from(vec![
             Span::styled("Type: ", theme.style(TuiStyleRole::Emphasis)),
             Span::raw(details.item.kind().noun()),
@@ -4931,42 +5040,38 @@ fn render_executable_details(
         ]),
     ];
     if let Some(command) = details.item.command_text() {
-        lines.push(Line::from(vec![
+        overview.push(Line::from(vec![
             Span::styled("AT command: ", theme.style(TuiStyleRole::Emphasis)),
             Span::raw(command.to_owned()),
         ]));
     }
     if let Some(purpose) = details.item.summary() {
-        lines.push(Line::from(vec![
+        overview.push(Line::from(vec![
             Span::styled("Purpose: ", theme.style(TuiStyleRole::Emphasis)),
             Span::raw(purpose.to_owned()),
         ]));
     }
-    if let Some(warning) = confirmation_exception_label(details.item.review()) {
-        lines.push(Line::from(Span::styled(
-            warning,
-            theme.style(TuiStyleRole::Warning),
-        )));
-    }
+
+    let mut definition = Vec::new();
     if let Some(source) = details.item.source_detail() {
-        lines.push(Line::from(vec![
+        definition.push(Line::from(vec![
             Span::styled("Source: ", theme.style(TuiStyleRole::Emphasis)),
             Span::raw(source.to_owned()),
         ]));
     }
     if let Some(path) = details.item.source_file_path() {
-        lines.push(Line::from(vec![
+        definition.push(Line::from(vec![
             Span::styled("File: ", theme.style(TuiStyleRole::Emphasis)),
             Span::raw(path.to_owned()),
         ]));
     }
     if let Some(search_match) = &details.search_match {
-        lines.push(Line::from(vec![
+        definition.push(Line::from(vec![
             Span::styled("Search match: ", theme.style(TuiStyleRole::Focus)),
             Span::raw(search_match.clone()),
         ]));
     }
-    lines.push(Line::from(vec![
+    definition.push(Line::from(vec![
         Span::styled("Categories: ", theme.style(TuiStyleRole::Emphasis)),
         Span::raw(if details.item.categories().is_empty() {
             "none".to_owned()
@@ -4974,91 +5079,71 @@ fn render_executable_details(
             details.item.categories().join(", ")
         }),
     ]));
-    lines.push(Line::from(vec![
-        Span::styled("Timeout: ", theme.style(TuiStyleRole::Emphasis)),
-        Span::raw(format!(
-            "{} seconds{}",
-            details
-                .item
-                .timeout_secs()
-                .unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS),
-            if details.item.timeout_secs().is_some() {
-                ""
-            } else {
-                " (default)"
-            }
-        )),
-    ]));
+
+    let mut before_running = Vec::new();
+    let mut inputs = Vec::new();
     if let Some(sequence) = details.item.as_sequence() {
-        if !sequence.before_running.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "Before running:",
-                theme.style(TuiStyleRole::Emphasis),
+        before_running.extend(
+            sequence
+                .before_running
+                .iter()
+                .map(|item| Line::from(format!("- {item}"))),
+        );
+        for (index, param) in sequence.params.iter().enumerate() {
+            if index > 0 {
+                inputs.push(Line::from(""));
+            }
+            inputs.push(Line::from(format!(
+                "  - {} ({}){}{}",
+                param.name,
+                param.label,
+                if param.required {
+                    "; required"
+                } else {
+                    "; optional"
+                },
+                if param.sensitive { "; sensitive" } else { "" }
             )));
-            lines.extend(
-                sequence
-                    .before_running
-                    .iter()
-                    .map(|item| Line::from(format!("  - {item}"))),
-            );
-        }
-        if sequence.params.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled("Parameters: ", theme.style(TuiStyleRole::Emphasis)),
-                Span::raw("none"),
-            ]));
-        } else {
-            lines.push(Line::from(Span::styled(
-                "Parameters:",
-                theme.style(TuiStyleRole::Emphasis),
-            )));
-            for param in &sequence.params {
-                lines.push(Line::from(format!(
-                    "  - {} ({}){}{}",
-                    param.name,
-                    param.label,
-                    if param.required {
-                        "; required"
-                    } else {
-                        "; optional"
-                    },
-                    if param.sensitive { "; sensitive" } else { "" }
-                )));
-                lines.push(Line::from(format!("    Source: {}", param.source.label())));
-                if let Some(default) = &param.default_value {
-                    lines.push(Line::from(format!("    Default: {default}")));
-                }
-                if let Some(candidate) = param.candidate {
-                    lines.push(Line::from(format!("    Candidates: {}", candidate.label())));
-                }
-                if let Some(hint) = &param.hint {
-                    lines.push(Line::from(format!("    Hint: {hint}")));
-                }
+            inputs.push(Line::from(format!("    Source: {}", param.source.label())));
+            if let Some(default) = &param.default_value {
+                inputs.push(Line::from(format!("    Default: {default}")));
+            }
+            if let Some(candidate) = param.candidate {
+                inputs.push(Line::from(format!("    Candidates: {}", candidate.label())));
+            }
+            if let Some(hint) = &param.hint {
+                inputs.push(Line::from(format!("    Hint: {hint}")));
             }
         }
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        "Execution review:",
-        theme.style(TuiStyleRole::Emphasis),
-    )));
-    lines.push(Line::from(format!(
-        "Assessment: {}",
-        details.item.review().assessment
-    )));
+
+    let timeout_secs = effective_timeout_secs(state, &details.item);
+    let mut execution = vec![
+        Line::from(vec![
+            Span::styled("Timeout: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(format!("{timeout_secs} seconds")),
+        ]),
+        Line::from(format!("Assessment: {}", details.item.review().assessment)),
+    ];
+    if details.item.review().assessment == Assessment::Unknown {
+        execution.push(Line::from(Span::styled(
+            UNKNOWN_EFFECTS_NOTICE,
+            theme.style(TuiStyleRole::Warning),
+        )));
+    }
     for section in details.item.review().presentation_sections() {
-        lines.push(Line::from(Span::styled(
+        execution.push(Line::from(Span::styled(
             format!("{}:", section.kind.heading()),
             theme.style(TuiStyleRole::Emphasis),
         )));
-        lines.extend(
+        execution.extend(
             section
                 .items
                 .into_iter()
                 .map(|item| Line::from(format!("  - {item}"))),
         );
     }
-    lines.push(Line::from(format!(
+    execution.push(Line::from(format!(
         "Confirmation: {}",
         if details.item.review().requires_confirmation() {
             "required"
@@ -5066,11 +5151,32 @@ fn render_executable_details(
             "not required"
         }
     )));
-    let wrapped = wrap_lines_to_width(lines, inner_width);
+
+    let mut sections = vec![
+        ("Overview", overview),
+        ("Definition", definition),
+        ("Before running", before_running),
+        ("Inputs", inputs),
+        ("Execution", execution),
+    ];
+    sections.retain(|(_, lines)| !lines.is_empty());
+    let (wrapped, section_starts) = wrap_executable_detail_sections(sections, inner_width, theme);
     let total = wrapped.len().max(1);
+    let geometry = modal_geometry_for_body_height(screen, 76, 70, total);
+    let area = geometry.area;
+    let inner_height = area.height.saturating_sub(2) as usize;
+    if inner_height < 2 {
+        render_safe_resize_modal(frame, area, "Details", TuiStyleRole::Focus, theme);
+        return;
+    }
     let max_scroll = total.saturating_sub(inner_height.max(1));
     let scroll = details.scroll.min(max_scroll);
     let end = (scroll + inner_height).min(total);
+    let current_section = section_starts
+        .iter()
+        .rev()
+        .find(|(start, _)| *start <= scroll)
+        .map_or("Overview", |(_, name)| *name);
     if let Some(details) = state.executable_details.as_mut() {
         details.scroll = scroll;
         details.visible_height = inner_height.max(1);
@@ -5081,13 +5187,43 @@ fn render_executable_details(
         Paragraph::new(wrapped[scroll..end].to_vec())
             .block(
                 Block::default()
-                    .title(format!("Details {}-{}/{}", scroll + 1, end, total))
+                    .title(format!(
+                        "Details · {current_section} {}-{}/{}",
+                        scroll + 1,
+                        end,
+                        total
+                    ))
                     .borders(Borders::ALL)
+                    .style(theme.style(TuiStyleRole::Background))
                     .border_style(theme.style(TuiStyleRole::Focus)),
             )
             .style(theme.style(TuiStyleRole::Text)),
         area,
     );
+}
+
+fn wrap_executable_detail_sections(
+    sections: Vec<(&'static str, Vec<Line<'static>>)>,
+    width: usize,
+    theme: &TuiTheme,
+) -> (Vec<Line<'static>>, Vec<(usize, &'static str)>) {
+    let mut wrapped = Vec::new();
+    let mut starts = Vec::new();
+    for (name, content) in sections {
+        if !wrapped.is_empty() {
+            starts.push((wrapped.len(), name));
+            wrapped.push(Line::from(""));
+        } else {
+            starts.push((wrapped.len(), name));
+        }
+        let mut section = vec![Line::from(Span::styled(
+            format!("{name}:"),
+            theme.style(TuiStyleRole::Emphasis),
+        ))];
+        section.extend(content);
+        wrapped.extend(wrap_lines_to_width(section, width));
+    }
+    (wrapped, starts)
 }
 
 fn render_safe_resize_modal(
@@ -5104,6 +5240,7 @@ fn render_safe_resize_modal(
                 Block::default()
                     .title(title.to_owned())
                     .borders(Borders::ALL)
+                    .style(theme.style(TuiStyleRole::Background))
                     .border_style(theme.style(border_role)),
             )
             .style(theme.style(TuiStyleRole::Warning))
@@ -5188,7 +5325,7 @@ fn command_list_rows<'a>(commands: &[&'a ExecutableItem]) -> Vec<CommandListRow<
         let should_group_source = match command {
             ExecutableItem::Preset(_) => show_preset_headers,
             ExecutableItem::Sequence(_) => show_sequence_headers,
-            ExecutableItem::CandidateAction { .. } => false,
+            ExecutableItem::CandidateAction(_) => false,
         };
         if should_group_source
             && let Some(source_label) = command.source_detail()
@@ -5381,19 +5518,17 @@ fn render_action_menu(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme
         lines.push(Line::from(ModalDismissal::Cancel.after("Enter selects.")));
     }
 
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(
-                Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(theme.style(TuiStyleRole::Focus)),
-            )
-            .alignment(Alignment::Left)
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
+    render_content_fit_modal(
+        frame,
         area,
+        lines,
+        ModalRenderSpec {
+            percent_x: 76,
+            max_percent_y: 80,
+            title,
+            border_role: TuiStyleRole::Focus,
+        },
+        theme,
     );
 }
 
@@ -5598,10 +5733,18 @@ fn render_status(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &Tu
             selected.kind().noun(),
             selected.name()
         )));
-        if let Some(detail) = selected.source_detail() {
+        let required_after_optional = 2;
+        let mut optional_context_lines =
+            content_height.saturating_sub(lines.len().saturating_add(required_after_optional));
+        if optional_context_lines > 0
+            && let Some(detail) = selected.source_detail()
+        {
             lines.push(Line::from(format!("Source: {detail}")));
+            optional_context_lines -= 1;
         }
-        if let Some(command) = selected.command_text() {
+        if optional_context_lines > 0
+            && let Some(command) = selected.command_text()
+        {
             lines.push(Line::from(format!("AT command: {command}")));
         }
         lines.push(Line::from(format!(
@@ -5713,7 +5856,7 @@ fn footer_text(state: &TuiState, width: usize) -> String {
 
 fn footer_segments(state: &TuiState) -> Vec<&'static str> {
     if state.show_help {
-        return ModalDismissal::Help.footer_segments().to_vec();
+        return modal_footer_segments(&["Up/Down Scroll", "PgUp/PgDn Page"], ModalDismissal::Help);
     }
     if state.executable_details.is_some() {
         return modal_footer_segments(&["Up/Down Scroll", "PgUp/PgDn Page"], ModalDismissal::Close);
@@ -5759,23 +5902,34 @@ fn footer_segments(state: &TuiState) -> Vec<&'static str> {
     }
     if let Some(input) = &state.sequence_input {
         return match input.phase {
-            SequenceInputPhase::Params => modal_footer_segments(
-                &["Enter Next/Run", "Up/Down Param", "PgUp/PgDn Details"],
-                ModalDismissal::Cancel,
-            ),
+            SequenceInputPhase::Params => {
+                let action = sequence_param_enter_action(input, state);
+                let mut segments = vec![action.footer_segment()];
+                if active_sequence_candidate_count(state) > 0 {
+                    segments.push("Up/Down Options");
+                    if input.active_param + 1 < input.sequence.params.len() {
+                        segments.push("Tab Next value");
+                    }
+                } else {
+                    segments.push("Up/Down Values");
+                }
+                segments.extend_from_slice(ModalDismissal::Cancel.footer_segments());
+                segments
+            }
             SequenceInputPhase::CandidateActionConfirmation => {
                 let unknown = input
                     .pending_candidate_action
+                    .as_ref()
                     .map(candidate_action_item)
                     .is_some_and(|item| item.review().assessment == Assessment::Unknown);
                 if unknown {
                     modal_footer_segments(
-                        &["type unknown Run", "PgUp/PgDn Details"],
+                        &["type unknown Run", "PgUp/PgDn Review"],
                         ModalDismissal::Cancel,
                     )
                 } else {
                     modal_footer_segments(
-                        &["type run Run", "PgUp/PgDn Details"],
+                        &["type run Run", "PgUp/PgDn Review"],
                         ModalDismissal::Cancel,
                     )
                 }
@@ -5789,7 +5943,7 @@ fn footer_segments(state: &TuiState) -> Vec<&'static str> {
                     .is_some_and(|review| !review.requires_confirmation())
                 {
                     modal_footer_segments(
-                        &["Enter Run", "PgUp/PgDn Details"],
+                        &["Enter Run", "PgUp/PgDn Review"],
                         ModalDismissal::Cancel,
                     )
                 } else if review
@@ -5797,12 +5951,12 @@ fn footer_segments(state: &TuiState) -> Vec<&'static str> {
                     .is_some_and(|review| review.assessment == Assessment::Unknown)
                 {
                     modal_footer_segments(
-                        &["type unknown Run", "PgUp/PgDn Details"],
+                        &["type unknown Run", "PgUp/PgDn Review"],
                         ModalDismissal::Cancel,
                     )
                 } else {
                     modal_footer_segments(
-                        &["type run Run", "PgUp/PgDn Details"],
+                        &["type run Run", "PgUp/PgDn Review"],
                         ModalDismissal::Cancel,
                     )
                 }
@@ -5813,7 +5967,7 @@ fn footer_segments(state: &TuiState) -> Vec<&'static str> {
         return modal_footer_segments(&["Enter Send"], ModalDismissal::Cancel);
     }
     if state.timeout_input.is_some() {
-        return modal_footer_segments(&["Enter Set", "default Reset"], ModalDismissal::Cancel);
+        return modal_footer_segments(&["Enter Apply"], ModalDismissal::Cancel);
     }
     if state.running_execution.is_some() {
         return vec!["Running", "? Help"];
@@ -6044,7 +6198,7 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &T
     );
 }
 
-fn render_help(frame: &mut Frame<'_>, area: Rect, theme: &TuiTheme) {
+fn render_help(frame: &mut Frame<'_>, screen: Rect, state: &mut TuiState, theme: &TuiTheme) {
     let text = vec![
         Line::from("atctl TUI"),
         Line::from(""),
@@ -6062,23 +6216,46 @@ fn render_help(frame: &mut Frame<'_>, area: Rect, theme: &TuiTheme) {
         Line::from("?             Open / close help"),
         Line::from("q             Quit (idle base screen)"),
         Line::from(""),
-        Line::from("Rows: confirmation warnings appear only when required"),
+        Line::from("Rows: [confirm] opens confirmation before execution"),
         Line::from("Confirm known operation: run"),
         Line::from("Confirm unknown operation: unknown"),
         Line::from("Unmasked Response: copy / export confirmation"),
     ];
-    frame.render_widget(Clear, area);
+
+    let width_area = centered_rect(76, 100, screen);
+    let inner_width = width_area.width.saturating_sub(2).max(1) as usize;
+    let wrapped = wrap_lines_to_width(text, inner_width);
+    let total = wrapped.len().max(1);
+    let geometry = modal_geometry_for_body_height(screen, 76, 90, total);
+    if geometry.area.width < 3 || geometry.area.height < 3 {
+        render_safe_resize_modal(frame, geometry.area, "Help", TuiStyleRole::Focus, theme);
+        return;
+    }
+    let visible_height = geometry.area.height.saturating_sub(2).max(1) as usize;
+    let max_scroll = total.saturating_sub(visible_height);
+    let scroll = state.help_scroll.min(max_scroll);
+    let end = (scroll + visible_height).min(total);
+    state.help_scroll = scroll;
+    state.help_visible_height = visible_height;
+    let title = if total > visible_height {
+        format!("Help {}-{}/{}", scroll + 1, end, total)
+    } else {
+        "Help".to_owned()
+    };
+
+    frame.render_widget(Clear, geometry.area);
     frame.render_widget(
-        Paragraph::new(text)
+        Paragraph::new(wrapped[scroll..end].to_vec())
             .block(
                 Block::default()
-                    .title("Help")
+                    .title(title)
                     .borders(Borders::ALL)
+                    .style(theme.style(TuiStyleRole::Background))
                     .border_style(theme.style(TuiStyleRole::Focus)),
             )
             .alignment(Alignment::Left)
             .style(theme.style(TuiStyleRole::Text)),
-        area,
+        geometry.area,
     );
 }
 
@@ -6123,7 +6300,8 @@ fn render_confirmation(
     text.extend([
         Line::from(""),
         Line::from(Span::styled(
-            ModalDismissal::Cancel.after(format!("Type `{}` to send.", confirmation_token(review))),
+            ModalDismissal::Cancel
+                .after(format!("Type `{}` to send.", review.confirmation_token())),
             theme.style(TuiStyleRole::Warning),
         )),
         Line::from(Span::styled(
@@ -6133,24 +6311,22 @@ fn render_confirmation(
     ]);
 
     let title = if review.assessment == Assessment::Unknown {
-        "! Confirm unknown command"
+        "Confirm unknown command"
     } else {
         "Confirm command"
     };
 
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(
-                Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(theme.style(TuiStyleRole::Warning)),
-            )
-            .alignment(Alignment::Left)
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
+    render_content_fit_modal(
+        frame,
         area,
+        text,
+        ModalRenderSpec {
+            percent_x: 76,
+            max_percent_y: 64,
+            title,
+            border_role: TuiStyleRole::Warning,
+        },
+        theme,
     );
 }
 
@@ -6192,19 +6368,17 @@ fn render_output_masking_confirmation(
         )),
     ]);
 
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(
-                Block::default()
-                    .title("Disable output masking?")
-                    .borders(Borders::ALL)
-                    .border_style(theme.style(TuiStyleRole::Warning)),
-            )
-            .alignment(Alignment::Left)
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
+    render_content_fit_modal(
+        frame,
         area,
+        text,
+        ModalRenderSpec {
+            percent_x: 76,
+            max_percent_y: 64,
+            title: "Disable output masking?",
+            border_role: TuiStyleRole::Warning,
+        },
+        theme,
     );
 }
 
@@ -6268,19 +6442,17 @@ fn render_response_action_confirmation(
         )));
     }
 
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(
-                Block::default()
-                    .title(title)
-                    .borders(Borders::ALL)
-                    .border_style(theme.style(TuiStyleRole::Warning)),
-            )
-            .alignment(Alignment::Left)
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
+    render_content_fit_modal(
+        frame,
         area,
+        text,
+        ModalRenderSpec {
+            percent_x: 76,
+            max_percent_y: 64,
+            title,
+            border_role: TuiStyleRole::Warning,
+        },
+        theme,
     );
 }
 
@@ -6319,19 +6491,17 @@ fn render_raw_log_path_input(
         ModalDismissal::Cancel.after("Press Enter to continue."),
     ));
 
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(
-                Block::default()
-                    .title("Raw diagnostic export path")
-                    .borders(Borders::ALL)
-                    .border_style(theme.style(TuiStyleRole::Focus)),
-            )
-            .alignment(Alignment::Left)
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
+    render_content_fit_modal(
+        frame,
         area,
+        text,
+        ModalRenderSpec {
+            percent_x: 76,
+            max_percent_y: 36,
+            title: "Raw diagnostic export path",
+            border_role: TuiStyleRole::Focus,
+        },
+        theme,
     );
 }
 
@@ -6375,19 +6545,17 @@ fn render_raw_log_ack_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
         )]));
     }
 
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(
-                Block::default()
-                    .title("Start raw diagnostic export?")
-                    .borders(Borders::ALL)
-                    .border_style(theme.style(TuiStyleRole::Warning)),
-            )
-            .alignment(Alignment::Left)
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
+    render_content_fit_modal(
+        frame,
         area,
+        text,
+        ModalRenderSpec {
+            percent_x: 76,
+            max_percent_y: 48,
+            title: "Start raw diagnostic export?",
+            border_role: TuiStyleRole::Warning,
+        },
+        theme,
     );
 }
 
@@ -6414,19 +6582,17 @@ fn render_search_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState, them
         Line::from(ModalDismissal::Cancel.after("Enter applies.")),
     ];
 
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(
-                Block::default()
-                    .title("Commands / Sequences search")
-                    .borders(Borders::ALL)
-                    .border_style(theme.style(TuiStyleRole::Focus)),
-            )
-            .alignment(Alignment::Left)
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
+    render_content_fit_modal(
+        frame,
         area,
+        text,
+        ModalRenderSpec {
+            percent_x: 64,
+            max_percent_y: 32,
+            title: "Commands / Sequences search",
+            border_role: TuiStyleRole::Focus,
+        },
+        theme,
     );
 }
 
@@ -6455,25 +6621,23 @@ fn render_edit_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme:
         ]));
     }
 
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(
-                Block::default()
-                    .title("Edit before run")
-                    .borders(Borders::ALL)
-                    .border_style(theme.style(TuiStyleRole::Focus)),
-            )
-            .alignment(Alignment::Left)
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
+    render_content_fit_modal(
+        frame,
         area,
+        text,
+        ModalRenderSpec {
+            percent_x: 76,
+            max_percent_y: 42,
+            title: "Edit before run",
+            border_role: TuiStyleRole::Focus,
+        },
+        theme,
     );
 }
 
 fn render_sequence_input(
     frame: &mut Frame<'_>,
-    area: Rect,
+    screen: Rect,
     state: &mut TuiState,
     theme: &TuiTheme,
 ) {
@@ -6481,15 +6645,16 @@ fn render_sequence_input(
         return;
     };
     let sequence = &input_state.sequence;
-    let (title, border_role) = match input_state.phase {
+    let (phase_title, border_role) = match input_state.phase {
         SequenceInputPhase::Params => ("Run Sequence", TuiStyleRole::Focus),
         SequenceInputPhase::CandidateActionConfirmation => {
             let unknown = input_state
                 .pending_candidate_action
+                .as_ref()
                 .map(candidate_action_item)
                 .is_some_and(|item| item.review().assessment == Assessment::Unknown);
             if unknown {
-                ("! Confirm unknown action", TuiStyleRole::Warning)
+                ("Confirm unknown action", TuiStyleRole::Warning)
             } else {
                 ("Confirm action", TuiStyleRole::Warning)
             }
@@ -6502,80 +6667,196 @@ fn render_sequence_input(
             if !review.requires_confirmation() {
                 ("Review Sequence", TuiStyleRole::Focus)
             } else if review.assessment == Assessment::Unknown {
-                ("! Confirm unknown Sequence", TuiStyleRole::Warning)
+                ("Confirm unknown Sequence", TuiStyleRole::Warning)
             } else {
                 ("Confirm Sequence", TuiStyleRole::Warning)
             }
         }
     };
-    let (context, pinned) = sequence_phase_lines(input_state, state, theme);
-    let inner_width = area.width.saturating_sub(2) as usize;
+    let width_area = centered_rect(76, 100, screen);
+    let inner_width = width_area.width.saturating_sub(2) as usize;
+    let position_title = sequence_value_position_title(input_state);
+    let title = sequence_modal_title(
+        phase_title,
+        &sequence.name,
+        inner_width,
+        position_title.as_deref(),
+    );
+    let title_width = display_cell_width(&title)
+        + position_title
+            .as_deref()
+            .map_or(0, |position| display_cell_width(position) + 4);
+    if inner_width < 20 || title_width > inner_width {
+        render_safe_resize_modal(
+            frame,
+            centered_rect(76, 86, screen),
+            phase_title,
+            border_role,
+            theme,
+        );
+        return;
+    }
+    let content = sequence_phase_lines(input_state, state, inner_width, theme);
+    let mut context = wrap_lines_to_width(content.context, inner_width);
+    if content.context_label.is_some() && context.is_empty() {
+        context.push(Line::from(""));
+    }
+    let critical = wrap_lines_to_width(content.critical, inner_width);
+    let footer = wrap_lines_to_width(content.footer, inner_width);
+    let separator_height =
+        usize::from(!context.is_empty() && (!critical.is_empty() || !footer.is_empty()));
+    let body_height = usize::from(content.context_label.is_some())
+        + context.len()
+        + separator_height
+        + critical.len()
+        + footer.len();
+    let geometry = modal_geometry_for_body_height(screen, 76, 86, body_height);
+    let area = geometry.area;
     let inner_height = area.height.saturating_sub(2) as usize;
-    if inner_width < 20 || inner_height < 4 {
-        render_safe_resize_modal(frame, area, title, border_role, theme);
+    if inner_height < 4 || (content.context_label.is_none() && !geometry.content_fits) {
+        render_safe_resize_modal(frame, area, phase_title, border_role, theme);
         return;
-    }
-    let context = wrap_lines_to_width(context, inner_width);
-    let pinned = wrap_lines_to_width(pinned, inner_width);
-    if pinned.len() + 2 > inner_height {
-        render_safe_resize_modal(frame, area, title, border_role, theme);
-        return;
-    }
-
-    let visible_height = inner_height - pinned.len() - 1;
-    let total = context.len().max(1);
-    let max_scroll = total.saturating_sub(visible_height.max(1));
-    let scroll = input_state.detail_scroll.min(max_scroll);
-    let end = (scroll + visible_height).min(total);
-    if let Some(input) = state.sequence_input.as_mut() {
-        input.detail_scroll = scroll;
-        input.detail_visible_height = visible_height.max(1);
     }
 
     frame.render_widget(Clear, area);
-    frame.render_widget(
-        Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(theme.style(border_role)),
-        area,
-    );
+    let mut block = Block::default()
+        .title(title.clone())
+        .borders(Borders::ALL)
+        .style(theme.style(TuiStyleRole::Background))
+        .border_style(theme.style(border_role));
+    if let Some(position) = position_title {
+        block = block.title(
+            Line::from(Span::styled(position, theme.style(TuiStyleRole::Focus))).right_aligned(),
+        );
+    }
+    frame.render_widget(block, area);
     let inner = Rect::new(
         area.x.saturating_add(1),
         area.y.saturating_add(1),
         area.width.saturating_sub(2),
         area.height.saturating_sub(2),
     );
-    let sections = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(visible_height as u16),
-            Constraint::Length(pinned.len() as u16),
-        ])
-        .split(inner);
-    frame.render_widget(
-        Paragraph::new(format!("Details {}-{}/{}", scroll + 1, end, total))
-            .style(theme.style(TuiStyleRole::Muted)),
-        sections[0],
-    );
-    frame.render_widget(
-        Paragraph::new(context[scroll..end].to_vec()).style(theme.style(TuiStyleRole::Text)),
-        sections[1],
-    );
-    frame.render_widget(
-        Paragraph::new(pinned).style(theme.style(TuiStyleRole::Text)),
-        sections[2],
-    );
+    if let Some(context_label) = content.context_label {
+        let fixed_height = 1 + separator_height + critical.len() + footer.len();
+        if fixed_height + 1 > inner_height {
+            render_safe_resize_modal(frame, area, phase_title, border_role, theme);
+            return;
+        }
+        let available_context_height = inner_height - fixed_height;
+        let total = context.len().max(1);
+        let visible_height = total.min(available_context_height.max(1));
+        let max_scroll = total.saturating_sub(visible_height);
+        let scroll = input_state.detail_scroll.min(max_scroll);
+        let end = (scroll + visible_height).min(total);
+        if let Some(input) = state.sequence_input.as_mut() {
+            input.detail_scroll = scroll;
+            input.detail_visible_height = visible_height.max(1);
+        }
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(visible_height as u16),
+                Constraint::Length(separator_height as u16),
+                Constraint::Length(critical.len() as u16),
+                Constraint::Length(footer.len() as u16),
+            ])
+            .split(inner);
+        frame.render_widget(
+            Paragraph::new(format!("{context_label} {}-{}/{}", scroll + 1, end, total))
+                .style(theme.style(TuiStyleRole::Muted)),
+            sections[0],
+        );
+        frame.render_widget(
+            Paragraph::new(context[scroll..end].to_vec()).style(theme.style(TuiStyleRole::Text)),
+            sections[1],
+        );
+        frame.render_widget(
+            Paragraph::new(critical).style(theme.style(TuiStyleRole::Text)),
+            sections[3],
+        );
+        frame.render_widget(
+            Paragraph::new(footer).style(theme.style(TuiStyleRole::Text)),
+            sections[4],
+        );
+    } else {
+        if context.len() + separator_height + footer.len() > inner_height {
+            render_safe_resize_modal(frame, area, phase_title, border_role, theme);
+            return;
+        }
+        if let Some(input) = state.sequence_input.as_mut() {
+            input.detail_scroll = 0;
+            input.detail_visible_height = 1;
+        }
+        let sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(context.len() as u16),
+                Constraint::Length(separator_height as u16),
+                Constraint::Length(footer.len() as u16),
+            ])
+            .split(inner);
+        frame.render_widget(
+            Paragraph::new(context).style(theme.style(TuiStyleRole::Text)),
+            sections[0],
+        );
+        frame.render_widget(
+            Paragraph::new(footer).style(theme.style(TuiStyleRole::Text)),
+            sections[2],
+        );
+    }
+}
+
+fn sequence_modal_title(
+    phase_title: &str,
+    sequence_name: &str,
+    inner_width: usize,
+    position_title: Option<&str>,
+) -> String {
+    let reserved = position_title.map_or(0, |position| display_cell_width(position) + 4);
+    let available = inner_width.saturating_sub(reserved);
+    let prefix = format!("{phase_title}: ");
+    let name_width = available.saturating_sub(display_cell_width(&prefix));
+    if name_width == 0 {
+        phase_title.to_owned()
+    } else {
+        format!(
+            "{prefix}{}",
+            truncate_with_ellipsis(sequence_name, name_width)
+        )
+    }
+}
+
+fn sequence_value_position_title(input: &SequenceInputState) -> Option<String> {
+    (input.sequence.params.len() > 1
+        && matches!(
+            input.phase,
+            SequenceInputPhase::Params | SequenceInputPhase::CandidateActionConfirmation
+        ))
+    .then(|| {
+        format!(
+            "Value {} of {}",
+            input.active_param + 1,
+            input.sequence.params.len()
+        )
+    })
+}
+
+struct SequencePhaseContent {
+    context_label: Option<&'static str>,
+    context: Vec<Line<'static>>,
+    critical: Vec<Line<'static>>,
+    footer: Vec<Line<'static>>,
 }
 
 fn sequence_phase_lines(
     input: &SequenceInputState,
     state: &TuiState,
+    row_width: usize,
     theme: &TuiTheme,
-) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+) -> SequencePhaseContent {
     match input.phase {
-        SequenceInputPhase::Params => sequence_params_phase_lines(input, state, theme),
+        SequenceInputPhase::Params => sequence_params_phase_lines(input, state, row_width, theme),
         SequenceInputPhase::CandidateActionConfirmation => {
             sequence_candidate_action_phase_lines(input, theme)
         }
@@ -6583,141 +6864,99 @@ fn sequence_phase_lines(
     }
 }
 
-fn sequence_identity_lines(sequence: &Sequence, theme: &TuiTheme) -> Vec<Line<'static>> {
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled("Name: ", theme.style(TuiStyleRole::Emphasis)),
-            Span::raw(sequence.name.clone()),
-        ]),
-        Line::from(vec![
-            Span::styled("Purpose: ", theme.style(TuiStyleRole::Emphasis)),
-            Span::raw(sequence.summary.clone()),
-        ]),
-    ];
-    if should_show_sequence_source_detail(&sequence.origin) {
-        lines.push(Line::from(vec![
-            Span::styled("Source: ", theme.style(TuiStyleRole::Emphasis)),
-            Span::styled(
-                sequence.origin.label().to_owned(),
-                theme.style(TuiStyleRole::Muted),
-            ),
-        ]));
-        if let Some(path) = sequence.origin.file_path() {
-            lines.push(Line::from(vec![
-                Span::styled("File: ", theme.style(TuiStyleRole::Emphasis)),
-                Span::styled(path.to_owned(), theme.style(TuiStyleRole::Muted)),
-            ]));
-            lines.push(Line::from(Span::styled(
-                EXTERNAL_DEFINITION_CONFIRMATION_NOTICE,
-                theme.style(TuiStyleRole::Warning),
-            )));
-        }
-    }
-    lines
-}
-
 fn sequence_params_phase_lines(
     input: &SequenceInputState,
     state: &TuiState,
+    row_width: usize,
     theme: &TuiTheme,
-) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+) -> SequencePhaseContent {
     let sequence = &input.sequence;
-    let mut context = sequence_identity_lines(sequence, theme);
-    context.push(Line::from(format!(
-        "Required: {}",
-        required_param_summary(sequence)
-    )));
-    context.push(Line::from(""));
-    context.push(Line::from(Span::styled(
-        "Values overview:",
-        theme.style(TuiStyleRole::Emphasis),
-    )));
-    for (index, param) in sequence.params.iter().enumerate() {
-        let value = input.values.get(index).map(String::as_str).unwrap_or("");
-        context.push(Line::from(format!(
-            "  {}: {}  {}",
-            sequence_param_label(param),
-            sequence_param_value_display(param, value),
-            sequence_param_state_label(param, value)
-        )));
-    }
-    if !sequence.before_running.is_empty() {
-        context.push(Line::from(""));
-        context.push(Line::from(Span::styled(
-            "Before running:",
-            theme.style(TuiStyleRole::Emphasis),
-        )));
-        context.extend(
-            sequence
-                .before_running
-                .iter()
-                .map(|item| Line::from(format!("  {item}"))),
-        );
-    }
-
-    let mut pinned = vec![Line::from(Span::styled(
-        "Current value:",
-        theme.style(TuiStyleRole::Emphasis),
-    ))];
+    let mut context = Vec::new();
     if let Some(param) = sequence.params.get(input.active_param) {
         let value = input
             .values
             .get(input.active_param)
             .map(String::as_str)
             .unwrap_or("");
-        pinned.push(Line::from(Span::styled(
+        context.push(Line::from(Span::styled(
+            sequence_param_label(param),
+            theme.style(TuiStyleRole::Emphasis),
+        )));
+        context.push(Line::from(Span::styled(
             format!(
-                "> {}: {}  {}",
-                sequence_param_label(param),
+                "> {}  {}",
                 sequence_param_value_display(param, value),
                 sequence_param_state_label(param, value)
             ),
             theme.style(TuiStyleRole::Selected),
         )));
         if let Some(hint) = sequence_param_resolution_hint(param) {
-            pinned.push(Line::from(format!("  {hint}")));
+            context.push(Line::from(format!("  {hint}")));
         }
         if let Some(candidate) = sequence_param_candidate_source(sequence, param) {
             push_sequence_resolution_lines(
-                &mut pinned,
+                &mut context,
                 input,
                 state,
                 candidate,
                 state.output_masking_enabled,
+                row_width,
+                theme,
             );
         }
     }
-    push_sequence_error(&mut pinned, input, theme);
-    pinned.push(Line::from(Span::styled(
+    push_sequence_error(&mut context, input, theme);
+    let footer = vec![Line::from(Span::styled(
         sequence_input_footer(input, state),
         theme.style(TuiStyleRole::Focus),
-    )));
-    (context, pinned)
+    ))];
+    SequencePhaseContent {
+        context_label: None,
+        context,
+        critical: Vec::new(),
+        footer,
+    }
 }
 
 fn sequence_candidate_action_phase_lines(
     input: &SequenceInputState,
     theme: &TuiTheme,
-) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-    let mut context = sequence_identity_lines(&input.sequence, theme);
-    let Some(action) = input.pending_candidate_action else {
-        let mut pinned = vec![Line::from("No candidate action is selected.")];
-        push_sequence_error(&mut pinned, input, theme);
-        return (context, pinned);
+) -> SequencePhaseContent {
+    let Some(action) = input.pending_candidate_action.as_ref() else {
+        let mut context = vec![Line::from("No candidate action is selected.")];
+        push_sequence_error(&mut context, input, theme);
+        return SequencePhaseContent {
+            context_label: None,
+            context,
+            critical: Vec::new(),
+            footer: Vec::new(),
+        };
     };
     let item = candidate_action_item(action);
     let review = item.review();
-    context.extend([
+    let mut context = vec![
         Line::from(vec![
-            Span::styled("Action: ", theme.style(TuiStyleRole::Emphasis)),
-            Span::raw(action.label),
+            Span::styled("Provider: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(action.provider.kind.label()),
         ]),
         Line::from(vec![
+            Span::styled("Name: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(action.provider.name),
+        ]),
+    ];
+    if let Some(command) = item.command_text() {
+        context.push(Line::from(vec![
             Span::styled("AT command: ", theme.style(TuiStyleRole::Emphasis)),
-            Span::raw(action.command),
-        ]),
-        Line::from(""),
-    ]);
+            Span::raw(command.to_owned()),
+        ]));
+    }
+    if let Some(purpose) = item.summary() {
+        context.push(Line::from(vec![
+            Span::styled("Purpose: ", theme.style(TuiStyleRole::Emphasis)),
+            Span::raw(purpose.to_owned()),
+        ]));
+    }
+    context.push(Line::from(""));
     context.extend(execution_review_lines(review, theme));
 
     let displayed_input = if input.confirmation_input.is_empty() {
@@ -6725,11 +6964,11 @@ fn sequence_candidate_action_phase_lines(
     } else {
         input.confirmation_input.clone()
     };
-    let mut pinned = Vec::new();
-    push_sequence_error(&mut pinned, input, theme);
-    pinned.extend([
+    let mut critical = Vec::new();
+    push_sequence_error(&mut critical, input, theme);
+    critical.extend([
         Line::from(Span::styled(
-            ModalDismissal::Cancel.after(format!("Type `{}` to run.", confirmation_token(review))),
+            ModalDismissal::Cancel.after(format!("Type `{}` to run.", review.confirmation_token())),
             theme.style(TuiStyleRole::Warning),
         )),
         Line::from(Span::styled(
@@ -6737,22 +6976,27 @@ fn sequence_candidate_action_phase_lines(
             theme.style(TuiStyleRole::Focus),
         )),
     ]);
-    (context, pinned)
+    SequencePhaseContent {
+        context_label: Some("Action review"),
+        context,
+        critical,
+        footer: Vec::new(),
+    }
 }
 
 fn sequence_confirmation_phase_lines(
     input: &SequenceInputState,
     theme: &TuiTheme,
-) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
+) -> SequencePhaseContent {
     let sequence = &input.sequence;
     let execution_review = sequence_input_param_values(input)
         .ok()
         .and_then(|params| review_sequence_execution(sequence, &params).ok())
         .unwrap_or_else(|| sequence.review.clone());
-    let mut context = sequence_identity_lines(sequence, theme);
+    let mut context = Vec::new();
     if !sequence.params.is_empty() {
         context.push(Line::from(Span::styled(
-            "Values:",
+            "Resolved values:",
             theme.style(TuiStyleRole::Emphasis),
         )));
         for (index, param) in sequence.params.iter().enumerate() {
@@ -6769,8 +7013,11 @@ fn sequence_confirmation_phase_lines(
         && let Ok(review) = render_sequence_review(sequence, &values)
         && !review.is_empty()
     {
+        if !context.is_empty() {
+            context.push(Line::from(""));
+        }
         context.push(Line::from(Span::styled(
-            "Review:",
+            "Operation:",
             theme.style(TuiStyleRole::Emphasis),
         )));
         for item in review {
@@ -6781,7 +7028,28 @@ fn sequence_confirmation_phase_lines(
             )));
         }
     }
-    context.push(Line::from(""));
+    if !sequence.before_running.is_empty() {
+        if !context.is_empty() {
+            context.push(Line::from(""));
+        }
+        context.push(Line::from(Span::styled(
+            "Before running:",
+            theme.style(TuiStyleRole::Emphasis),
+        )));
+        context.extend(
+            sequence
+                .before_running
+                .iter()
+                .map(|item| Line::from(format!("  {item}"))),
+        );
+    }
+    if !context.is_empty() {
+        context.push(Line::from(""));
+    }
+    context.push(Line::from(Span::styled(
+        "Execution:",
+        theme.style(TuiStyleRole::Emphasis),
+    )));
     context.extend(execution_review_lines(&execution_review, theme));
 
     let displayed_input = if input.confirmation_input.is_empty() {
@@ -6789,16 +7057,16 @@ fn sequence_confirmation_phase_lines(
     } else {
         input.confirmation_input.clone()
     };
-    let mut pinned = Vec::new();
-    push_sequence_error(&mut pinned, input, theme);
+    let mut critical = Vec::new();
+    push_sequence_error(&mut critical, input, theme);
     if execution_review.requires_confirmation() {
-        let token = confirmation_token(&execution_review);
+        let token = execution_review.confirmation_token();
         let instruction = if execution_review.assessment == Assessment::Unknown {
             format!("Type `{token}` to run unknown operation.")
         } else {
             format!("Type `{token}` to run.")
         };
-        pinned.extend([
+        critical.extend([
             Line::from(Span::styled(
                 ModalDismissal::Cancel.after(instruction),
                 theme.style(TuiStyleRole::Warning),
@@ -6809,12 +7077,17 @@ fn sequence_confirmation_phase_lines(
             )),
         ]);
     } else {
-        pinned.push(Line::from(Span::styled(
+        critical.push(Line::from(Span::styled(
             ModalDismissal::Cancel.after("Press Enter to run."),
             theme.style(TuiStyleRole::Focus),
         )));
     }
-    (context, pinned)
+    SequencePhaseContent {
+        context_label: Some("Review"),
+        context,
+        critical,
+        footer: Vec::new(),
+    }
 }
 
 fn push_sequence_error(
@@ -6839,26 +7112,57 @@ fn sequence_param_label(param: &SequenceParam) -> String {
 }
 
 fn sequence_input_footer(input: &SequenceInputState, state: &TuiState) -> String {
-    if let Some(candidate) = active_sequence_candidate_source_for_input(input)
-        && candidate_set_for_source(state, candidate).is_some_and(|set| !set.is_empty())
-    {
-        if candidate_actions(candidate).is_empty() {
-            ModalDismissal::Cancel.after(
-                "Enter selects or advances. Up/Down selects candidate. Tab changes value. Type edits.",
-            )
-        } else {
-            ModalDismissal::Cancel.after(
-                "Enter selects or runs action. Up/Down selects candidate/action. Tab changes value. Type edits.",
-            )
+    ModalDismissal::Cancel.after(sequence_param_enter_action(input, state).modal_instruction())
+}
+
+fn sequence_param_enter_action(
+    input: &SequenceInputState,
+    state: &TuiState,
+) -> SequenceParamEnterAction {
+    if let Some(candidate) = active_sequence_candidate_source_for_input(input) {
+        let candidate_set =
+            candidate_set_for_source(state, candidate).filter(|set| !set.is_empty());
+        let candidate_count = candidate_set.map_or(0, TuiSequenceCandidateSet::len);
+        if candidate_count > 0 && input.active_candidate < candidate_count {
+            return if input.active_param + 1 < input.sequence.params.len() {
+                SequenceParamEnterAction::UseCandidateAndNext {
+                    next: input.active_param + 2,
+                    total: input.sequence.params.len(),
+                }
+            } else {
+                SequenceParamEnterAction::UseCandidateAndReview
+            };
         }
-    } else if active_sequence_candidate_source_for_input(input)
-        .is_some_and(|candidate| !candidate_actions(candidate).is_empty())
-    {
-        ModalDismissal::Cancel.after(
-            "Enter advances or runs selected action. Up/Down selects action. Tab changes value. Type edits.",
-        )
+
+        let action_start_index = if candidate_count > 0 {
+            candidate_count
+        } else {
+            1
+        };
+        let actions = candidate_actions(state, candidate);
+        if let Some(action) = input
+            .active_candidate
+            .checked_sub(action_start_index)
+            .and_then(|index| actions.get(index))
+        {
+            return if candidate_action_item(action)
+                .review()
+                .requires_confirmation()
+            {
+                SequenceParamEnterAction::ReviewCandidateAction
+            } else {
+                SequenceParamEnterAction::RunCandidateAction
+            };
+        }
+    }
+
+    if input.active_param + 1 < input.sequence.params.len() {
+        SequenceParamEnterAction::NextValue {
+            next: input.active_param + 2,
+            total: input.sequence.params.len(),
+        }
     } else {
-        ModalDismissal::Cancel.after("Enter advances or runs. Up/Down changes value.")
+        SequenceParamEnterAction::ReviewSequence
     }
 }
 
@@ -6901,33 +7205,49 @@ fn candidate_set_for_source(
         .find(|set| set.candidate == candidate)
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 struct SequenceCandidateAction {
-    label: &'static str,
-    command: &'static str,
-    categories: &'static [&'static str],
+    provider: SequenceCandidateProvider,
+    item: Box<ExecutableItem>,
 }
 
-fn candidate_actions(candidate: SequenceCandidateSource) -> Vec<SequenceCandidateAction> {
-    match candidate {
-        SequenceCandidateSource::SmsMessage => vec![SequenceCandidateAction {
-            label: "Load received SMS list",
-            command: "AT+CMGL=\"ALL\"",
-            categories: &["sms"],
-        }],
-        SequenceCandidateSource::PdpContext => vec![
-            SequenceCandidateAction {
-                label: "Load active PDP contexts",
-                command: "AT+CGACT?",
-                categories: &["pdp"],
-            },
-            SequenceCandidateAction {
-                label: "Load PDP context definitions",
-                command: "AT+CGDCONT?",
-                categories: &["pdp", "apn"],
-            },
-        ],
+impl SequenceCandidateAction {
+    fn label(&self) -> String {
+        format!("Run {}", self.provider.name)
     }
+}
+
+fn candidate_actions(
+    state: &TuiState,
+    candidate: SequenceCandidateSource,
+) -> Vec<SequenceCandidateAction> {
+    candidate
+        .providers()
+        .iter()
+        .filter_map(|provider| {
+            state
+                .commands
+                .iter()
+                .find(|item| {
+                    item.name() == provider.name
+                        && matches!(
+                            (provider.kind, item.kind()),
+                            (
+                                SequenceCandidateProviderKind::Preset,
+                                ExecutableKind::Command
+                            ) | (
+                                SequenceCandidateProviderKind::Sequence,
+                                ExecutableKind::Sequence
+                            )
+                        )
+                })
+                .cloned()
+                .map(|item| SequenceCandidateAction {
+                    provider: *provider,
+                    item: Box::new(item),
+                })
+        })
+        .collect()
 }
 
 fn push_sequence_resolution_lines(
@@ -6936,13 +7256,15 @@ fn push_sequence_resolution_lines(
     state: &TuiState,
     candidate: SequenceCandidateSource,
     output_masking_enabled: bool,
+    row_width: usize,
+    theme: &TuiTheme,
 ) {
     let Some(candidate_set) = candidate_set_for_source(state, candidate) else {
-        push_sequence_candidate_action_lines(text, input, candidate);
+        push_sequence_candidate_action_lines(text, input, state, candidate, row_width, theme);
         return;
     };
     if candidate_set.is_empty() {
-        push_sequence_candidate_action_lines(text, input, candidate);
+        push_sequence_candidate_action_lines(text, input, state, candidate, row_width, theme);
         return;
     }
 
@@ -6981,25 +7303,35 @@ fn push_sequence_resolution_lines(
             sequence_candidate_label(candidate, output_masking_enabled)
         )));
     }
-    let actions = candidate_actions(candidate);
+    let actions = candidate_actions(state, candidate);
     if !actions.is_empty() {
         text.push(Line::from("    Actions:"));
-        push_sequence_candidate_action_rows(text, input, &actions, candidates.len());
+        push_sequence_candidate_action_rows(
+            text,
+            input,
+            &actions,
+            candidates.len(),
+            row_width,
+            theme,
+        );
     }
 }
 
 fn push_sequence_candidate_action_lines(
     text: &mut Vec<Line<'static>>,
     input: &SequenceInputState,
+    state: &TuiState,
     candidate: SequenceCandidateSource,
+    row_width: usize,
+    theme: &TuiTheme,
 ) {
     text.push(Line::from("    Candidates: none loaded"));
-    let actions = candidate_actions(candidate);
+    let actions = candidate_actions(state, candidate);
     if actions.is_empty() {
         return;
     }
     text.push(Line::from("    Actions:"));
-    push_sequence_candidate_action_rows(text, input, &actions, 1);
+    push_sequence_candidate_action_rows(text, input, &actions, 1, row_width, theme);
 }
 
 fn push_sequence_candidate_action_rows(
@@ -7007,17 +7339,65 @@ fn push_sequence_candidate_action_rows(
     input: &SequenceInputState,
     actions: &[SequenceCandidateAction],
     action_start_index: usize,
+    row_width: usize,
+    theme: &TuiTheme,
 ) {
+    let confirmation_lane_width = actions
+        .iter()
+        .filter_map(|action| {
+            candidate_action_item(action)
+                .review()
+                .confirmation_flow_tag()
+        })
+        .map(|tag| display_cell_width(tag) + 1)
+        .max()
+        .unwrap_or(0);
+    let prefix_width = display_cell_width("    > ");
+    let available = row_width.saturating_sub(prefix_width + confirmation_lane_width);
+    let name_width = actions
+        .iter()
+        .map(|action| display_cell_width(&action.label()))
+        .max()
+        .unwrap_or(1)
+        .min(available)
+        .max(1);
+
     for (index, action) in actions.iter().enumerate() {
-        let marker = if input.active_candidate == action_start_index + index {
-            "> "
+        let selected = input.active_candidate == action_start_index + index;
+        let marker = if selected { "> " } else { "  " };
+        let row_style = if selected {
+            theme.style(TuiStyleRole::Selected)
         } else {
-            "  "
+            theme.style(TuiStyleRole::Text)
         };
-        text.push(Line::from(format!(
-            "    {marker}{}  {}",
-            action.label, action.command
-        )));
+        let label = action.label();
+        let name = pad_to_display_width(&truncate_with_ellipsis(&label, name_width), name_width);
+        let remaining =
+            row_width.saturating_sub(prefix_width + name_width + confirmation_lane_width);
+        let provider = (remaining > 2)
+            .then(|| truncate_with_ellipsis(action.provider.kind.label(), remaining - 2));
+        let provider_width = provider
+            .as_deref()
+            .map_or(0, |value| display_cell_width(value) + 2);
+        let body_padding = remaining.saturating_sub(provider_width);
+        let tag = candidate_action_item(action)
+            .review()
+            .confirmation_flow_tag();
+        let mut spans = vec![Span::styled(format!("    {marker}{name}"), row_style)];
+        if let Some(provider) = provider {
+            spans.push(Span::styled(format!("  {provider}"), row_style));
+        }
+        if body_padding > 0 && tag.is_some() {
+            spans.push(Span::raw(" ".repeat(body_padding)));
+        }
+        if let Some(tag) = tag {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(
+                tag,
+                theme.style(TuiStyleRole::ConfirmationFlow),
+            ));
+        }
+        text.push(Line::from(spans));
     }
 }
 
@@ -7105,19 +7485,17 @@ fn render_ad_hoc_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState, them
         ]));
     }
 
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(
-                Block::default()
-                    .title("AT command")
-                    .borders(Borders::ALL)
-                    .border_style(theme.style(TuiStyleRole::Focus)),
-            )
-            .alignment(Alignment::Left)
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
+    render_content_fit_modal(
+        frame,
         area,
+        text,
+        ModalRenderSpec {
+            percent_x: 76,
+            max_percent_y: 42,
+            title: "AT command",
+            border_role: TuiStyleRole::Focus,
+        },
+        theme,
     );
 }
 
@@ -7131,12 +7509,10 @@ fn render_timeout_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState, the
         input_state.input.clone()
     };
     let mut text = vec![
-        Line::from("Set the temporary TUI command timeout in seconds."),
-        Line::from("Enter `default` to clear the temporary override."),
+        Line::from("Set the timeout for all Commands and Sequences until this TUI closes."),
+        Line::from("Leave blank to use each Command or Sequence timeout."),
         Line::from(""),
-        Line::from(format!("Timeout: {input}")),
-        Line::from(""),
-        Line::from(ModalDismissal::Cancel.after("Enter applies.")),
+        Line::from(format!("Seconds: {input}")),
     ];
     if let Some(error) = &input_state.error {
         text.push(Line::from(""));
@@ -7146,19 +7522,17 @@ fn render_timeout_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState, the
         ]));
     }
 
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(text)
-            .block(
-                Block::default()
-                    .title("Command timeout")
-                    .borders(Borders::ALL)
-                    .border_style(theme.style(TuiStyleRole::Focus)),
-            )
-            .alignment(Alignment::Left)
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
+    render_content_fit_modal(
+        frame,
         area,
+        text,
+        ModalRenderSpec {
+            percent_x: 64,
+            max_percent_y: 32,
+            title: "Timeout",
+            border_role: TuiStyleRole::Focus,
+        },
+        theme,
     );
 }
 
@@ -7197,6 +7571,7 @@ fn command_row_item(
     selected_command: usize,
     row_width: usize,
     name_width: usize,
+    confirmation_lane_width: usize,
     theme: &TuiTheme,
 ) -> ListItem<'static> {
     match row {
@@ -7217,6 +7592,7 @@ fn command_row_item(
             command,
             row_width,
             name_width,
+            confirmation_lane_width,
             theme,
         ),
     }
@@ -7227,9 +7603,12 @@ fn command_item(
     command: &ExecutableItem,
     row_width: usize,
     name_width: usize,
+    confirmation_lane_width: usize,
     theme: &TuiTheme,
 ) -> ListItem<'static> {
-    let Some(mut layout) = executable_row_layout(command, row_width, name_width) else {
+    let Some(mut layout) =
+        executable_row_layout(command, row_width, name_width, confirmation_lane_width)
+    else {
         return ListItem::new(Line::from(Span::styled(
             "Executable details cannot fit safely.",
             theme.style(TuiStyleRole::Warning),
@@ -7241,19 +7620,25 @@ fn command_item(
     } else {
         theme.style(TuiStyleRole::Text)
     };
-    let mut spans = vec![
-        Span::styled(format!("{}{}", layout.prefix, layout.name), name_style),
-        Span::styled(layout.kind_label, theme.style(TuiStyleRole::Muted)),
-    ];
+    let mut spans = vec![Span::styled(
+        format!("{}{}", layout.prefix, layout.name),
+        name_style,
+    )];
     if let Some(detail) = layout.detail {
         spans.push(Span::styled(
             format!(" {detail}"),
             theme.style(TuiStyleRole::Text),
         ));
     }
-    if let Some(warning) = layout.warning {
+    if layout.body_padding > 0 && layout.confirmation_tag.is_some() {
+        spans.push(Span::raw(" ".repeat(layout.body_padding)));
+    }
+    if let Some(confirmation_tag) = layout.confirmation_tag {
         spans.push(Span::raw(" "));
-        spans.push(Span::styled(warning, theme.style(TuiStyleRole::Warning)));
+        spans.push(Span::styled(
+            confirmation_tag,
+            theme.style(TuiStyleRole::ConfirmationFlow),
+        ));
     }
     ListItem::new(Line::from(spans))
 }
@@ -7262,25 +7647,20 @@ fn command_item(
 struct ExecutableRowLayout {
     prefix: &'static str,
     name: String,
-    kind_label: &'static str,
     detail: Option<String>,
-    warning: Option<&'static str>,
+    body_padding: usize,
+    confirmation_tag: Option<&'static str>,
 }
 
 fn executable_row_layout(
     command: &ExecutableItem,
     row_width: usize,
     name_width: usize,
+    confirmation_lane_width: usize,
 ) -> Option<ExecutableRowLayout> {
     let prefix = "  ";
-    let kind_label = match command.kind() {
-        ExecutableKind::Command | ExecutableKind::CandidateAction => " │ AT:",
-        ExecutableKind::Sequence => " │ Purpose:",
-    };
-    let warning = confirmation_exception_label(command.review());
-    let warning_width = warning.map_or(0, |value| display_cell_width(value) + 1);
-    let mandatory_width =
-        display_cell_width(prefix) + name_width + display_cell_width(kind_label) + warning_width;
+    let confirmation_tag = command.review().confirmation_flow_tag();
+    let mandatory_width = display_cell_width(prefix) + name_width + confirmation_lane_width;
     if row_width < mandatory_width {
         return None;
     }
@@ -7289,60 +7669,60 @@ fn executable_row_layout(
         &truncate_with_ellipsis(command.name(), name_width),
         name_width,
     );
-    let remaining = row_width.saturating_sub(mandatory_width);
+    let body_width = row_width.saturating_sub(confirmation_lane_width);
+    let remaining = body_width.saturating_sub(display_cell_width(prefix) + name_width);
     let detail = command
         .command_text()
         .or_else(|| command.summary())
         .filter(|_| remaining > 1)
         .map(|value| truncate_with_ellipsis(value, remaining - 1));
+    let detail_width = detail
+        .as_deref()
+        .map_or(0, |value| display_cell_width(value) + 1);
+    let body_padding = remaining.saturating_sub(detail_width);
     Some(ExecutableRowLayout {
         prefix,
         name,
-        kind_label,
         detail,
-        warning,
+        body_padding,
+        confirmation_tag,
     })
 }
 
-fn command_row_plain_text(selected: bool, command: &ExecutableItem, row_width: usize) -> String {
-    let commands = [command];
-    let Some(name_width) = executable_name_column_width(&commands, row_width) else {
+fn command_row_plain_text(
+    selected: bool,
+    command: &ExecutableItem,
+    commands: &[&ExecutableItem],
+    row_width: usize,
+) -> String {
+    let Some(name_width) = executable_name_column_width(commands, row_width) else {
         return "Executable details cannot fit safely. Resize the terminal to continue.".to_owned();
     };
-    let Some(mut layout) = executable_row_layout(command, row_width, name_width) else {
+    let confirmation_lane_width = executable_confirmation_lane_width(commands);
+    let Some(mut layout) =
+        executable_row_layout(command, row_width, name_width, confirmation_lane_width)
+    else {
         return "Executable details cannot fit safely. Resize the terminal to continue.".to_owned();
     };
     layout.prefix = if selected { "> " } else { "  " };
-    let mut text = format!("{}{}{}", layout.prefix, layout.name, layout.kind_label);
+    let mut text = format!("{}{}", layout.prefix, layout.name);
     if let Some(detail) = layout.detail {
         text.push(' ');
         text.push_str(&detail);
     }
-    if let Some(warning) = layout.warning {
+    if layout.body_padding > 0 && layout.confirmation_tag.is_some() {
+        text.push_str(&" ".repeat(layout.body_padding));
+    }
+    if let Some(confirmation_tag) = layout.confirmation_tag {
         text.push(' ');
-        text.push_str(warning);
+        text.push_str(confirmation_tag);
     }
     text
 }
 
 fn executable_name_column_width(commands: &[&ExecutableItem], row_width: usize) -> Option<usize> {
-    let max_warning_width = commands
-        .iter()
-        .filter_map(|command| confirmation_exception_label(command.review()))
-        .map(|warning| display_cell_width(warning) + 1)
-        .max()
-        .unwrap_or(0);
-    let max_kind_width = commands
-        .iter()
-        .map(|command| match command.kind() {
-            ExecutableKind::Command | ExecutableKind::CandidateAction => " │ AT:",
-            ExecutableKind::Sequence => " │ Purpose:",
-        })
-        .map(display_cell_width)
-        .max()
-        .unwrap_or(0);
-    let available =
-        row_width.saturating_sub(display_cell_width("  ") + max_kind_width + max_warning_width);
+    let confirmation_lane_width = executable_confirmation_lane_width(commands);
+    let available = row_width.saturating_sub(display_cell_width("  ") + confirmation_lane_width);
     if available == 0 {
         return None;
     }
@@ -7354,8 +7734,19 @@ fn executable_name_column_width(commands: &[&ExecutableItem], row_width: usize) 
     let name_width = max_name_width.min(28).min(available).max(1);
     commands
         .iter()
-        .all(|command| executable_row_layout(command, row_width, name_width).is_some())
+        .all(|command| {
+            executable_row_layout(command, row_width, name_width, confirmation_lane_width).is_some()
+        })
         .then_some(name_width)
+}
+
+fn executable_confirmation_lane_width(commands: &[&ExecutableItem]) -> usize {
+    commands
+        .iter()
+        .filter_map(|command| command.review().confirmation_flow_tag())
+        .map(|tag| display_cell_width(tag) + 1)
+        .max()
+        .unwrap_or(0)
 }
 
 fn hidden_search_match(command: &ExecutableItem, query: &str, visible_row: &str) -> Option<String> {
@@ -7370,7 +7761,9 @@ fn hidden_search_match(command: &ExecutableItem, query: &str, visible_row: &str)
     if let Some(value) = command.summary() {
         fields.push(("Purpose", value.to_owned()));
     }
-    fields.push(("Source", command.source_label().to_owned()));
+    if let Some(value) = command.source_detail() {
+        fields.push(("Source", value.to_owned()));
+    }
     fields.extend(
         command
             .categories()
@@ -7389,16 +7782,6 @@ fn safe_resize_lines() -> Vec<Line<'static>> {
         Line::from("Executable details cannot fit safely."),
         Line::from("Resize the terminal to continue."),
     ]
-}
-
-fn confirmation_exception_label(review: &ExecutionReview) -> Option<&'static str> {
-    if !review.requires_confirmation() {
-        None
-    } else if review.assessment == Assessment::Unknown {
-        Some("! Confirmation required (effects unknown)")
-    } else {
-        Some("! Confirmation required")
-    }
 }
 
 fn truncate_with_ellipsis(value: &str, width: usize) -> String {
@@ -7431,6 +7814,90 @@ fn pad_to_display_width(value: &str, width: usize) -> String {
         "{value}{}",
         " ".repeat(width.saturating_sub(display_cell_width(value)))
     )
+}
+
+#[derive(Debug, Copy, Clone)]
+struct ModalGeometry {
+    area: Rect,
+    content_fits: bool,
+}
+
+fn modal_geometry_for_lines(
+    screen: Rect,
+    percent_x: u16,
+    max_percent_y: u16,
+    lines: &[Line<'static>],
+) -> ModalGeometry {
+    let width_area = centered_rect(percent_x, 100, screen);
+    let inner_width = width_area.width.saturating_sub(2).max(1);
+    let content_height = wrap_lines_to_width(lines.to_vec(), inner_width as usize).len();
+    modal_geometry_for_body_height(screen, percent_x, max_percent_y, content_height)
+}
+
+fn modal_geometry_for_body_height(
+    screen: Rect,
+    percent_x: u16,
+    max_percent_y: u16,
+    body_height: usize,
+) -> ModalGeometry {
+    let max_area = centered_rect(percent_x, max_percent_y, screen);
+    let desired_height = body_height.saturating_add(2).min(u16::MAX as usize) as u16;
+    let height = desired_height.min(max_area.height);
+    ModalGeometry {
+        area: centered_rect_with_size(max_area.width, height, screen),
+        content_fits: max_area.width >= 3 && desired_height <= max_area.height,
+    }
+}
+
+fn centered_rect_with_size(width: u16, height: u16, area: Rect) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect::new(
+        area.x.saturating_add(area.width.saturating_sub(width) / 2),
+        area.y
+            .saturating_add(area.height.saturating_sub(height) / 2),
+        width,
+        height,
+    )
+}
+
+struct ModalRenderSpec<'a> {
+    percent_x: u16,
+    max_percent_y: u16,
+    title: &'a str,
+    border_role: TuiStyleRole,
+}
+
+fn render_content_fit_modal(
+    frame: &mut Frame<'_>,
+    screen: Rect,
+    lines: Vec<Line<'static>>,
+    spec: ModalRenderSpec<'_>,
+    theme: &TuiTheme,
+) {
+    let width_area = centered_rect(spec.percent_x, 100, screen);
+    let inner_width = width_area.width.saturating_sub(2).max(1) as usize;
+    let lines = wrap_lines_to_width(lines, inner_width);
+    let geometry = modal_geometry_for_lines(screen, spec.percent_x, spec.max_percent_y, &lines);
+    if !geometry.content_fits {
+        render_safe_resize_modal(frame, geometry.area, spec.title, spec.border_role, theme);
+        return;
+    }
+
+    frame.render_widget(Clear, geometry.area);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .title(spec.title)
+                    .borders(Borders::ALL)
+                    .style(theme.style(TuiStyleRole::Background))
+                    .border_style(theme.style(spec.border_role)),
+            )
+            .alignment(Alignment::Left)
+            .style(theme.style(TuiStyleRole::Text)),
+        geometry.area,
+    );
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

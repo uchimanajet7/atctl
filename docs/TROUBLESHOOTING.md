@@ -232,8 +232,8 @@ atctl send AT --timeout 30
 ```
 
 User AT command execution defaults to a 30-second timeout. Long-running
-commands can still use a preset-specific timeout hint or an explicit longer
-timeout.
+presets and Sequences can use an item-specific timeout hint, and an explicit
+CLI timeout takes precedence when supplied.
 
 The available-operator scan can take longer than ordinary reads:
 
@@ -243,16 +243,23 @@ atctl preset run available-operators
 
 This preset sends `AT+COPS=?`, which is useful when checking which carrier /
 RAT options the modem can see. SORACOM documents this scan as typically taking
-2 to 3 minutes, so the product preset uses a 180-second timeout hint. If the
+2 to 3 minutes, so the product preset uses a 240-second timeout hint. If the
 local scan still times out, run it with a longer explicit timeout:
 
 ```sh
-atctl preset run available-operators --timeout 240
+atctl preset run available-operators --timeout 600
 ```
 
 In the TUI, select the Controls pane `Timeout` row and press `Enter` before
-running the command to set a temporary timeout override for the current TUI
-session.
+running the command to set one timeout for Commands and Sequences until the TUI
+closes. Leave `Seconds` blank and press `Enter` to return to each Command or
+Sequence timeout.
+
+A timeout is a host-side wait limit, not modem cancellation. The modem may
+still be processing the operation after atctl reports a timeout. Do not
+automatically retry a material operation; wait for the modem to settle or
+re-establish a synchronized session first. A modem-reported AT `ERROR` is a
+different result and should be investigated using the returned error text.
 
 ## Cellular Connectivity Checkpoints
 
@@ -339,15 +346,44 @@ atctl sequence run sms-reply-check --param index=<INDEX> --param message=<MESSAG
 ```
 
 In the TUI, select the `sms` category and choose a Sequence from
-`Commands / Sequences`. The list uses `name │ Purpose: preview`; press `d` to
-read the complete purpose without accessing the modem. Every `Run Sequence`
-phase shows the complete Sequence name and purpose plus the current values and
-their sources before execution. Use `PageUp` / `PageDown` for long context;
-the active value, candidate action, or confirmation input remains visible.
-For SMS read or reply, use the candidate action to
-load message indexes from an explicit SMS list operation, then select the
-required `storage=<index>` value. Opening `Run Sequence` alone does not read
-messages.
+`Commands / Sequences`. Each row shows the name and purpose preview and appends
+`[confirm]` when execution requires explicit confirmation. Mixed rows align the
+tag in a fixed trailing lane; the TUI uses a dedicated confirmation-flow color
+as reinforcement while retaining the complete bold text in no-color mode.
+Press `d` to read
+the complete purpose, confirmation state, and effects that remain unknown
+without accessing the modem. Details separates the complete definition into
+`Overview`, `Definition`, `Before running`, `Inputs`, and `Execution`, and its
+border title identifies the current section and visible range.
+
+`Run Sequence` keeps the active value, relevant hint, candidates or candidate
+actions, current error, and exact next action visible without repeating the
+complete definition. For a Sequence with multiple input values, read `Value
+<current> of <total>` at the modal's top right to confirm which value is active.
+This position changes only when value navigation selects another parameter.
+Final review shows all resolved values, applicable before-running notes, and
+execution consequences before the run instruction. Use `PageUp` / `PageDown`
+when an explicit Review region is longer than the available area; the run
+instruction and current input remain visible while it scrolls. The operation
+footer states the exact result of `Enter`, such as the next numbered value or
+`Review Sequence`.
+For SMS read or reply, use the candidate action for the existing
+`sms-receive-check` Sequence, then select the required `storage=<index>` value.
+This provider first selects text mode and then lists messages; it is not a
+single copied `AT+CMGL` command. Opening `Run Sequence` alone does not read
+messages. The provider appends `[confirm]` when `sms-receive-check` itself
+requires confirmation; candidate action sets use the same fixed trailing-lane
+alignment, and the selected read/reply Sequence does not supply or override
+this tag. After candidates are loaded, highlight one storage index and press
+`Enter` once. The TUI accepts the value and opens the selected Sequence review
+immediately; it does not run the Sequence until that separate review is
+completed.
+
+Interactive `atctl sequence run sms-read-message` and
+`atctl sequence run sms-reply-check` offer the same provider and manual-entry
+paths when `index` is omitted. In a non-interactive or JSON invocation, run
+`sms-receive-check` explicitly, obtain the storage index, and rerun with
+`--param index=<INDEX>`; atctl does not execute the provider silently.
 
 Review the destination, message body, or storage index shown before USB access,
 then enter the requested `run` or `unknown` confirmation. During execution, Status shows the
@@ -403,10 +439,13 @@ Sequences use product-known candidate assistance for standard PDP context
 checks from `AT+CGACT?` and `AT+CGDCONT?`. Socket connect ID is vendor-specific
 Quectel TCP/IP state, so it stays an editable value with a hint to run the
 explicit Quectel socket-state add-on command when current socket state must be
-checked. Selecting a candidate action runs the corresponding command through
-the normal execution path and then presents parsed candidates in the same
-modal. Opening the modal itself does not perform a hidden PDP, socket, TCP, or
-network check.
+checked. Selecting a PDP candidate action runs the referenced existing
+`active-pdp-contexts` or `pdp-contexts` Preset through its normal execution path
+and then presents parsed candidates in the same modal. Candidate actions use
+the same exception-only `[confirm]` tag as other
+human executable lists and the same conditional trailing-lane alignment when
+their own review requires confirmation. Opening the
+modal itself does not perform a hidden PDP, socket, TCP, or network check.
 
 The ping examples use Quectel `AT+QPING` through the selected PDP context.
 Received replies show IP reachability to the requested host or to SORACOM

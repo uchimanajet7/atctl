@@ -13,8 +13,8 @@ use crate::at::mask::{mask_declared_sensitive_value, mask_sensitive_values};
 use crate::at::parser::parse_response;
 use crate::at::response::AtStatus;
 use crate::at::review::{
-    Assessment, ExecutionAuthorization, ExecutionReview, authorize_execution,
-    is_prompt_required_command, review_direct_command,
+    Assessment, ExecutionAuthorization, ExecutionReview, UNKNOWN_EFFECTS_NOTICE,
+    authorize_execution, is_prompt_required_command, review_direct_command,
 };
 use crate::log::history::{LogListingKind, append_command_history, list_logs};
 use crate::log::raw::{
@@ -34,13 +34,16 @@ use crate::response_export::{validate_response_export_target, write_response_exp
 use crate::sequences::builtin::builtins as sequence_builtins;
 use crate::sequences::engine::{
     SequenceExecution, SequenceParamValue, SequenceReviewValue, SequenceStepResult,
-    execute_sequence, render_sequence_review, review_sequence_execution,
-    validate_sequence_confirmation,
+    SequenceValueCandidate, SequenceValueCandidateSet, execute_sequence, render_sequence_review,
+    review_sequence_execution, validate_sequence_confirmation, value_candidate_sets_from_text,
 };
 use crate::sequences::loader::{
     load_sequences_dir_required, load_sequences_file_required, validate_unique_sequence_names,
 };
-use crate::sequences::model::Sequence;
+use crate::sequences::model::{
+    Sequence, SequenceCandidateProvider, SequenceCandidateProviderKind, SequenceCandidateSource,
+    SequenceParam,
+};
 use crate::transport::pty::{PtyBridgeConfig, run_usb_bridge};
 use crate::transport::traits::AtTransport;
 use crate::transport::usb::{UsbAtTransport, UsbAtTransportConfig};
@@ -51,6 +54,7 @@ use crate::usb::transport::{UsbDeviceListMode, inspect_devices, list_devices};
 use crate::{AtctlError, Result};
 
 pub(crate) const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 30;
+pub(crate) const USB_WRITE_TIMEOUT_SECS: u64 = 3;
 pub(crate) const ENDPOINT_PROBE_TIMEOUT_SECS: u64 = 3;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -146,8 +150,12 @@ pub struct UsbOptions {
     #[arg(long = "bulk-out", value_parser = parse_hex_u8, help = "Use a specific bulk OUT endpoint address, for example 0x04")]
     pub bulk_out: Option<u8>,
 
-    #[arg(long, default_value_t = DEFAULT_COMMAND_TIMEOUT_SECS, help = "Set the AT operation timeout in seconds")]
-    pub timeout: u64,
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        help = "Set the AT operation timeout in seconds"
+    )]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Args)]
@@ -605,13 +613,23 @@ struct SendJsonOutput<'a> {
     lines: &'a [String],
 }
 
+fn validate_timeout_secs(timeout_secs: u64) -> Result<()> {
+    if timeout_secs == 0 {
+        return Err(AtctlError::InvalidValue {
+            name: "--timeout",
+            value: "must be greater than zero".to_owned(),
+        });
+    }
+    Ok(())
+}
+
 fn run_send(args: SendArgs) -> Result<()> {
     validate_optional_response_export(args.export_response.as_deref())?;
     let manual_pair = args.usb.manual_endpoint_pair()?;
     let transport = UsbAtTransport::new(UsbAtTransportConfig {
         filter: args.usb.to_usb_filter(),
         manual_pair,
-        timeout: Duration::from_secs(args.usb.timeout),
+        write_timeout: Duration::from_secs(USB_WRITE_TIMEOUT_SECS),
         probe_timeout: Duration::from_secs(ENDPOINT_PROBE_TIMEOUT_SECS),
     });
     let mut prompt = StdioConfirmationPrompt;
@@ -648,7 +666,7 @@ fn run_preset(args: PresetArgs) -> Result<()> {
             let transport = UsbAtTransport::new(UsbAtTransportConfig {
                 filter: send_args.usb.to_usb_filter(),
                 manual_pair,
-                timeout: Duration::from_secs(send_args.usb.timeout),
+                write_timeout: Duration::from_secs(USB_WRITE_TIMEOUT_SECS),
                 probe_timeout: Duration::from_secs(ENDPOINT_PROBE_TIMEOUT_SECS),
             });
             let mut prompt = StdioConfirmationPrompt;
@@ -690,49 +708,37 @@ fn run_sequence(args: SequenceArgs) -> Result<()> {
             validate_optional_response_export(run_args.export_response.as_deref())?;
             let sequences = load_sequences(&run_args.sequence_locations)?;
             let sequence = find_sequence(&sequences, &run_args.name)?;
-            let review = render_sequence_review(sequence, &run_args.params)?;
-            let execution_review = review_sequence_execution(sequence, &run_args.params)?;
-            let confirmation = validate_sequence_confirmation(
-                &execution_review,
-                run_args.yes,
-                run_args.allow_unknown,
-            )?;
-            let external_source = external_sequence_source(sequence);
-            let mut prompt = StdioConfirmationPrompt;
-            if confirmation == ExecutionAuthorization::InteractiveRequired {
-                prompt.confirm_sequence(
-                    &execution_review,
-                    &OperationIdentity::sequence(sequence),
-                    &sequence.before_running,
-                    &review,
-                    external_source,
-                )?;
-            } else {
-                notice_authorized_execution_without_interactive_confirmation(
-                    &mut prompt,
-                    confirmation,
-                    &OperationIdentity::sequence(sequence),
-                    &execution_review,
-                    external_source,
+            let presets = builtins();
+            let raw_log_config = prepare_sequence_raw_log_config(&run_args)?;
+            let mut raw_log = None;
+            let mut params = run_args.params.clone();
+            if io::stdin().is_terminal() && !run_args.json {
+                let mut value_prompt = StdioSequenceValuePrompt;
+                params = resolve_sequence_params_interactively(
+                    sequence,
+                    params,
+                    !run_args.no_mask,
+                    &mut value_prompt,
+                    |candidate| candidate_provider_options(candidate, &presets, &sequences),
+                    |candidate, provider| {
+                        execute_cli_candidate_provider(
+                            candidate,
+                            provider,
+                            &run_args,
+                            &presets,
+                            &sequences,
+                            &raw_log_config,
+                            &mut raw_log,
+                        )
+                    },
                 )?;
             }
-            let raw_log = prepare_sequence_raw_log_config(&run_args)?;
-            let manual_pair = run_args.usb.manual_endpoint_pair()?;
-            let transport = UsbAtTransport::new(UsbAtTransportConfig {
-                filter: run_args.usb.to_usb_filter(),
-                manual_pair,
-                timeout: Duration::from_secs(run_args.usb.timeout),
-                probe_timeout: Duration::from_secs(ENDPOINT_PROBE_TIMEOUT_SECS),
-            });
-            let mut raw_log = raw_log.map(RawLogSink::create).transpose()?;
-            let execution = execute_sequence(
-                sequence,
-                &run_args.params,
-                transport,
-                Duration::from_secs(run_args.usb.timeout),
-                !run_args.no_mask,
-                raw_log.as_mut(),
-            )?;
+            let review = render_sequence_review(sequence, &params)?;
+            let execution_review = review_sequence_execution(sequence, &params)?;
+            let mut prompt = StdioConfirmationPrompt;
+            authorize_cli_sequence(sequence, &review, &execution_review, &run_args, &mut prompt)?;
+            ensure_raw_log_sink(&raw_log_config, &mut raw_log)?;
+            let execution = execute_cli_sequence(sequence, &params, &run_args, raw_log.as_mut())?;
             record_sequence_logs(sequence, &run_args, &execution)?;
             let output =
                 format_sequence_output(sequence, &execution, !run_args.no_mask, run_args.json)?;
@@ -745,6 +751,406 @@ fn run_sequence(args: SequenceArgs) -> Result<()> {
             sequence_status_result(&execution, run_args.ignore_at_error)
         }
     }
+}
+
+fn authorize_cli_sequence<P>(
+    sequence: &Sequence,
+    review: &[SequenceReviewValue],
+    execution_review: &ExecutionReview,
+    args: &SequenceRunArgs,
+    prompt: &mut P,
+) -> Result<()>
+where
+    P: ConfirmationPrompt,
+{
+    let confirmation =
+        validate_sequence_confirmation(execution_review, args.yes, args.allow_unknown)?;
+    let operation = OperationIdentity::sequence(sequence);
+    let external_source = external_sequence_source(sequence);
+    if confirmation == ExecutionAuthorization::InteractiveRequired {
+        prompt.confirm_sequence(
+            execution_review,
+            &operation,
+            &sequence.before_running,
+            review,
+            external_source,
+        )
+    } else {
+        notice_authorized_execution_without_interactive_confirmation(
+            prompt,
+            confirmation,
+            &operation,
+            execution_review,
+            external_source,
+        )
+    }
+}
+
+fn execute_cli_sequence(
+    sequence: &Sequence,
+    params: &[SequenceParamValue],
+    args: &SequenceRunArgs,
+    raw_log: Option<&mut RawLogSink>,
+) -> Result<SequenceExecution> {
+    let timeout_secs = args.usb.resolved_timeout_secs(sequence.timeout_secs);
+    validate_timeout_secs(timeout_secs)?;
+    let manual_pair = args.usb.manual_endpoint_pair()?;
+    let transport = UsbAtTransport::new(UsbAtTransportConfig {
+        filter: args.usb.to_usb_filter(),
+        manual_pair,
+        write_timeout: Duration::from_secs(USB_WRITE_TIMEOUT_SECS),
+        probe_timeout: Duration::from_secs(ENDPOINT_PROBE_TIMEOUT_SECS),
+    });
+    execute_sequence(
+        sequence,
+        params,
+        transport,
+        Duration::from_secs(timeout_secs),
+        !args.no_mask,
+        raw_log,
+    )
+}
+
+fn ensure_raw_log_sink(config: &Option<RawLogConfig>, sink: &mut Option<RawLogSink>) -> Result<()> {
+    if sink.is_none()
+        && let Some(config) = config
+    {
+        *sink = Some(RawLogSink::create(config.clone())?);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+struct CandidateProviderOption {
+    provider: SequenceCandidateProvider,
+    confirmation_tag: Option<&'static str>,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum CandidateProviderChoice {
+    Manual,
+    Provider(SequenceCandidateProvider),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CandidateValueChoice {
+    Manual,
+    Candidate(String),
+}
+
+trait SequenceValuePrompt {
+    fn choose_provider(
+        &mut self,
+        sequence: &Sequence,
+        param: &SequenceParam,
+        candidate: SequenceCandidateSource,
+        providers: &[CandidateProviderOption],
+    ) -> Result<CandidateProviderChoice>;
+
+    fn enter_manual_value(&mut self, param: &SequenceParam) -> Result<String>;
+
+    fn choose_candidate(
+        &mut self,
+        provider: SequenceCandidateProvider,
+        candidates: &[SequenceValueCandidate],
+        masked: bool,
+    ) -> Result<CandidateValueChoice>;
+
+    fn provider_failed(&mut self, provider: SequenceCandidateProvider, error: &AtctlError);
+
+    fn provider_returned_no_candidates(&mut self, provider: SequenceCandidateProvider);
+}
+
+struct StdioSequenceValuePrompt;
+
+impl SequenceValuePrompt for StdioSequenceValuePrompt {
+    fn choose_provider(
+        &mut self,
+        sequence: &Sequence,
+        param: &SequenceParam,
+        candidate: SequenceCandidateSource,
+        providers: &[CandidateProviderOption],
+    ) -> Result<CandidateProviderChoice> {
+        loop {
+            eprintln!(
+                "Sequence `{}` requires parameter `{}` ({}).",
+                sequence.name, param.name, param.label
+            );
+            eprintln!("Candidate source: {}", candidate.label());
+            eprintln!("  1) Enter manually");
+            for (index, option) in providers.iter().enumerate() {
+                let tag = option
+                    .confirmation_tag
+                    .map(|tag| format!(" {tag}"))
+                    .unwrap_or_default();
+                eprintln!(
+                    "  {}) {} {}{}",
+                    index + 2,
+                    option.provider.kind.label(),
+                    option.provider.name,
+                    tag
+                );
+            }
+            let input = read_stdin_prompt("Select input source: ")?;
+            if input == "1" || input.eq_ignore_ascii_case("m") {
+                return Ok(CandidateProviderChoice::Manual);
+            }
+            if let Ok(index) = input.parse::<usize>()
+                && let Some(option) = index.checked_sub(2).and_then(|index| providers.get(index))
+            {
+                return Ok(CandidateProviderChoice::Provider(option.provider));
+            }
+            eprintln!("Enter 1 for manual input or one of the listed provider numbers.");
+        }
+    }
+
+    fn enter_manual_value(&mut self, param: &SequenceParam) -> Result<String> {
+        loop {
+            let value = read_stdin_prompt(&format!("{}: ", param.label))?;
+            if !value.is_empty() {
+                return Ok(value);
+            }
+            eprintln!("A non-empty value is required.");
+        }
+    }
+
+    fn choose_candidate(
+        &mut self,
+        provider: SequenceCandidateProvider,
+        candidates: &[SequenceValueCandidate],
+        masked: bool,
+    ) -> Result<CandidateValueChoice> {
+        loop {
+            eprintln!(
+                "Candidates from {} {}:",
+                provider.kind.label(),
+                provider.name
+            );
+            for (index, candidate) in candidates.iter().enumerate() {
+                let label = if masked {
+                    &candidate.masked_label
+                } else {
+                    &candidate.raw_label
+                };
+                eprintln!("  {}) {label}", index + 1);
+            }
+            eprintln!("  m) Enter manually");
+            let input = read_stdin_prompt("Select value: ")?;
+            if input.eq_ignore_ascii_case("m") {
+                return Ok(CandidateValueChoice::Manual);
+            }
+            if let Ok(index) = input.parse::<usize>()
+                && let Some(candidate) =
+                    index.checked_sub(1).and_then(|index| candidates.get(index))
+            {
+                return Ok(CandidateValueChoice::Candidate(candidate.value.clone()));
+            }
+            eprintln!("Enter one of the listed candidate numbers or m for manual input.");
+        }
+    }
+
+    fn provider_failed(&mut self, provider: SequenceCandidateProvider, error: &AtctlError) {
+        eprintln!(
+            "Candidate provider {} {} failed: {error}",
+            provider.kind.label(),
+            provider.name
+        );
+    }
+
+    fn provider_returned_no_candidates(&mut self, provider: SequenceCandidateProvider) {
+        eprintln!(
+            "Candidate provider {} {} returned no matching values.",
+            provider.kind.label(),
+            provider.name
+        );
+    }
+}
+
+fn read_stdin_prompt(prompt: &str) -> Result<String> {
+    eprint!("{prompt}");
+    io::stderr()
+        .flush()
+        .map_err(|error| AtctlError::Transport(format!("failed to flush prompt: {error}")))?;
+    let mut input = String::new();
+    let read = io::stdin()
+        .read_line(&mut input)
+        .map_err(|error| AtctlError::Transport(format!("failed to read input: {error}")))?;
+    if read == 0 {
+        return Err(AtctlError::Transport(
+            "input ended before the required Sequence value was resolved".to_owned(),
+        ));
+    }
+    Ok(input.trim().to_owned())
+}
+
+fn resolve_sequence_params_interactively<P, O, R>(
+    sequence: &Sequence,
+    mut params: Vec<SequenceParamValue>,
+    masked: bool,
+    prompt: &mut P,
+    mut provider_options: O,
+    mut run_provider: R,
+) -> Result<Vec<SequenceParamValue>>
+where
+    P: SequenceValuePrompt,
+    O: FnMut(SequenceCandidateSource) -> Result<Vec<CandidateProviderOption>>,
+    R: FnMut(
+        SequenceCandidateSource,
+        SequenceCandidateProvider,
+    ) -> Result<SequenceValueCandidateSet>,
+{
+    loop {
+        let missing = match render_sequence_review(sequence, &params) {
+            Ok(_) => return Ok(params),
+            Err(AtctlError::MissingSequenceParam { param, .. }) => param,
+            Err(error) => return Err(error),
+        };
+        let param = sequence
+            .params
+            .iter()
+            .find(|param| param.name == missing)
+            .ok_or_else(|| AtctlError::InvalidSequenceParam {
+                param: missing.clone(),
+                reason: "missing parameter is not present in the Sequence definition".to_owned(),
+            })?;
+        let Some(candidate) = param.candidate else {
+            return render_sequence_review(sequence, &params).map(|_| params);
+        };
+        let providers = provider_options(candidate)?;
+        let value = loop {
+            match prompt.choose_provider(sequence, param, candidate, &providers)? {
+                CandidateProviderChoice::Manual => break prompt.enter_manual_value(param)?,
+                CandidateProviderChoice::Provider(provider) => {
+                    let candidate_set = match run_provider(candidate, provider) {
+                        Ok(candidate_set) => candidate_set,
+                        Err(error) => {
+                            prompt.provider_failed(provider, &error);
+                            continue;
+                        }
+                    };
+                    if candidate_set.candidate != candidate || candidate_set.candidates.is_empty() {
+                        prompt.provider_returned_no_candidates(provider);
+                        continue;
+                    }
+                    match prompt.choose_candidate(provider, &candidate_set.candidates, masked)? {
+                        CandidateValueChoice::Manual => {
+                            break prompt.enter_manual_value(param)?;
+                        }
+                        CandidateValueChoice::Candidate(value) => break value,
+                    }
+                }
+            }
+        };
+        params.retain(|value| value.name != param.name);
+        params.push(SequenceParamValue {
+            name: param.name.clone(),
+            value,
+        });
+    }
+}
+
+fn candidate_provider_options(
+    candidate: SequenceCandidateSource,
+    presets: &[Preset],
+    sequences: &[Sequence],
+) -> Result<Vec<CandidateProviderOption>> {
+    candidate
+        .providers()
+        .iter()
+        .map(|provider| {
+            let review = match provider.kind {
+                SequenceCandidateProviderKind::Preset => {
+                    &find_preset(presets, provider.name)?.review
+                }
+                SequenceCandidateProviderKind::Sequence => {
+                    &find_sequence(sequences, provider.name)?.review
+                }
+            };
+            Ok(CandidateProviderOption {
+                provider: *provider,
+                confirmation_tag: review.confirmation_flow_tag(),
+            })
+        })
+        .collect()
+}
+
+fn execute_cli_candidate_provider(
+    candidate: SequenceCandidateSource,
+    provider: SequenceCandidateProvider,
+    args: &SequenceRunArgs,
+    presets: &[Preset],
+    sequences: &[Sequence],
+    raw_log_config: &Option<RawLogConfig>,
+    raw_log: &mut Option<RawLogSink>,
+) -> Result<SequenceValueCandidateSet> {
+    eprintln!(
+        "Running candidate provider: {} {}",
+        provider.kind.label(),
+        provider.name
+    );
+    let candidate_sets = match provider.kind {
+        SequenceCandidateProviderKind::Preset => {
+            let preset = find_preset(presets, provider.name)?;
+            let send_args = send_args_from_sequence_candidate_preset(preset, args);
+            let operation = OperationIdentity::preset(preset);
+            let mut prompt = StdioConfirmationPrompt;
+            let timeout_secs = authorize_command_execution(
+                &send_args,
+                &mut prompt,
+                &preset.review,
+                &operation,
+                external_preset_source(preset),
+            )?;
+            let manual_pair = send_args.usb.manual_endpoint_pair()?;
+            let transport = UsbAtTransport::new(UsbAtTransportConfig {
+                filter: send_args.usb.to_usb_filter(),
+                manual_pair,
+                write_timeout: Duration::from_secs(USB_WRITE_TIMEOUT_SECS),
+                probe_timeout: Duration::from_secs(ENDPOINT_PROBE_TIMEOUT_SECS),
+            });
+            let execution = execute_reviewed_command(
+                &send_args,
+                transport,
+                preset.review.clone(),
+                ExecutionSurface::Cli,
+                operation,
+                timeout_secs,
+                DeferredRawLog {
+                    config: raw_log_config.as_ref(),
+                    sink: raw_log,
+                },
+            )?;
+            record_command_logs(&send_args, &execution)?;
+            print!("{}", format_send_output(&execution, false)?);
+            send_status_result(&execution, false)?;
+            value_candidate_sets_from_text(&execution.raw_text)
+        }
+        SequenceCandidateProviderKind::Sequence => {
+            let sequence = find_sequence(sequences, provider.name)?;
+            let params = Vec::new();
+            let review = render_sequence_review(sequence, &params)?;
+            let execution_review = review_sequence_execution(sequence, &params)?;
+            let mut prompt = StdioConfirmationPrompt;
+            authorize_cli_sequence(sequence, &review, &execution_review, args, &mut prompt)?;
+            ensure_raw_log_sink(raw_log_config, raw_log)?;
+            let execution = execute_cli_sequence(sequence, &params, args, raw_log.as_mut())?;
+            record_sequence_logs(sequence, args, &execution)?;
+            print!(
+                "{}",
+                format_sequence_output(sequence, &execution, !args.no_mask, false)?
+            );
+            sequence_status_result(&execution, false)?;
+            execution.value_candidate_sets
+        }
+    };
+
+    Ok(candidate_sets
+        .into_iter()
+        .find(|set| set.candidate == candidate)
+        .unwrap_or(SequenceValueCandidateSet {
+            candidate,
+            candidates: Vec::new(),
+        }))
 }
 
 pub(crate) fn tui_device_filter() -> Result<UsbDeviceFilter> {
@@ -772,7 +1178,7 @@ pub(crate) fn execute_tui_preset(
 
 fn configured_tui_usb_options(timeout_secs: u64) -> Result<UsbOptions> {
     Ok(UsbOptions {
-        timeout: timeout_secs,
+        timeout: Some(timeout_secs),
         ..UsbOptions::default()
     })
 }
@@ -800,7 +1206,7 @@ fn execute_tui_preset_with_usb(
     let transport = UsbAtTransport::new(UsbAtTransportConfig {
         filter: send_args.usb.to_usb_filter(),
         manual_pair,
-        timeout: Duration::from_secs(send_args.usb.timeout),
+        write_timeout: Duration::from_secs(USB_WRITE_TIMEOUT_SECS),
         probe_timeout: Duration::from_secs(ENDPOINT_PROBE_TIMEOUT_SECS),
     });
     let mut prompt = RejectingConfirmationPrompt;
@@ -848,14 +1254,15 @@ pub(crate) fn execute_tui_sequence(
     let transport = UsbAtTransport::new(UsbAtTransportConfig {
         filter: usb.to_usb_filter(),
         manual_pair,
-        timeout: Duration::from_secs(usb.timeout),
+        write_timeout: Duration::from_secs(USB_WRITE_TIMEOUT_SECS),
         probe_timeout: Duration::from_secs(ENDPOINT_PROBE_TIMEOUT_SECS),
     });
+    let timeout_secs = usb.resolved_timeout_secs(None);
     let execution = execute_sequence(
         sequence,
         params,
         transport,
-        Duration::from_secs(usb.timeout),
+        Duration::from_secs(timeout_secs),
         true,
         raw_log,
     )?;
@@ -889,6 +1296,8 @@ fn run_logs(args: LogsArgs) -> Result<()> {
 fn run_bridge(args: BridgeArgs) -> Result<()> {
     let raw_log = bridge_raw_log_config(&args)?;
     let manual_pair = args.usb.manual_endpoint_pair()?;
+    let timeout_secs = args.usb.resolved_timeout_secs(None);
+    validate_timeout_secs(timeout_secs)?;
     let config = PtyBridgeConfig {
         symlink: args.symlink,
         replace_symlink: args.replace_symlink,
@@ -896,10 +1305,10 @@ fn run_bridge(args: BridgeArgs) -> Result<()> {
         usb: UsbAtTransportConfig {
             filter: args.usb.to_usb_filter(),
             manual_pair,
-            timeout: Duration::from_secs(args.usb.timeout),
+            write_timeout: Duration::from_secs(USB_WRITE_TIMEOUT_SECS),
             probe_timeout: Duration::from_secs(ENDPOINT_PROBE_TIMEOUT_SECS),
         },
-        command_timeout: Duration::from_secs(args.usb.timeout),
+        command_timeout: Duration::from_secs(timeout_secs),
     };
     run_usb_bridge(config)
 }
@@ -936,7 +1345,7 @@ where
 
 fn execute_command_with_confirmation<T, P>(
     args: &SendArgs,
-    mut transport: T,
+    transport: T,
     prompt: &mut P,
     review: ExecutionReview,
     surface: ExecutionSurface,
@@ -945,6 +1354,34 @@ fn execute_command_with_confirmation<T, P>(
 ) -> Result<SendExecution>
 where
     T: AtTransport,
+    P: ConfirmationPrompt,
+{
+    let timeout_secs =
+        authorize_command_execution(args, prompt, &review, &operation, external_source)?;
+    let raw_log_config = prepare_raw_log_config(args, prompt, surface)?;
+    let mut raw_log = None;
+    execute_reviewed_command(
+        args,
+        transport,
+        review,
+        surface,
+        operation,
+        timeout_secs,
+        DeferredRawLog {
+            config: raw_log_config.as_ref(),
+            sink: &mut raw_log,
+        },
+    )
+}
+
+fn authorize_command_execution<P>(
+    args: &SendArgs,
+    prompt: &mut P,
+    review: &ExecutionReview,
+    operation: &OperationIdentity,
+    external_source: Option<ExternalDefinitionSource<'_>>,
+) -> Result<u64>
+where
     P: ConfirmationPrompt,
 {
     if is_prompt_required_command(&args.command) {
@@ -956,29 +1393,48 @@ where
             value: "embedded command framing or control characters are not allowed".to_owned(),
         });
     }
-    let confirmation = authorize_execution(&review, args.yes, args.allow_unknown)?;
-    if args.usb.timeout == 0 {
-        return Err(AtctlError::InvalidValue {
-            name: "--timeout",
-            value: "must be greater than zero".to_owned(),
-        });
-    }
+    let confirmation = authorize_execution(review, args.yes, args.allow_unknown)?;
+    let timeout_secs = args.usb.resolved_timeout_secs(None);
+    validate_timeout_secs(timeout_secs)?;
 
     if confirmation == ExecutionAuthorization::InteractiveRequired {
-        prompt.confirm(&operation, &review, external_source)?;
+        prompt.confirm(operation, review, external_source)?;
     } else {
         notice_authorized_execution_without_interactive_confirmation(
             prompt,
             confirmation,
-            &operation,
-            &review,
+            operation,
+            review,
             external_source,
         )?;
     }
+    Ok(timeout_secs)
+}
 
-    let raw_log = prepare_raw_log_config(args, prompt, surface)?;
+struct DeferredRawLog<'a> {
+    config: Option<&'a RawLogConfig>,
+    sink: &'a mut Option<RawLogSink>,
+}
+
+fn execute_reviewed_command<T>(
+    args: &SendArgs,
+    mut transport: T,
+    review: ExecutionReview,
+    surface: ExecutionSurface,
+    operation: OperationIdentity,
+    timeout_secs: u64,
+    raw_log: DeferredRawLog<'_>,
+) -> Result<SendExecution>
+where
+    T: AtTransport,
+{
     let started = Instant::now();
     transport.open()?;
+    if raw_log.sink.is_none()
+        && let Some(config) = raw_log.config
+    {
+        *raw_log.sink = Some(RawLogSink::create(config.clone())?);
+    }
     let current_review = review_direct_command(&args.command);
     if current_review != review {
         let _ = transport.close();
@@ -988,9 +1444,8 @@ where
     }
     let tx = command_with_terminator(&args.command);
     if let Err(error) = transport.write_command(&tx) {
-        append_cli_raw_error(
-            raw_log.as_ref(),
-            RawLogTransportError {
+        if let Some(raw_log) = raw_log.sink.as_mut() {
+            raw_log.append_transport_error(RawLogTransportError {
                 operation: &operation,
                 command_name: None,
                 command: &args.command,
@@ -1000,17 +1455,16 @@ where
                 error: &error.to_string(),
                 tx_bytes: tx.as_bytes(),
                 rx_bytes: b"",
-            },
-        )?;
+            })?;
+        }
         let _ = transport.close();
         return Err(error);
     }
-    let raw_response = match transport.read_response(Duration::from_secs(args.usb.timeout)) {
+    let raw_response = match transport.read_response(Duration::from_secs(timeout_secs)) {
         Ok(raw_response) => raw_response,
         Err(error) => {
-            append_cli_raw_error(
-                raw_log.as_ref(),
-                RawLogTransportError {
+            if let Some(raw_log) = raw_log.sink.as_mut() {
+                raw_log.append_transport_error(RawLogTransportError {
                     operation: &operation,
                     command_name: None,
                     command: &args.command,
@@ -1020,8 +1474,8 @@ where
                     error: &error.to_string(),
                     tx_bytes: tx.as_bytes(),
                     rx_bytes: b"",
-                },
-            )?;
+                })?;
+            }
             let _ = transport.close();
             return Err(error);
         }
@@ -1066,8 +1520,7 @@ where
         duration,
     };
 
-    if let Some(raw_log) = raw_log.as_ref() {
-        let mut raw_log = RawLogSink::create(raw_log.clone())?;
+    if let Some(raw_log) = raw_log.sink.as_mut() {
         raw_log.append_exchange(RawLogExchange {
             operation: &execution.operation,
             command_name: None,
@@ -1082,17 +1535,6 @@ where
 
     close_result?;
     Ok(execution)
-}
-
-fn append_cli_raw_error(
-    raw_log: Option<&RawLogConfig>,
-    error: RawLogTransportError<'_>,
-) -> Result<()> {
-    let Some(raw_log) = raw_log else {
-        return Ok(());
-    };
-    let mut raw_log = RawLogSink::create(raw_log.clone())?;
-    raw_log.append_transport_error(error)
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -1127,14 +1569,6 @@ fn print_external_definition_notice(source: ExternalDefinitionSource<'_>) {
     eprintln!(
         "Review this external definition before running it; atctl validates format and duplicate names and derives the execution review from the final operation, but cannot establish device-, SIM-, network-, or endpoint-specific behavior that is not covered by a product rule."
     );
-}
-
-fn confirmation_token(review: &ExecutionReview) -> &'static str {
-    if review.assessment == Assessment::Unknown {
-        "unknown"
-    } else {
-        "run"
-    }
 }
 
 fn print_operation_identity(operation: &OperationIdentity) {
@@ -1173,7 +1607,7 @@ fn print_execution_review_sections(review: &ExecutionReview) {
 fn execution_review_output_lines(review: &ExecutionReview) -> Vec<String> {
     let mut lines = Vec::new();
     if review.assessment == Assessment::Unknown {
-        lines.push("! Effects are not fully known".to_owned());
+        lines.push(UNKNOWN_EFFECTS_NOTICE.to_owned());
     }
     for section in review.presentation_sections() {
         lines.push(format!("{}:", section.kind.heading()));
@@ -1256,7 +1690,7 @@ impl ConfirmationPrompt for StdioConfirmationPrompt {
         if let Some(source) = external_source {
             print_external_definition_notice(source);
         }
-        let token = confirmation_token(review);
+        let token = review.confirmation_token();
         eprint!("Type `{token}` to continue: ");
         io::stderr()
             .flush()
@@ -1305,7 +1739,7 @@ impl ConfirmationPrompt for StdioConfirmationPrompt {
             }
         }
         print_execution_review_sections(execution_review);
-        let token = confirmation_token(execution_review);
+        let token = execution_review.confirmation_token();
         eprint!("Type `{token}` to continue: ");
         io::stderr()
             .flush()
@@ -1550,6 +1984,7 @@ struct SequenceParameterDiscovery<'a> {
     default: Option<&'a str>,
     source: &'static str,
     candidate: Option<&'static str>,
+    candidate_providers: Option<&'static [SequenceCandidateProvider]>,
     hint: Option<&'a str>,
 }
 
@@ -1579,6 +2014,7 @@ fn sequence_discovery(sequence: &Sequence) -> SequenceDiscovery<'_> {
                 default: param.default_value.as_deref(),
                 source: param.source.label(),
                 candidate: param.candidate.map(|candidate| candidate.label()),
+                candidate_providers: param.candidate.map(|candidate| candidate.providers()),
                 hint: param.hint.as_deref(),
             })
             .collect(),
@@ -1595,7 +2031,7 @@ fn format_preset_list(presets: &[Preset], json: bool) -> Result<String> {
         presets.iter().map(|preset| DiscoveryRow {
             name: &preset.name,
             preview: &preset.command,
-            attention: confirmation_exception_label(&preset.review),
+            confirmation_tag: preset.review.confirmation_flow_tag(),
             source_title: (!preset.origin.is_built_in()).then(|| preset.origin.label()),
             source_path: preset.origin.file_path(),
         }),
@@ -1612,7 +2048,7 @@ fn format_sequence_list(sequences: &[Sequence], json: bool) -> Result<String> {
         sequences.iter().map(|sequence| DiscoveryRow {
             name: &sequence.name,
             preview: &sequence.summary,
-            attention: confirmation_exception_label(&sequence.review),
+            confirmation_tag: sequence.review.confirmation_flow_tag(),
             source_title: (!sequence.origin.is_built_in()).then(|| sequence.origin.label()),
             source_path: sequence.origin.file_path(),
         }),
@@ -1627,28 +2063,26 @@ fn format_preset_show(preset: &Preset, json: bool) -> Result<String> {
             serde_json::to_string_pretty(&preset_discovery(preset))?
         ));
     }
-    let mut lines = vec![
+    let overview = vec![
         "Type: Preset".to_owned(),
         format!("Name: {}", preset.name),
         format!("AT command: {}", preset.command),
     ];
-    push_definition_lines(&mut lines, &OperationIdentity::preset(preset));
-    lines.push(format!(
+    let mut definition = Vec::new();
+    push_definition_lines(&mut definition, &OperationIdentity::preset(preset));
+    definition.push(format!(
         "Categories: {}",
         category_summary(&preset.categories)
     ));
-    lines.push(format!(
-        "Timeout: {} seconds{}",
-        preset.timeout_secs.unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS),
-        if preset.timeout_secs.is_some() {
-            ""
-        } else {
-            " (default)"
-        }
-    ));
-    lines.push(String::new());
-    lines.push("Execution review:".to_owned());
-    lines.extend(complete_execution_review_output_lines(&preset.review));
+    let mut execution = vec![format!(
+        "Timeout: {} seconds",
+        preset.timeout_secs.unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS)
+    )];
+    execution.extend(complete_execution_review_output_lines(&preset.review));
+    let mut lines = Vec::new();
+    push_show_section(&mut lines, "Overview", overview);
+    push_show_section(&mut lines, "Definition", definition);
+    push_show_section(&mut lines, "Execution", execution);
     Ok(format!("{}\n", lines.join("\n")))
 }
 
@@ -1659,42 +2093,29 @@ fn format_sequence_show(sequence: &Sequence, json: bool) -> Result<String> {
             serde_json::to_string_pretty(&sequence_discovery(sequence))?
         ));
     }
-    let mut lines = vec![
+    let overview = vec![
         "Type: Sequence".to_owned(),
         format!("Name: {}", sequence.name),
         format!("Purpose: {}", sequence.summary),
     ];
-    push_definition_lines(&mut lines, &OperationIdentity::sequence(sequence));
-    lines.push(format!(
+    let mut definition = Vec::new();
+    push_definition_lines(&mut definition, &OperationIdentity::sequence(sequence));
+    definition.push(format!(
         "Categories: {}",
         category_summary(&sequence.categories)
     ));
-    lines.push(format!(
-        "Timeout: {} seconds{}",
-        sequence
-            .timeout_secs
-            .unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS),
-        if sequence.timeout_secs.is_some() {
-            ""
-        } else {
-            " (default)"
-        }
-    ));
-    if !sequence.before_running.is_empty() {
-        lines.push("Before running:".to_owned());
-        lines.extend(
-            sequence
-                .before_running
-                .iter()
-                .map(|item| format!("  - {item}")),
-        );
-    }
-    if sequence.params.is_empty() {
-        lines.push("Parameters: none".to_owned());
-    } else {
-        lines.push("Parameters:".to_owned());
+    let before_running = sequence
+        .before_running
+        .iter()
+        .map(|item| format!("- {item}"))
+        .collect::<Vec<_>>();
+    let mut inputs = Vec::new();
+    if !sequence.params.is_empty() {
         for param in &sequence.params {
-            lines.push(format!(
+            if !inputs.is_empty() {
+                inputs.push(String::new());
+            }
+            inputs.push(format!(
                 "  - {} ({}){}{}",
                 param.name,
                 param.label,
@@ -1705,28 +2126,56 @@ fn format_sequence_show(sequence: &Sequence, json: bool) -> Result<String> {
                 },
                 if param.sensitive { "; sensitive" } else { "" }
             ));
-            lines.push(format!("    Source: {}", param.source.label()));
+            inputs.push(format!("    Source: {}", param.source.label()));
             if let Some(default) = &param.default_value {
-                lines.push(format!("    Default: {default}"));
+                inputs.push(format!("    Default: {default}"));
             }
             if let Some(candidate) = param.candidate {
-                lines.push(format!("    Candidates: {}", candidate.label()));
+                inputs.push(format!("    Candidates: {}", candidate.label()));
+                for provider in candidate.providers() {
+                    inputs.push(format!(
+                        "    Provider: {} {}",
+                        provider.kind.label(),
+                        provider.name
+                    ));
+                }
             }
             if let Some(hint) = &param.hint {
-                lines.push(format!("    Hint: {hint}"));
+                inputs.push(format!("    Hint: {hint}"));
             }
         }
     }
-    lines.push(String::new());
-    lines.push("Execution review:".to_owned());
-    lines.extend(complete_execution_review_output_lines(&sequence.review));
+    let mut execution = vec![format!(
+        "Timeout: {} seconds",
+        sequence
+            .timeout_secs
+            .unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS)
+    )];
+    execution.extend(complete_execution_review_output_lines(&sequence.review));
+    let mut lines = Vec::new();
+    push_show_section(&mut lines, "Overview", overview);
+    push_show_section(&mut lines, "Definition", definition);
+    push_show_section(&mut lines, "Before running", before_running);
+    push_show_section(&mut lines, "Inputs", inputs);
+    push_show_section(&mut lines, "Execution", execution);
     Ok(format!("{}\n", lines.join("\n")))
+}
+
+fn push_show_section(lines: &mut Vec<String>, heading: &str, content: Vec<String>) {
+    if content.is_empty() {
+        return;
+    }
+    if !lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines.push(format!("{heading}:"));
+    lines.extend(content);
 }
 
 struct DiscoveryRow<'a> {
     name: &'a str,
     preview: &'a str,
-    attention: Option<&'static str>,
+    confirmation_tag: Option<&'static str>,
     source_title: Option<&'a str>,
     source_path: Option<&'a str>,
 }
@@ -1743,12 +2192,12 @@ fn format_discovery_table<'a>(
     } else {
         120
     };
-    let attention_width = rows
+    let confirmation_lane_width = rows
         .iter()
-        .filter_map(|row| row.attention)
-        .map(display_width)
+        .filter_map(|row| row.confirmation_tag)
+        .map(|tag| display_width(tag) + 1)
         .max()
-        .unwrap_or_else(|| display_width("ATTENTION"));
+        .unwrap_or(0);
     let max_name = rows
         .iter()
         .map(|row| display_width(row.name))
@@ -1757,15 +2206,14 @@ fn format_discovery_table<'a>(
     let name_width = max_name
         .max(display_width("NAME"))
         .min(28)
-        .min(width.saturating_sub(attention_width + 5).max(1));
+        .min(width.saturating_sub(confirmation_lane_width + 3).max(1));
     let preview_width = width
-        .saturating_sub(name_width + attention_width + 4)
+        .saturating_sub(name_width + confirmation_lane_width + 2)
         .max(1);
     let mut output = format!(
-        "{}  {}  {}\n",
+        "{}  {}\n",
         pad_display("NAME", name_width),
-        pad_display(preview_heading, preview_width),
-        "ATTENTION"
+        truncate_display(preview_heading, preview_width)
     );
     let mut current_source: Option<(&str, Option<&str>)> = None;
     for row in rows {
@@ -1780,12 +2228,19 @@ fn format_discovery_table<'a>(
             }
             current_source = source;
         }
-        output.push_str(&format!(
-            "{}  {}  {}\n",
-            pad_display(&truncate_display(row.name, name_width), name_width),
-            pad_display(&truncate_display(row.preview, preview_width), preview_width),
-            row.attention.unwrap_or("")
+        output.push_str(&pad_display(
+            &truncate_display(row.name, name_width),
+            name_width,
         ));
+        output.push_str("  ");
+        let preview = truncate_display(row.preview, preview_width);
+        output.push_str(&preview);
+        if let Some(tag) = row.confirmation_tag {
+            output.push_str(&" ".repeat(preview_width.saturating_sub(display_width(&preview))));
+            output.push(' ');
+            output.push_str(tag);
+        }
+        output.push('\n');
     }
     output
 }
@@ -1852,16 +2307,6 @@ fn pad_display(value: &str, width: usize) -> String {
     )
 }
 
-fn confirmation_exception_label(review: &ExecutionReview) -> Option<&'static str> {
-    if !review.requires_confirmation() {
-        None
-    } else if review.assessment == Assessment::Unknown {
-        Some("! Confirmation required (effects unknown)")
-    } else {
-        Some("! Confirmation required")
-    }
-}
-
 fn complete_execution_review_output_lines(review: &ExecutionReview) -> Vec<String> {
     fn values<'a>(items: impl Iterator<Item = &'a str>) -> String {
         let items = items.collect::<Vec<_>>();
@@ -1888,6 +2333,9 @@ fn complete_execution_review_output_lines(review: &ExecutionReview) -> Vec<Strin
             values(review.consequences.iter().map(String::as_str))
         ),
     ];
+    if review.assessment == Assessment::Unknown {
+        lines.insert(1, UNKNOWN_EFFECTS_NOTICE.to_owned());
+    }
     if !review.not_established.is_empty() {
         lines.push(format!(
             "Not established: {}",
@@ -1913,11 +2361,7 @@ fn complete_execution_review_output_lines(review: &ExecutionReview) -> Vec<Strin
 
 fn send_args_from_preset(preset: &Preset, args: &PresetRunArgs) -> SendArgs {
     let mut usb = args.usb.clone();
-    if usb.timeout == DEFAULT_COMMAND_TIMEOUT_SECS
-        && let Some(timeout_secs) = preset.timeout_secs
-    {
-        usb.timeout = timeout_secs;
-    }
+    usb.timeout = Some(usb.resolved_timeout_secs(preset.timeout_secs));
 
     SendArgs {
         command: preset.command.clone(),
@@ -1929,6 +2373,25 @@ fn send_args_from_preset(preset: &Preset, args: &PresetRunArgs) -> SendArgs {
         raw_log_ack: args.raw_log_ack.clone(),
         json: args.json,
         ignore_at_error: args.ignore_at_error,
+        yes: args.yes,
+        allow_unknown: args.allow_unknown,
+    }
+}
+
+fn send_args_from_sequence_candidate_preset(preset: &Preset, args: &SequenceRunArgs) -> SendArgs {
+    let mut usb = args.usb.clone();
+    usb.timeout = Some(usb.resolved_timeout_secs(preset.timeout_secs));
+
+    SendArgs {
+        command: preset.command.clone(),
+        usb,
+        no_mask: args.no_mask,
+        no_log: args.no_log,
+        export_response: None,
+        raw_log_file: None,
+        raw_log_ack: None,
+        json: false,
+        ignore_at_error: false,
         yes: args.yes,
         allow_unknown: args.allow_unknown,
     }
@@ -2273,6 +2736,12 @@ impl DeviceFilterOptions {
 }
 
 impl UsbOptions {
+    fn resolved_timeout_secs(&self, item_timeout_secs: Option<u64>) -> u64 {
+        self.timeout
+            .or(item_timeout_secs)
+            .unwrap_or(DEFAULT_COMMAND_TIMEOUT_SECS)
+    }
+
     fn to_usb_filter(&self) -> UsbDeviceFilter {
         UsbDeviceFilter {
             vendor_id: self.vid,

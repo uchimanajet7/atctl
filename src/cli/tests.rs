@@ -23,7 +23,7 @@ fn cli_confirmation_output_uses_consequence_hierarchy() {
     )));
     let positions = [
         "AT command: AT+VENDOR=1",
-        "! Effects are not fully known",
+        "Effects are not fully known.",
         "Known:",
         "Possible consequences:",
         "Not established:",
@@ -220,7 +220,7 @@ fn parses_bridge_options() {
     assert_eq!(args.usb.interface_number, Some(2));
     assert_eq!(args.usb.bulk_in, Some(0x84));
     assert_eq!(args.usb.bulk_out, Some(0x03));
-    assert_eq!(args.usb.timeout, 180);
+    assert_eq!(args.usb.timeout, Some(180));
 }
 
 #[test]
@@ -423,7 +423,33 @@ fn user_command_timeout_defaults_to_thirty_seconds() {
         panic!("expected send command");
     };
 
-    assert_eq!(args.usb.timeout, DEFAULT_COMMAND_TIMEOUT_SECS);
+    assert_eq!(args.usb.timeout, None);
+    assert_eq!(
+        args.usb.resolved_timeout_secs(None),
+        DEFAULT_COMMAND_TIMEOUT_SECS
+    );
+}
+
+#[test]
+fn timeout_resolution_uses_explicit_then_item_then_product_default() {
+    let omitted = UsbOptions::default();
+    assert_eq!(
+        omitted.resolved_timeout_secs(None),
+        DEFAULT_COMMAND_TIMEOUT_SECS
+    );
+    assert_eq!(omitted.resolved_timeout_secs(Some(240)), 240);
+
+    let explicit_default = UsbOptions {
+        timeout: Some(DEFAULT_COMMAND_TIMEOUT_SECS),
+        ..UsbOptions::default()
+    };
+    assert_eq!(
+        explicit_default.resolved_timeout_secs(Some(240)),
+        DEFAULT_COMMAND_TIMEOUT_SECS
+    );
+
+    assert_eq!(USB_WRITE_TIMEOUT_SECS, 3);
+    assert_eq!(ENDPOINT_PROBE_TIMEOUT_SECS, 3);
 }
 
 #[test]
@@ -584,7 +610,7 @@ fn parses_sequence_run_transport_confirmation_params_and_locations() {
     assert_eq!(args.name, "sms-send-check");
     assert_eq!(args.usb.vid, Some(0x2c7c));
     assert_eq!(args.usb.pid, Some(0x0125));
-    assert_eq!(args.usb.timeout, 180);
+    assert_eq!(args.usb.timeout, Some(180));
     assert!(args.yes);
     assert!(!args.allow_unknown);
     assert_eq!(
@@ -695,23 +721,153 @@ fn formats_sequence_list_with_sms_product_sequences() {
 
     assert!(output.starts_with("NAME"));
     assert!(output.contains("PURPOSE"));
-    assert!(output.contains("ATTENTION"));
+    assert!(!output.contains("ATTENTION"));
     assert!(output.contains("sms-send-check"));
     assert!(output.contains("Send a standard SMS"));
     assert!(output.contains("sms-receive-check"));
     assert!(output.contains("sms-read-message"));
     assert!(output.contains("sms-reply-check"));
-    assert!(output.contains("! Confirmation required"));
+    assert!(output.contains("[confirm]"));
+    assert!(!output.contains("! Confirmation required"));
     assert!(!output.contains("Product Sequences"));
     assert!(!output.contains("not required"));
 
     let json = format_sequence_list(&sequences, true).unwrap();
+    assert!(!json.contains("[confirm]"));
     let value: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(value[0]["operation"]["kind"], "sequence");
     assert!(value.as_array().unwrap().iter().any(|row| {
         row["operation"]["name"] == "sms-read-message"
             && row["parameters"][0]["candidate"] == "sms-message"
+            && row["parameters"][0]["candidate_providers"][0]["kind"] == "sequence"
+            && row["parameters"][0]["candidate_providers"][0]["name"] == "sms-receive-check"
     }));
+}
+
+#[derive(Default)]
+struct TestSequenceValuePrompt {
+    provider_choices: Vec<CandidateProviderChoice>,
+    candidate_choices: Vec<CandidateValueChoice>,
+    manual_values: Vec<String>,
+    failures: Vec<String>,
+    empty_results: Vec<String>,
+}
+
+impl SequenceValuePrompt for TestSequenceValuePrompt {
+    fn choose_provider(
+        &mut self,
+        _sequence: &Sequence,
+        _param: &SequenceParam,
+        _candidate: SequenceCandidateSource,
+        _providers: &[CandidateProviderOption],
+    ) -> Result<CandidateProviderChoice> {
+        Ok(self.provider_choices.remove(0))
+    }
+
+    fn enter_manual_value(&mut self, _param: &SequenceParam) -> Result<String> {
+        Ok(self.manual_values.remove(0))
+    }
+
+    fn choose_candidate(
+        &mut self,
+        _provider: SequenceCandidateProvider,
+        _candidates: &[SequenceValueCandidate],
+        _masked: bool,
+    ) -> Result<CandidateValueChoice> {
+        Ok(self.candidate_choices.remove(0))
+    }
+
+    fn provider_failed(&mut self, provider: SequenceCandidateProvider, error: &AtctlError) {
+        self.failures.push(format!("{}: {error}", provider.name));
+    }
+
+    fn provider_returned_no_candidates(&mut self, provider: SequenceCandidateProvider) {
+        self.empty_results.push(provider.name.to_owned());
+    }
+}
+
+#[test]
+fn interactive_sequence_resolution_runs_existing_sms_sequence_provider() {
+    let sequences = sequence_builtins();
+    let sequence = sequences
+        .iter()
+        .find(|sequence| sequence.name == "sms-read-message")
+        .unwrap();
+    let provider = SequenceCandidateSource::SmsMessage.providers()[0];
+    let mut prompt = TestSequenceValuePrompt {
+        provider_choices: vec![CandidateProviderChoice::Provider(provider)],
+        candidate_choices: vec![CandidateValueChoice::Candidate("8".to_owned())],
+        ..TestSequenceValuePrompt::default()
+    };
+    let presets = builtins();
+    let mut executed = Vec::new();
+
+    let params = resolve_sequence_params_interactively(
+        sequence,
+        Vec::new(),
+        true,
+        &mut prompt,
+        |candidate| candidate_provider_options(candidate, &presets, &sequences),
+        |candidate, provider| {
+            executed.push(provider);
+            Ok(SequenceValueCandidateSet {
+                candidate,
+                candidates: vec![SequenceValueCandidate {
+                    value: "8".to_owned(),
+                    raw_label: "storage=8  REC UNREAD  901001".to_owned(),
+                    masked_label: "storage=8  REC UNREAD  ******".to_owned(),
+                }],
+            })
+        },
+    )
+    .unwrap();
+
+    assert_eq!(executed, vec![provider]);
+    assert_eq!(provider.kind, SequenceCandidateProviderKind::Sequence);
+    assert_eq!(provider.name, "sms-receive-check");
+    assert_eq!(
+        params,
+        vec![SequenceParamValue {
+            name: "index".to_owned(),
+            value: "8".to_owned(),
+        }]
+    );
+}
+
+#[test]
+fn interactive_sequence_resolution_preserves_manual_entry_without_provider_execution() {
+    let sequences = sequence_builtins();
+    let sequence = sequences
+        .iter()
+        .find(|sequence| sequence.name == "sms-read-message")
+        .unwrap();
+    let presets = builtins();
+    let mut prompt = TestSequenceValuePrompt {
+        provider_choices: vec![CandidateProviderChoice::Manual],
+        manual_values: vec!["12".to_owned()],
+        ..TestSequenceValuePrompt::default()
+    };
+    let mut provider_ran = false;
+
+    let params = resolve_sequence_params_interactively(
+        sequence,
+        Vec::new(),
+        true,
+        &mut prompt,
+        |candidate| candidate_provider_options(candidate, &presets, &sequences),
+        |candidate, _provider| {
+            provider_ran = true;
+            Ok(SequenceValueCandidateSet {
+                candidate,
+                candidates: Vec::new(),
+            })
+        },
+    )
+    .unwrap();
+
+    assert!(!provider_ran);
+    assert_eq!(params[0].name, "index");
+    assert_eq!(params[0].value, "12");
 }
 
 #[test]
@@ -1004,11 +1160,105 @@ fn formats_preset_list_with_review_categories_and_command() {
 
     assert!(output.starts_with("NAME"));
     assert!(output.contains("AT COMMAND"));
-    assert!(output.contains("ATTENTION"));
+    assert!(!output.contains("ATTENTION"));
     assert!(output.contains("Loaded from: Custom commands"));
     assert!(output.contains("File: presets.toml"));
     assert!(output.contains("custom-modem-response"));
+    assert!(!output.contains("[confirm]"));
     assert!(!output.contains("not required"));
+}
+
+#[test]
+fn human_preset_list_uses_one_confirmation_tag_for_known_and_unknown_rows() {
+    let presets = vec![
+        Preset::built_in("known-change", "AT+CMEE=2", ["review"]),
+        Preset::built_in("unknown-change", "AT+VENDOR=1", ["review"]),
+        Preset::built_in("observation", "AT", ["review"]),
+    ];
+
+    let output = format_preset_list(&presets, false).unwrap();
+    let lines = output.lines().collect::<Vec<_>>();
+
+    for name in ["known-change", "unknown-change"] {
+        let row = lines
+            .iter()
+            .find(|line| line.contains(name))
+            .unwrap_or_else(|| panic!("missing {name} row in {output}"));
+        assert!(row.ends_with("[confirm]"), "{row}");
+    }
+    let known_tag_column = lines
+        .iter()
+        .find(|line| line.contains("known-change"))
+        .and_then(|line| line.find("[confirm]"))
+        .expect("known confirmation tag");
+    let unknown_tag_column = lines
+        .iter()
+        .find(|line| line.contains("unknown-change"))
+        .and_then(|line| line.find("[confirm]"))
+        .expect("unknown confirmation tag");
+    assert_eq!(known_tag_column, unknown_tag_column);
+    let observation = lines
+        .iter()
+        .find(|line| line.contains("observation"))
+        .unwrap_or_else(|| panic!("missing observation row in {output}"));
+    assert!(!observation.contains("[confirm]"));
+    assert!(!output.contains("ATTENTION"));
+    assert!(!output.contains("Confirmation required"));
+
+    let json = format_preset_list(&presets, true).unwrap();
+    assert!(!json.contains("[confirm]"));
+}
+
+#[test]
+fn human_discovery_lists_reclaim_confirmation_lane_when_unused() {
+    let long_preview = "X".repeat(200);
+    let mixed = format_discovery_table(
+        [
+            DiscoveryRow {
+                name: "plain-record",
+                preview: &long_preview,
+                confirmation_tag: None,
+                source_title: None,
+                source_path: None,
+            },
+            DiscoveryRow {
+                name: "tagged-row-x",
+                preview: "AT+CMEE=2",
+                confirmation_tag: Some(crate::at::review::CONFIRMATION_FLOW_TAG),
+                source_title: None,
+                source_path: None,
+            },
+        ]
+        .into_iter(),
+        "AT COMMAND",
+    );
+    let confirmation_free = format_discovery_table(
+        [DiscoveryRow {
+            name: "plain-record",
+            preview: &long_preview,
+            confirmation_tag: None,
+            source_title: None,
+            source_path: None,
+        }]
+        .into_iter(),
+        "AT COMMAND",
+    );
+
+    let mixed_plain = mixed
+        .lines()
+        .find(|line| line.contains("plain-record"))
+        .expect("mixed plain row");
+    let mixed_tagged = mixed
+        .lines()
+        .find(|line| line.contains("tagged-row-x"))
+        .expect("mixed tagged row");
+    let reclaimed_plain = confirmation_free
+        .lines()
+        .find(|line| line.contains("plain-record"))
+        .expect("confirmation-free row");
+    let tag_column = mixed_tagged.find("[confirm]").expect("confirmation tag");
+    assert!(display_width(mixed_plain) <= tag_column);
+    assert!(display_width(reclaimed_plain) > display_width(mixed_plain));
 }
 
 #[test]
@@ -1044,7 +1294,22 @@ fn show_outputs_are_complete_structured_and_read_only_formatters() {
     assert!(preset_text.contains("Definition origin: file"));
     assert!(preset_text.contains("Definition file: /tmp/external.toml"));
     assert!(preset_text.contains("Categories: diagnostics"));
-    assert!(preset_text.contains("Execution review:"));
+    assert!(preset_text.contains("Timeout: 45 seconds"));
+    assert!(!preset_text.contains("(default)"));
+    assert!(preset_text.starts_with("Overview:\nType: Preset"));
+    assert!(preset_text.contains("\n\nDefinition:\n"));
+    assert!(preset_text.contains("\n\nExecution:\n"));
+    assert!(!preset_text.contains("Before running:"));
+    assert!(!preset_text.contains("Inputs:"));
+    assert!(
+        preset_text.find("Overview:") < preset_text.find("Definition:")
+            && preset_text.find("Definition:") < preset_text.find("Execution:")
+    );
+
+    let default_preset = Preset::new("default-timeout", "AT", Vec::new(), PresetOrigin::BuiltIn);
+    let default_preset_text = format_preset_show(&default_preset, false).unwrap();
+    assert!(default_preset_text.contains("Timeout: 30 seconds"));
+    assert!(!default_preset_text.contains("(default)"));
 
     let sequence = sequence_builtins()
         .into_iter()
@@ -1056,7 +1321,42 @@ fn show_outputs_are_complete_structured_and_read_only_formatters() {
     assert_eq!(value["operation"]["name"], "sms-read-message");
     assert_eq!(value["parameters"][0]["source"], "select");
     assert_eq!(value["parameters"][0]["candidate"], "sms-message");
+    assert_eq!(
+        value["parameters"][0]["candidate_providers"][0]["kind"],
+        "sequence"
+    );
+    assert_eq!(
+        value["parameters"][0]["candidate_providers"][0]["name"],
+        "sms-receive-check"
+    );
     assert!(value.get("execution_review").is_some());
+
+    let mut default_sequence = sequence.clone();
+    default_sequence.timeout_secs = None;
+    default_sequence.before_running =
+        vec!["Inspect the target SMS storage before execution.".to_owned()];
+    let default_sequence_text = format_sequence_show(&default_sequence, false).unwrap();
+    assert!(default_sequence_text.contains("Timeout: 30 seconds"));
+    assert!(default_sequence_text.contains("Provider: Sequence sms-receive-check"));
+    assert!(!default_sequence_text.contains("(default)"));
+    assert!(default_sequence_text.starts_with("Overview:\nType: Sequence"));
+    for heading in [
+        "Overview:",
+        "Definition:",
+        "Before running:",
+        "Inputs:",
+        "Execution:",
+    ] {
+        assert!(default_sequence_text.contains(heading));
+    }
+    assert!(
+        default_sequence_text.find("Overview:") < default_sequence_text.find("Definition:")
+            && default_sequence_text.find("Definition:")
+                < default_sequence_text.find("Before running:")
+            && default_sequence_text.find("Before running:")
+                < default_sequence_text.find("Inputs:")
+            && default_sequence_text.find("Inputs:") < default_sequence_text.find("Execution:")
+    );
 }
 
 #[test]
@@ -1210,11 +1510,28 @@ fn preset_timeout_hint_replaces_default_timeout() {
         Some(180),
     );
     let mut run_args = preset_run_args("long-scan");
-    run_args.usb.timeout = DEFAULT_COMMAND_TIMEOUT_SECS;
+    run_args.usb.timeout = None;
 
     let send_args = send_args_from_preset(&preset, &run_args);
 
-    assert_eq!(send_args.usb.timeout, 180);
+    assert_eq!(send_args.usb.timeout, Some(180));
+}
+
+#[test]
+fn explicit_default_preset_timeout_overrides_timeout_hint() {
+    let preset = Preset::new_with_timeout(
+        "long-scan",
+        "AT+COPS=?",
+        Vec::new(),
+        PresetOrigin::BuiltIn,
+        Some(180),
+    );
+    let mut run_args = preset_run_args("long-scan");
+    run_args.usb.timeout = Some(DEFAULT_COMMAND_TIMEOUT_SECS);
+
+    let send_args = send_args_from_preset(&preset, &run_args);
+
+    assert_eq!(send_args.usb.timeout, Some(DEFAULT_COMMAND_TIMEOUT_SECS));
 }
 
 #[test]
@@ -1227,11 +1544,11 @@ fn explicit_preset_timeout_overrides_timeout_hint() {
         Some(180),
     );
     let mut run_args = preset_run_args("long-scan");
-    run_args.usb.timeout = 240;
+    run_args.usb.timeout = Some(240);
 
     let send_args = send_args_from_preset(&preset, &run_args);
 
-    assert_eq!(send_args.usb.timeout, 240);
+    assert_eq!(send_args.usb.timeout, Some(240));
 }
 
 #[test]
@@ -1483,7 +1800,8 @@ fn send_raw_log_file_records_transport_error_when_response_is_missing() {
 
     let error = execute_send_with_transport(&args, transport).unwrap_err();
 
-    assert!(matches!(error, AtctlError::Timeout));
+    assert!(matches!(error, AtctlError::Timeout { timeout_secs: 3 }));
+    assert_eq!(error.to_string(), "AT operation timed out after 3 seconds.");
     let contents = std::fs::read_to_string(path).unwrap();
     assert!(contents.contains("\"event\":\"header\""));
     assert!(contents.contains("\"event\":\"transport_error\""));
@@ -1619,7 +1937,7 @@ fn unknown_noninteractive_send_runs_with_yes_and_allow_unknown() {
 #[test]
 fn send_rejects_zero_timeout_before_transport_access() {
     let mut args = send_args("AT");
-    args.usb.timeout = 0;
+    args.usb.timeout = Some(0);
     let transport = MockTransport::with_response(b"\r\nOK\r\n".to_vec());
 
     let error = execute_send_with_transport(&args, transport).unwrap_err();
@@ -1661,7 +1979,7 @@ fn send_args(command: &str) -> SendArgs {
     SendArgs {
         command: command.to_owned(),
         usb: UsbOptions {
-            timeout: 3,
+            timeout: Some(3),
             ..UsbOptions::default()
         },
         no_mask: false,
@@ -1680,7 +1998,7 @@ fn preset_run_args(name: &str) -> PresetRunArgs {
     PresetRunArgs {
         name: name.to_owned(),
         usb: UsbOptions {
-            timeout: 3,
+            timeout: Some(3),
             ..UsbOptions::default()
         },
         no_mask: false,

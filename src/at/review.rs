@@ -7,6 +7,9 @@ use crate::app::errors::AtctlError;
 use crate::at::command::normalize_command;
 use crate::at::mask::mask_sensitive_values;
 
+pub const CONFIRMATION_FLOW_TAG: &str = "[confirm]";
+pub const UNKNOWN_EFFECTS_NOTICE: &str = "Effects are not fully known.";
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Assessment {
@@ -137,6 +140,19 @@ pub struct ReviewPresentationSection {
 impl ExecutionReview {
     pub fn requires_confirmation(&self) -> bool {
         self.confirmation_required
+    }
+
+    pub fn confirmation_token(&self) -> &'static str {
+        if self.assessment == Assessment::Unknown {
+            "unknown"
+        } else {
+            "run"
+        }
+    }
+
+    pub fn confirmation_flow_tag(&self) -> Option<&'static str> {
+        self.requires_confirmation()
+            .then_some(CONFIRMATION_FLOW_TAG)
     }
 
     pub fn masked(&self) -> Self {
@@ -733,6 +749,21 @@ mod tests {
         assert_eq!(review.assessment, Assessment::Known);
         assert_eq!(review.effects, vec![Effect::ObserveData]);
         assert!(!review.confirmation_required);
+        assert_eq!(review.confirmation_token(), "run");
+        assert_eq!(review.confirmation_flow_tag(), None);
+    }
+
+    #[test]
+    fn confirmation_flow_tag_is_identical_for_known_and_unknown_operations() {
+        let known = review_direct_command("AT+CMEE=2");
+        let unknown = review_direct_command("AT+VENDOR=1");
+
+        assert_eq!(known.assessment, Assessment::Known);
+        assert_eq!(known.confirmation_token(), "run");
+        assert_eq!(known.confirmation_flow_tag(), Some(CONFIRMATION_FLOW_TAG));
+        assert_eq!(unknown.assessment, Assessment::Unknown);
+        assert_eq!(unknown.confirmation_token(), "unknown");
+        assert_eq!(unknown.confirmation_flow_tag(), Some(CONFIRMATION_FLOW_TAG));
     }
 
     #[test]

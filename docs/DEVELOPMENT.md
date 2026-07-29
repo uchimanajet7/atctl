@@ -13,8 +13,9 @@ development environments.
 Install dependencies separately so their purpose is clear.
 
 ```sh
-# Rust compiler and Cargo, needed to build atctl from source.
-brew install rust
+# Rust toolchain manager, needed to use the repository-pinned compiler,
+# Cargo, Rustfmt, and Clippy versions.
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # Native USB access library used by atctl through the Rust rusb crate.
 brew install libusb
@@ -24,15 +25,16 @@ brew install libusb
 brew install pkgconf
 ```
 
-If you use `rustup` instead of Homebrew Rust, that is acceptable. `libusb` must
-still be available through Homebrew for the initial Apple Silicon Mac setup.
-The repository pins Rust 1.97.0 in `rust-toolchain.toml` for local and CI use,
-and declares the corresponding Rust 1.97 baseline in `Cargo.toml`. With
-`rustup`, running Rust commands from the repository selects that pinned
-toolchain and installs its declared Rustfmt and Clippy components when needed.
-Verify the selected versions with:
+The Rust installer provides `rustup`, `rustc`, and Cargo. `libusb` must still be
+available through Homebrew for the initial Apple Silicon Mac setup. The
+repository pins Rust 1.97.0 in `rust-toolchain.toml` for local and CI use and
+declares the corresponding Rust 1.97 baseline in `Cargo.toml`. Running Rust
+commands from the repository selects that pinned toolchain and installs its
+declared Rustfmt and Clippy components when needed. Verify the active toolchain
+and selected versions with:
 
 ```sh
+rustup show active-toolchain
 rustc -Vv
 cargo -V
 ```
@@ -42,9 +44,6 @@ cargo -V
 ```sh
 # Source control tool, needed if it is not already installed.
 brew install git
-
-# Optional task runner, only useful if the repository later adds a justfile.
-brew install just
 
 # Optional TOML formatter/checker for preset and Sequence definitions.
 brew install taplo
@@ -78,7 +77,6 @@ Tests should cover at least:
 - Semantic/provenance-sensitive value masking, including short phone fields
   next to visible short operational values
 - Product-derived execution review and authorization
-- Config parsing
 - CLI parsing
 - Mock transport behavior
 
@@ -152,9 +150,11 @@ When changing file preset loading, listing, execution, or review handling, verif
 
 - Both repository-managed TOML files load through the same path used for other
   file presets.
-- Human CLI list output stays on the compact `NAME` / `AT COMMAND` /
-  `ATTENTION` grammar, groups each file source once, and preserves complete
-  source metadata in `list --json` and `preset show`.
+- Human CLI list output stays on the compact `NAME` / `AT COMMAND` grammar,
+  appends `[confirm]` only when required, aligns it in the conditional fixed
+  trailing lane, reclaims that lane when no row requires confirmation, groups
+  each file source once, and preserves complete source metadata in `list
+  --json` and `preset show`.
 - CLI run output shows the external file preset notice before USB access,
   including the `--yes` and `--yes --allow-unknown` paths.
 - Duplicate names fail with an actionable error.
@@ -174,10 +174,11 @@ Before changing Sequence behavior, review `REQ-SEQ-ENGINE-*`, `REQ-CLI-SEQ-*`,
 [`SPEC.md`](SPEC.md). Cover these production surfaces together when they are
 affected:
 
-- TUI `Commands / Sequences` one-row command/Sequence grammar, `d Details`,
-  `Run Sequence` modal identity and scroll/pinned-control behavior, compact
-  Status step/result context without Sequence purpose text, Controls behavior,
-  and Response step transcript.
+- TUI `Commands / Sequences` one-row command/Sequence grammar, sectioned
+  read-only `d Details`, focused `Run Sequence` value input, scrollable final
+  review with pinned run instruction/input, bottom footer, phase identity, and
+  parameter/candidate navigation, compact Status step/result context without
+  Sequence purpose text, Controls behavior, and Response step transcript.
 - CLI `atctl sequence list` and `atctl sequence run <SEQUENCE>`.
 - `atctl send` and `atctl preset run` staying one-shot surfaces with clear
   errors if a Sequence name is supplied there.
@@ -186,26 +187,46 @@ affected:
 
 Tests should cover at least:
 
-- TUI command and Sequence rows using the same physical height and explicit
-  `│ AT:` / `│ Purpose:` delimiters in product-only, mixed-kind, and loaded
-  definition states. Selection styling must not erase warning styling.
+- TUI command and Sequence rows using the same physical height, without
+  repeated `AT:` / `Purpose:` labels, in product-only, mixed-kind, and loaded
+  definition states. Confirmation-required rows must append the complete
+  `[confirm]` action-flow tag in the fixed trailing lane, confirmation-free
+  rows must leave that lane blank, a confirmation-free result set must reclaim
+  it, and selection styling must remain independent from the dedicated
+  ConfirmationFlow tag style.
+- Human `preset list` and `sequence list` output must use the same exception-only
+  `[confirm]` tag and conditional trailing-lane alignment as TUI rows, without
+  an `ATTENTION` column, TUI theme color, or complete warning prose. TUI
+  candidate-acquisition actions must derive and display the same tag using the
+  same action-set alignment rule.
 - `d Details` for commands and Sequences without a visible device, complete
   wrapped identity, non-default source/file disclosure, hidden-field search
   matches, line/page scrolling, `q` no-op, `Esc` close, and exact discovery
   state restoration.
 - Empty category and search-result recovery text plus the safe resize fallback
-  when complete warning, Details, or pinned confirmation content cannot fit.
+  when the complete confirmation tag, Details, or pinned confirmation content
+  cannot fit.
 - Complete Sequence Name/Purpose in parameter, candidate, candidate-action
   confirmation, no-confirmation review, known confirmation, unknown
-  confirmation, and error states. Long context must page independently while
-  the active value/candidate or confirmation instruction/Input remains visible.
+  confirmation, and error states. For multi-parameter input, verify the
+  right-aligned `Value <current> of <total>` modal title in value input and
+  candidate-action confirmation, its omission for single-value and final-review
+  phases, the active label above the value without a body counter, and the exact
+  `Enter` outcome in the modal footer. Long context must page independently
+  without changing the active value position while the active value/candidate or
+  confirmation instruction/Input remains visible.
+- Dark and light render-buffer checks for the dedicated ConfirmationFlow colors,
+  including contrast of at least 4.5:1 against their specified backgrounds, and
+  a no-color check that retains the complete bold ASCII tag without relying on
+  hue.
 
 - Sequence TOML parsing for explicit `--sequence-file` and
   `--sequence-dir` locations.
 - Sequence TOML parsing for pre-send `review` items, `success_notes`, and
   per-step `evidence` text rendered as `Analysis:`.
 - Explicit `--sequence-file` and `--sequence-dir` loading.
-- CLI `sequence list` compact output, `list --json`, complete read-only
+- CLI `sequence list` compact output with the shared `[confirm]` grammar,
+  fixed trailing-lane alignment, lane reclamation, `list --json`, complete read-only
   `sequence show`, and CLI `sequence run` external definition notice output
   before USB access, including the `--yes` and `--yes --allow-unknown` paths.
 - Duplicate Sequence name rejection.
@@ -235,7 +256,11 @@ Tests should cover at least:
   Sequence-provided destinations, before-running notes, and external
   prerequisites.
 - CLI and TUI missing-value behavior using the same Sequence `default`,
-  `source`, `candidate`, `hint`, and `before_running` metadata.
+  `source`, `candidate`, candidate-provider references, `hint`, and
+  `before_running` metadata. Candidate providers are existing executable item
+  references, not copied command definitions: `sms-message` resolves through
+  product Sequence `sms-receive-check`; `pdp-context` resolves through product
+  Presets `active-pdp-contexts` and `pdp-contexts`.
 - TUI `source=select` and candidate-backed values as same-modal candidate
   selection, including SMS read/reply index candidates from known `AT+CMGL` /
   `sms-receive-check` message rows. Current product-known candidate names are
@@ -248,23 +273,29 @@ Tests should cover at least:
   network I/O to populate candidates, and render-buffer coverage should prove
   that candidate provenance and count are visible.
 - TUI candidate action keyboard behavior: when no candidates are loaded for an
-  active candidate-backed value, the modal shows selectable product actions that
-  obtain candidates and `Enter` executes the selected action through the normal
-  command/Sequence path instead of hidden I/O. When candidates are already
-  loaded, the same product actions remain selectable as explicit refresh/load
-  actions for that candidate source, so stale SMS or PDP candidates can be
-  updated without leaving the modal. If the selected action requires execution
-  confirmation, confirmation stays inside the same `Run Sequence` modal.
-  Candidate action failure is reported as action failure, with full detail in
-  Response and concise `Action` state in compact Status; it must not mark the
-  selected Sequence body as failed.
+  active candidate-backed value, the modal shows the referenced existing
+  Presets or Sequences and `Enter` executes the selected item through its normal
+  path instead of hidden I/O. When candidates are already loaded, the same
+  references remain selectable as explicit refresh/load actions for that
+  candidate source. If the selected provider requires confirmation,
+  confirmation stays inside the same `Run Sequence` modal. Provider failure is
+  reported as action failure, with full detail in Response and concise
+  `Action` state in compact Status; it must not mark the selected Sequence body
+  as failed.
+- Interactive CLI Sequence input must offer the same manual-entry and referenced
+  provider choices. Non-interactive and JSON Sequence execution must stop with
+  provider and `--param` guidance and must not perform hidden acquisition. Tests
+  for direct `send`, `preset run`, and PTY must preserve their direct topology:
+  those entry points do not resolve Sequence parameters or run candidate
+  providers.
 - TUI candidate-selection keyboard behavior for candidate-backed values:
   candidate rows render in the `Run Sequence` modal, `Up` / `Down` move through
   candidate rows and visible candidate actions, the visible window follows the
   highlighted candidate when there are more candidates than fit, `Enter`
-  selects a candidate or runs a highlighted candidate action, manual typing
-  remains available, and repeated `Enter` continues the Sequence input flow
-  after the value is resolved.
+  accepts a candidate and continues to the next value or final review in the
+  same keystroke, or runs a highlighted candidate action. Candidate action
+  completion returns to the modal without selecting a value. Manual typing
+  remains available.
 - SMS candidate rows must label modem-returned storage locations as storage
   indexes and must not infer or normalize 0-based or 1-based numbering. Any
   candidate-window range label must be visibly separate from the modem storage
@@ -308,9 +339,10 @@ Tests should cover at least:
 - Sequence text transcript positive assertions for single blank-line separation
   between origin sections and no decorative divider lines in normal output.
 - Raw diagnostic export events for multi-step Sequence execution.
-- TUI Sequence list rendering with identity-first rows and exception-only
-  confirmation warnings, phase-specific modal input/review styling, structured
-  known/unknown confirmation content, running state, transcript display,
+- TUI Sequence list rendering with identity-first rows and `[confirm]`
+  action-flow tags only for confirmation-required items, phase-specific modal
+  input/review styling, structured known/unknown confirmation content, running
+  state, transcript display,
   separated output-masking state, masked copy/export, unmasked `copy` and
   `export` confirmation, whole-surface modal controls, exact destination
   identity, and no additional permanent pane. Modal verification must prove

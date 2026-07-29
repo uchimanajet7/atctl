@@ -125,11 +125,55 @@ pub enum SequenceCandidateSource {
     PdpContext,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SequenceCandidateProviderKind {
+    Preset,
+    Sequence,
+}
+
+impl SequenceCandidateProviderKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Preset => "Preset",
+            Self::Sequence => "Sequence",
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct SequenceCandidateProvider {
+    pub kind: SequenceCandidateProviderKind,
+    pub name: &'static str,
+}
+
 impl SequenceCandidateSource {
     pub fn label(self) -> &'static str {
         match self {
             Self::SmsMessage => "sms-message",
             Self::PdpContext => "pdp-context",
+        }
+    }
+
+    pub fn providers(self) -> &'static [SequenceCandidateProvider] {
+        const SMS_MESSAGE: &[SequenceCandidateProvider] = &[SequenceCandidateProvider {
+            kind: SequenceCandidateProviderKind::Sequence,
+            name: "sms-receive-check",
+        }];
+        const PDP_CONTEXT: &[SequenceCandidateProvider] = &[
+            SequenceCandidateProvider {
+                kind: SequenceCandidateProviderKind::Preset,
+                name: "active-pdp-contexts",
+            },
+            SequenceCandidateProvider {
+                kind: SequenceCandidateProviderKind::Preset,
+                name: "pdp-contexts",
+            },
+        ];
+
+        match self {
+            Self::SmsMessage => SMS_MESSAGE,
+            Self::PdpContext => PDP_CONTEXT,
         }
     }
 }

@@ -33,18 +33,23 @@ consequences before the operator chooses whether to proceed.
 
 ## Before USB Access
 
-- Command rows use `name │ AT: command`; Sequence rows use
-  `name │ Purpose: preview`. The one-row list preserves the complete warning
-  before shortening the name or preview. Press `d` for complete command or
-  purpose details without contacting the modem. Only rows that need attention
-  append `! Confirmation required` or
-  `! Confirmation required (effects unknown)`. Detailed dimensions belong in
-  confirmation and structured output, not in a scalar row badge.
+- Human CLI lists and TUI rows show the name and AT command or purpose preview.
+  A row appends the complete ASCII tag `[confirm]` only when execution requires
+  explicit confirmation. Mixed result sets reserve a fixed trailing lane for
+  every row, align each displayed tag there, and leave it blank on
+  confirmation-free rows; a result set with no confirmation-required item
+  reclaims the space. The preview is shortened before the name and the tag is
+  never split. TUI candidate-acquisition actions use the same derived tag and
+  alignment rule. The TUI uses color only as reinforcement and retains the full
+  bold text in no-color mode. The tag describes the next interaction, not risk
+  severity. CLI `show` and TUI
+  `d Details` expose the complete review without contacting the modem.
+  Compact Status does not repeat selection-time review metadata.
 - Known observations without a material effect may execute directly. Sensitive
   output and normal logs remain masked by default.
 - Known material operations require `run` confirmation before USB access.
 - Unknown operations require `unknown` confirmation, begin with
-  `! Effects are not fully known`, and separate known information, possible
+  `Effects are not fully known.`, and separate known information, possible
   consequences, and what is not established.
 - Direct `atctl send`, presets, and Sequences use the same product-derived
   execution review. Preset and Sequence files do not declare or override it.
@@ -212,12 +217,15 @@ defaults are provided for modem-dependent values, add-on Sequence definitions
 should use product-known candidate assistance only for standard values the
 product can parse generically, such as PDP contexts from `AT+CGACT?` and
 `AT+CGDCONT?`. Vendor-specific checks such as Quectel socket state must remain
-explicit add-on commands or Sequences. Selecting a candidate action must use
-the normal command or Sequence execution path; it must not bypass execution
-review, confirmation, masking, timeout, Response transcript, or
-logging behavior. Candidate actions remain explicit refresh/load actions even
-after same-session candidates are visible; opening a modal must not perform
-hidden modem I/O to make candidates look current.
+explicit add-on commands or Sequences. Candidate acquisition must reference the
+existing Preset or Sequence that owns the operation; it must not copy an AT
+command into a second candidate-only definition. Selecting a provider must use
+that item's normal execution path and must not bypass execution review,
+confirmation, masking, timeout, Response transcript, logging, or raw diagnostic
+export behavior. Candidate actions remain explicit refresh/load actions even
+after same-session candidates are visible; opening a modal or encountering a
+missing non-interactive CLI value must not perform hidden modem I/O to make
+candidates look current.
 During confirmed Quectel TCP/IP Sequence execution, PDP context activation must
 be state-aware: check `AT+QIACT?`, reuse the selected context when it is already
 active, and send `AT+QIACT=<contextID>` only when activation is needed. If a
@@ -252,7 +260,7 @@ diagnosis and may take longer because it can scan available carrier / RAT
 options.
 
 Long runtime is not by itself an operation effect. Known long-running presets
-may carry a timeout hint, and an explicit timeout override does not change the
+may carry a timeout hint, and an explicit timeout value does not change the
 operation assessment.
 
 See [Timeout](TROUBLESHOOTING.md#timeout) for the task-oriented recovery path

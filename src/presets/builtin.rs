@@ -18,7 +18,7 @@ fn builtin_definitions() -> Vec<PresetDefinition> {
         preset_definition("radio-stack", "AT+WS46?", ["network"]),
         preset_definition("radio-stack-capabilities", "AT+WS46=?", ["network"]),
         preset_definition("current-operator", "AT+COPS?", ["network"]),
-        preset_definition_with_timeout("available-operators", "AT+COPS=?", ["network"], 180),
+        preset_definition_with_timeout("available-operators", "AT+COPS=?", ["network"], 240),
         preset_definition("operator-format-numeric", "AT+COPS=3,2", ["network"]),
         preset_definition("operator-auto-selection", "AT+COPS=0", ["network"]),
         preset_definition("circuit-registration", "AT+CREG?", ["network"]),
@@ -252,6 +252,6 @@ mod tests {
             .find(|preset| preset.name == "available-operators")
             .expect("available-operators preset");
 
-        assert_eq!(preset.timeout_secs, Some(180));
+        assert_eq!(preset.timeout_secs, Some(240));
     }
 }

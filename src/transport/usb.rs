@@ -14,7 +14,7 @@ const READ_BUFFER_SIZE: usize = 4096;
 pub struct UsbAtTransportConfig {
     pub filter: UsbDeviceFilter,
     pub manual_pair: Option<EndpointPair>,
-    pub timeout: Duration,
+    pub write_timeout: Duration,
     pub probe_timeout: Duration,
 }
 
@@ -91,7 +91,7 @@ impl AtTransport for UsbAtTransport {
             handle,
             selected_pair.bulk_out,
             command.as_bytes(),
-            self.config.timeout,
+            self.config.write_timeout,
         )
     }
 
@@ -218,7 +218,9 @@ fn probe_candidate(
         if response.status.is_terminal() {
             Ok(())
         } else {
-            Err(Error::Timeout)
+            Err(Error::Timeout {
+                timeout_secs: timeout.as_secs().max(1),
+            })
         }
     });
 
@@ -288,7 +290,9 @@ fn read_bulk_response_until(
     loop {
         let elapsed = started.elapsed();
         if elapsed >= timeout {
-            return Err(Error::Timeout);
+            return Err(Error::Timeout {
+                timeout_secs: timeout.as_secs().max(1),
+            });
         }
 
         let remaining = timeout - elapsed;
@@ -301,7 +305,11 @@ fn read_bulk_response_until(
                     return Ok(raw);
                 }
             }
-            Err(rusb::Error::Timeout) => return Err(Error::Timeout),
+            Err(rusb::Error::Timeout) => {
+                return Err(Error::Timeout {
+                    timeout_secs: timeout.as_secs().max(1),
+                });
+            }
             Err(error) => return Err(error.into()),
         }
     }

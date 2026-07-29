@@ -352,7 +352,7 @@ mod tests {
             review: &review,
             duration: Duration::from_millis(30),
             stage: "read_response",
-            error: "AT response timed out",
+            error: "AT operation timed out after 30 seconds.",
             tx_bytes: b"AT+COPS?\r",
             rx_bytes: b"",
         })
@@ -361,6 +361,7 @@ mod tests {
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("\"event\":\"transport_error\""));
         assert!(contents.contains("\"stage\":\"read_response\""));
+        assert!(contents.contains("AT operation timed out after 30 seconds."));
         assert!(contents.contains("\"tx_base64\":\"QVQrQ09QUz8N\""));
     }
 

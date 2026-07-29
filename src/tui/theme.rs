@@ -7,6 +7,7 @@ pub(super) enum TuiStyleRole {
     Background,
     Text,
     Emphasis,
+    ConfirmationFlow,
     Focus,
     Selected,
     Status,
@@ -17,10 +18,11 @@ pub(super) enum TuiStyleRole {
 }
 
 #[cfg(test)]
-pub(super) const REQUIRED_STYLE_ROLES: [TuiStyleRole; 9] = [
+pub(super) const REQUIRED_STYLE_ROLES: [TuiStyleRole; 10] = [
     TuiStyleRole::Background,
     TuiStyleRole::Text,
     TuiStyleRole::Emphasis,
+    TuiStyleRole::ConfirmationFlow,
     TuiStyleRole::Focus,
     TuiStyleRole::Selected,
     TuiStyleRole::Status,
@@ -102,6 +104,7 @@ impl TuiTheme {
 struct Palette {
     background: Color,
     text: Color,
+    confirmation_flow: Color,
     focus: Color,
     selected: Color,
     warning: Color,
@@ -117,6 +120,7 @@ fn dark_palette() -> Palette {
     Palette {
         background: rgb(0x26, 0x32, 0x38),
         text: rgb(0xec, 0xef, 0xf1),
+        confirmation_flow: rgb(0xbe, 0x95, 0xff),
         focus: rgb(0x4d, 0xd0, 0xe1),
         selected: rgb(0xff, 0xd5, 0x4f),
         warning: rgb(0xff, 0xd1, 0x66),
@@ -129,6 +133,7 @@ fn light_palette() -> Palette {
     Palette {
         background: rgb(0xfa, 0xfa, 0xfa),
         text: rgb(0x26, 0x32, 0x38),
+        confirmation_flow: rgb(0x69, 0x29, 0xc4),
         focus: rgb(0x00, 0x7c, 0x89),
         selected: rgb(0x7a, 0x5a, 0x00),
         warning: rgb(0x7a, 0x5a, 0x00),
@@ -143,6 +148,9 @@ fn palette_style(palette: Palette, role: TuiStyleRole) -> Style {
         TuiStyleRole::Background => base,
         TuiStyleRole::Text => base.fg(palette.text),
         TuiStyleRole::Emphasis => base.fg(palette.text).add_modifier(Modifier::BOLD),
+        TuiStyleRole::ConfirmationFlow => base
+            .fg(palette.confirmation_flow)
+            .add_modifier(Modifier::BOLD),
         TuiStyleRole::Focus => base.fg(palette.focus).add_modifier(Modifier::BOLD),
         TuiStyleRole::Selected => base.fg(palette.selected).add_modifier(Modifier::BOLD),
         TuiStyleRole::Status => base.fg(palette.focus),
@@ -156,6 +164,7 @@ fn no_color_style(role: TuiStyleRole) -> Style {
     match role {
         TuiStyleRole::Background | TuiStyleRole::Text => Style::default(),
         TuiStyleRole::Emphasis
+        | TuiStyleRole::ConfirmationFlow
         | TuiStyleRole::Focus
         | TuiStyleRole::Selected
         | TuiStyleRole::Warning

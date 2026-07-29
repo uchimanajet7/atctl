@@ -12,8 +12,10 @@ use crate::at::command::{command_with_terminator, has_embedded_command_framing};
 use crate::at::mask::{mask_declared_sensitive_value, mask_sensitive_values};
 use crate::at::parser::parse_response;
 use crate::at::response::AtStatus;
-use crate::at::review::{Assessment, ExecutionReview, review_direct_command};
-use crate::at::review::{is_prompt_required_command, is_supported_bridge_prompt_command};
+use crate::at::review::{
+    Assessment, ExecutionReview, UNKNOWN_EFFECTS_NOTICE, is_prompt_required_command,
+    is_supported_bridge_prompt_command, review_direct_command,
+};
 use crate::log::raw::{RawLogConfig, RawLogExchange, RawLogSink, RawLogTransportError};
 use crate::transport::traits::{AtTransport, ResponseMatcher};
 use crate::transport::usb::{UsbAtTransport, UsbAtTransportConfig};
@@ -261,7 +263,7 @@ where
     }
 
     if let Some(pending) = state.pending_confirmation.take() {
-        if line.trim() == confirmation_token(&pending.review) {
+        if line.trim() == pending.review.confirmation_token() {
             return execute_bridge_command_or_prompt(
                 transport,
                 writer,
@@ -341,6 +343,7 @@ where
             value: "missing complete payload before execution".to_owned(),
         })?;
         let mut raw_log = raw_log;
+        let deadline = Instant::now() + command_timeout;
         let action = execute_bridge_prompt_command(
             transport,
             writer,
@@ -352,11 +355,19 @@ where
         if action == BridgeLoopAction::Stop {
             return Ok(action);
         }
+        let payload_timeout = match remaining_command_timeout(deadline, command_timeout) {
+            Ok(timeout) => timeout,
+            Err(error) => {
+                write_bridge_transport_error(writer, &error, command_timeout)?;
+                return Err(error);
+            }
+        };
         return execute_bridge_payload(
             transport,
             writer,
             command,
             payload,
+            payload_timeout,
             command_timeout,
             review,
             raw_log,
@@ -364,6 +375,35 @@ where
     }
 
     execute_bridge_command(transport, writer, command, command_timeout, review, raw_log)
+}
+
+fn remaining_command_timeout(deadline: Instant, command_timeout: Duration) -> Result<Duration> {
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(AtctlError::Timeout {
+            timeout_secs: command_timeout.as_secs().max(1),
+        });
+    }
+    Ok(remaining)
+}
+
+fn write_bridge_transport_error<W>(
+    writer: &mut W,
+    error: &AtctlError,
+    command_timeout: Duration,
+) -> Result<()>
+where
+    W: Write,
+{
+    let message = if matches!(error, AtctlError::Timeout { .. }) {
+        format!(
+            "atctl: command timed out after {} seconds; bridge stopped because later modem output can no longer be matched safely.\r\n",
+            command_timeout.as_secs().max(1)
+        )
+    } else {
+        format!("atctl: bridge stopping after transport error: {error}\r\n")
+    };
+    write_pty_line(writer, &message).map(|_| ())
 }
 
 fn write_confirmation_prompt<W>(
@@ -405,7 +445,7 @@ where
         return Ok(BridgeLoopAction::Stop);
     }
     if review.assessment == Assessment::Unknown
-        && !write_prompt_line(writer, "! Effects are not fully known\r\n")?
+        && !write_prompt_line(writer, &format!("{UNKNOWN_EFFECTS_NOTICE}\r\n"))?
     {
         return Ok(BridgeLoopAction::Stop);
     }
@@ -423,7 +463,7 @@ where
         writer,
         &format!(
             "Type `{}` to continue, or send any other line to cancel.\r\n",
-            confirmation_token(review)
+            review.confirmation_token()
         ),
     )
 }
@@ -453,10 +493,7 @@ where
             &error,
             tx.as_bytes(),
         )?;
-        write_pty_line(
-            writer,
-            &format!("atctl: bridge stopping after transport error: {error}\r\n"),
-        )?;
+        write_bridge_transport_error(writer, &error, command_timeout)?;
         return Err(error);
     }
 
@@ -472,10 +509,7 @@ where
                 &error,
                 tx.as_bytes(),
             )?;
-            write_pty_line(
-                writer,
-                &format!("atctl: bridge stopping after transport error: {error}\r\n"),
-            )?;
+            write_bridge_transport_error(writer, &error, command_timeout)?;
             return Err(error);
         }
     };
@@ -523,10 +557,7 @@ where
             &error,
             tx.as_bytes(),
         )?;
-        write_pty_line(
-            writer,
-            &format!("atctl: bridge stopping after transport error: {error}\r\n"),
-        )?;
+        write_bridge_transport_error(writer, &error, command_timeout)?;
         return Err(error);
     }
 
@@ -543,10 +574,7 @@ where
                     &error,
                     tx.as_bytes(),
                 )?;
-                write_pty_line(
-                    writer,
-                    &format!("atctl: bridge stopping after transport error: {error}\r\n"),
-                )?;
+                write_bridge_transport_error(writer, &error, command_timeout)?;
                 return Err(error);
             }
         };
@@ -574,11 +602,13 @@ where
     Ok(BridgeLoopAction::Continue)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn execute_bridge_payload<T, W>(
     transport: &mut T,
     writer: &mut W,
     command: &str,
     payload: &str,
+    response_timeout: Duration,
     command_timeout: Duration,
     review: &ExecutionReview,
     raw_log: Option<&mut RawLogSink>,
@@ -599,14 +629,11 @@ where
             &error,
             tx.as_bytes(),
         )?;
-        write_pty_line(
-            writer,
-            &format!("atctl: bridge stopping after transport error: {error}\r\n"),
-        )?;
+        write_bridge_transport_error(writer, &error, command_timeout)?;
         return Err(error);
     }
 
-    let raw_response = match transport.read_response(command_timeout) {
+    let raw_response = match transport.read_response(response_timeout) {
         Ok(raw_response) => raw_response,
         Err(error) => {
             append_bridge_raw_error(
@@ -618,10 +645,7 @@ where
                 &error,
                 tx.as_bytes(),
             )?;
-            write_pty_line(
-                writer,
-                &format!("atctl: bridge stopping after transport error: {error}\r\n"),
-            )?;
+            write_bridge_transport_error(writer, &error, command_timeout)?;
             return Err(error);
         }
     };
@@ -679,14 +703,6 @@ fn append_bridge_raw_error(
         tx_bytes,
         rx_bytes: b"",
     })
-}
-
-fn confirmation_token(review: &ExecutionReview) -> &'static str {
-    if review.assessment == Assessment::Unknown {
-        "unknown"
-    } else {
-        "run"
-    }
 }
 
 fn ensure_current_review(review: &ExecutionReview, command: &str) -> Result<()> {
@@ -837,6 +853,93 @@ mod tests {
     use crate::transport::test_support::MockTransport;
 
     use super::*;
+
+    #[derive(Default)]
+    struct BudgetRecordingTransport {
+        written: Vec<String>,
+        timeouts: Vec<Duration>,
+    }
+
+    impl AtTransport for BudgetRecordingTransport {
+        fn open(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn write_command(&mut self, command: &str) -> Result<()> {
+            self.written.push(command.to_owned());
+            Ok(())
+        }
+
+        fn read_response(&mut self, timeout: Duration) -> Result<Vec<u8>> {
+            self.timeouts.push(timeout);
+            Ok(b"\r\n+CMGS: 12\r\n\r\nOK\r\n".to_vec())
+        }
+
+        fn read_until(&mut self, timeout: Duration, _matcher: ResponseMatcher) -> Result<Vec<u8>> {
+            self.timeouts.push(timeout);
+            std::thread::sleep(Duration::from_millis(20));
+            Ok(b"\r\n> ".to_vec())
+        }
+    }
+
+    #[test]
+    fn prompt_and_payload_response_share_one_command_timeout_budget() {
+        let command = "AT+CMGS=\"+819012345678\"";
+        let review = review_direct_command(command);
+        let mut transport = BudgetRecordingTransport::default();
+        let mut output = Vec::new();
+
+        let action = execute_bridge_command_or_prompt(
+            &mut transport,
+            &mut output,
+            command,
+            Some("hello"),
+            Duration::from_secs(1),
+            &review,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(action, BridgeLoopAction::Continue);
+        assert_eq!(transport.timeouts.len(), 2);
+        assert_eq!(transport.timeouts[0], Duration::from_secs(1));
+        assert!(transport.timeouts[1] < transport.timeouts[0]);
+        assert_eq!(
+            transport.written,
+            [
+                "AT+CMGS=\"+819012345678\"\r".to_owned(),
+                "hello\u{1a}".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn timeout_message_names_budget_and_stops_unsynchronized_bridge() {
+        let mut transport = MockTransport::with_responses(Vec::<Vec<u8>>::new());
+        let mut output = Vec::new();
+        let review = review_direct_command("AT");
+
+        let error = execute_bridge_command_or_prompt(
+            &mut transport,
+            &mut output,
+            "AT",
+            None,
+            Duration::from_secs(30),
+            &review,
+            None,
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, AtctlError::Timeout { timeout_secs: 30 }));
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "atctl: command timed out after 30 seconds; bridge stopped because later modem output can no longer be matched safely.\r\n"
+        );
+    }
 
     #[test]
     fn line_decoder_splits_cr_lf_and_ignores_empty_lines() {
@@ -1050,7 +1153,8 @@ mod tests {
 
         let prompt = String::from_utf8(output).unwrap();
         assert!(prompt.contains("AT command: AT+VENDOR=1"));
-        assert!(prompt.contains("! Effects are not fully known"));
+        assert!(prompt.contains("Effects are not fully known."));
+        assert!(!prompt.contains("! Effects are not fully known"));
         assert!(prompt.contains("Known:"));
         assert!(prompt.contains("Possible consequences:"));
         assert!(prompt.contains("Not established:"));

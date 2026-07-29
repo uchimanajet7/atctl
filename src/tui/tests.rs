@@ -83,6 +83,7 @@ fn q_is_text_in_text_and_acknowledgement_inputs() {
     state.edit_input = Some(EditInputState {
         input: String::new(),
         error: None,
+        timeout_secs: DEFAULT_COMMAND_TIMEOUT_SECS,
     });
     handle_key_code(&mut state, KeyCode::Char('q'));
     assert_eq!(
@@ -216,7 +217,7 @@ fn help_shows_complete_confirmation_grammar() {
 
     let buffer = rendered_buffer(&mut state, 100, 32);
 
-    assert!(buffer.contains("Rows: confirmation warnings appear only when required"));
+    assert!(buffer.contains("Rows: [confirm] opens confirmation before execution"));
     assert!(buffer.contains("Confirm known operation: run"));
     assert!(buffer.contains("Confirm unknown operation: unknown"));
     assert!(buffer.contains("Unmasked Response: copy / export confirmation"));
@@ -324,6 +325,7 @@ fn escape_dismisses_every_atctl_owned_modal_state() {
     state.edit_input = Some(EditInputState {
         input: "AT".to_owned(),
         error: None,
+        timeout_secs: DEFAULT_COMMAND_TIMEOUT_SECS,
     });
     handle_key_code(&mut state, KeyCode::Esc);
     assert!(state.edit_input.is_none());
@@ -442,7 +444,8 @@ fn controls_render_as_actions_not_status_table() {
 
     assert!(buffer.contains("AT command"));
     assert!(buffer.contains("Edit selected"));
-    assert!(buffer.contains("Timeout 30s"));
+    assert!(buffer.contains("Timeout"));
+    assert!(!buffer.contains("Timeout 30s"));
     assert!(buffer.contains("Start raw export"));
     assert!(buffer.contains("Output masking on"));
     assert!(!buffer.contains("Rerun last"));
@@ -788,8 +791,170 @@ fn mixed_commands_and_sequences_group_kind_then_non_default_source_titles() {
     );
     let status_buffer = rendered_buffer(&mut state, 120, 32);
     assert!(status_buffer.contains("Selected Sequence:"));
-    assert!(status_buffer.contains("Source: Quectel"));
+    assert!(!status_buffer.contains("Run: confirmation required"));
+    assert!(!status_buffer.contains("Risk: effects unknown"));
     assert!(!status_buffer.contains("Sequence set: Quectel Sequences"));
+}
+
+#[test]
+fn executable_discovery_adjacent_states_render_across_all_themes() {
+    let repository_sequence = crate::sequences::loader::parse_sequences(include_str!(
+        "../../examples/sequences/soracom.toml"
+    ))
+    .unwrap()
+    .into_iter()
+    .find(|sequence| sequence.name == "soracom-ping-check")
+    .expect("repository-managed SORACOM Sequence");
+
+    for theme in [TuiTheme::dark(), TuiTheme::light(), TuiTheme::no_color()] {
+        let mut product_commands = TuiState::new(
+            vec![
+                Preset::built_in("inspect", "AT", ["review"]),
+                Preset::built_in("change", "AT+CMEE=2", ["review"]),
+                Preset::built_in("unknown", "AT+VENDOR=1", ["review"]),
+            ],
+            vec![test_usb_device(1, 3, "Onyx A")],
+            Vec::new(),
+            theme,
+        );
+        let product_buffer = rendered_buffer(&mut product_commands, 160, 32);
+        let product_compact = product_buffer
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(product_compact.contains("> inspect AT"));
+        assert!(product_compact.contains("change AT+CMEE=2 [confirm]"));
+        assert!(product_compact.contains("unknown AT+VENDOR=1 [confirm]"));
+        assert!(!product_buffer.contains("│ AT:"));
+        assert!(!product_buffer.contains("│ Purpose:"));
+        assert!(!product_buffer.contains("! Confirmation required"));
+        assert!(!product_buffer.contains("Product presets"));
+
+        let product_sequence = Sequence::built_in(
+            "product-inspection",
+            "Inspect modem response through a product Sequence.",
+            vec!["review".to_owned()],
+            Some(30),
+            Vec::new(),
+            vec![test_sequence_step("AT")],
+        );
+        let mut mixed = TuiState::new_with_all_usb(
+            executable_items(
+                vec![
+                    Preset::built_in("product-command", "AT", ["review"]),
+                    Preset::new(
+                        "external-command",
+                        "AT+QCCID",
+                        vec!["review".to_owned()],
+                        PresetOrigin::file("External commands", "external-commands.toml", None),
+                    ),
+                ],
+                vec![product_sequence, repository_sequence.clone()],
+            ),
+            vec![test_usb_device(1, 3, "Onyx A")],
+            vec![test_usb_device(1, 3, "Onyx A")],
+            Vec::new(),
+            theme,
+        );
+        let mixed_buffer = rendered_buffer(&mut mixed, 180, 44);
+        assert!(mixed_buffer.contains("Commands / Sequences"));
+        assert!(mixed_buffer.contains("Commands"));
+        assert!(mixed_buffer.contains("Sequences"));
+        assert!(mixed_buffer.contains("External commands"));
+        assert!(mixed_buffer.contains("SORACOM Sequences"));
+        assert!(mixed_buffer.contains("product-command"));
+        assert!(mixed_buffer.contains("product-inspection"));
+        assert!(mixed_buffer.contains("soracom-ping-check"));
+        assert!(!mixed_buffer.contains("Product presets"));
+        assert!(!mixed_buffer.contains("Product Sequences"));
+
+        mixed.selected_command = mixed
+            .visible_commands()
+            .iter()
+            .position(|command| command.name() == "soracom-ping-check")
+            .expect("repository-managed Sequence row");
+        rendered_buffer(&mut mixed, 180, 44);
+        handle_key_code(&mut mixed, KeyCode::Char('d'));
+        let details_buffer = rendered_buffer(&mut mixed, 180, 44);
+        assert!(details_buffer.contains("Type: Sequence"));
+        assert!(details_buffer.contains("Name: soracom-ping-check"));
+        assert!(details_buffer.contains("Source: SORACOM Sequences"));
+        assert!(details_buffer.contains("File: <inline>"));
+        let mut complete_details = details_buffer;
+        for _ in 0..6 {
+            handle_key_code(&mut mixed, KeyCode::PageDown);
+            complete_details.push_str(&rendered_buffer(&mut mixed, 180, 44));
+        }
+        assert!(complete_details.contains("Before running:"));
+        assert!(complete_details.contains("Inputs:"));
+        assert!(complete_details.contains("Execution:"));
+        assert!(complete_details.contains("Timeout: 120 seconds"));
+
+        let review_sequence = Sequence::built_in(
+            "review-observation",
+            "Review an observation before execution.",
+            vec!["review".to_owned()],
+            Some(30),
+            vec![SequenceParam {
+                name: "note".to_owned(),
+                label: "Note".to_owned(),
+                required: true,
+                sensitive: false,
+                default_value: None,
+                source: SequenceParamSource::User,
+                candidate: None,
+                hint: None,
+            }],
+            vec![test_sequence_step("AT+CSQ")],
+        );
+        let mut review = TuiState::new_with_all_usb(
+            executable_items(Vec::new(), vec![review_sequence]),
+            vec![test_usb_device(1, 3, "Onyx A")],
+            vec![test_usb_device(1, 3, "Onyx A")],
+            Vec::new(),
+            theme,
+        );
+        handle_key_code(&mut review, KeyCode::Enter);
+        for value in "observed".chars() {
+            handle_key_code(&mut review, KeyCode::Char(value));
+        }
+        handle_key_code(&mut review, KeyCode::Enter);
+        let review_buffer = rendered_buffer(&mut review, 160, 44);
+        assert!(review_buffer.contains("Review Sequence: review-observation"));
+        assert!(review_buffer.contains("Review 1-"));
+        assert!(review_buffer.contains("Resolved values:"));
+        assert!(!review_buffer.contains("Purpose: Review an observation before execution."));
+
+        let confirmation_sequence = Sequence::built_in(
+            "confirm-state-change",
+            "Confirm a known modem state change.",
+            vec!["review".to_owned()],
+            Some(30),
+            Vec::new(),
+            vec![test_sequence_step("AT+CFUN=1")],
+        );
+        let mut confirmation = TuiState::new_with_all_usb(
+            executable_items(Vec::new(), vec![confirmation_sequence]),
+            vec![test_usb_device(1, 3, "Onyx A")],
+            vec![test_usb_device(1, 3, "Onyx A")],
+            Vec::new(),
+            theme,
+        );
+        handle_key_code(&mut confirmation, KeyCode::Enter);
+        let confirmation_buffer = rendered_buffer(&mut confirmation, 160, 44);
+        assert!(confirmation_buffer.contains("Confirm Sequence: confirm-state-change"));
+        assert!(confirmation_buffer.contains("Review 1-"));
+        assert!(!confirmation_buffer.contains("Purpose: Confirm a known modem state change."));
+        assert!(confirmation_buffer.contains("Type `run` to run."));
+
+        let resize_buffer = rendered_buffer(&mut confirmation, 140, 5);
+        assert!(
+            resize_buffer.contains("Executable details cannot fit safely."),
+            "{:?}: {resize_buffer}",
+            theme.mode()
+        );
+        assert!(resize_buffer.contains("Resize the terminal to continue."));
+    }
 }
 
 #[test]
@@ -1121,7 +1286,7 @@ fn executable_details_is_read_only_scrollable_and_restores_discovery_state() {
     assert!(state.pending_execution.is_none());
     assert!(state.running_execution.is_none());
     let initial = rendered_buffer(&mut state, 160, 14);
-    assert!(initial.contains("Details 1-"));
+    assert!(initial.contains("Details · Overview 1-"));
     assert!(initial.contains("Type: Sequence"));
     assert!(initial.contains("Name: review-flow"));
     assert!(initial.contains("Purpose:"));
@@ -1145,6 +1310,10 @@ fn executable_details_is_read_only_scrollable_and_restores_discovery_state() {
         detail_pages.push_str(&rendered_buffer(&mut state, 160, 14));
     }
     let _final_page = rendered_buffer(&mut state, 160, 14);
+    assert!(detail_pages.contains("Overview:"));
+    assert!(detail_pages.contains("Definition:"));
+    assert!(detail_pages.contains("Execution:"));
+    assert!(detail_pages.contains("Details · Definition"));
     assert!(detail_pages.contains("Search match: Category: sms"));
     assert!(
         state
@@ -1177,9 +1346,9 @@ fn command_details_shows_complete_identity_and_non_default_source_without_device
     );
     state.search_query = "external command set".to_owned();
 
-    rendered_buffer(&mut state, 160, 24);
+    rendered_buffer(&mut state, 160, 44);
     handle_key_code(&mut state, KeyCode::Char('d'));
-    let buffer = rendered_buffer(&mut state, 160, 24);
+    let buffer = rendered_buffer(&mut state, 160, 44);
 
     assert!(buffer.contains("Type: Command"));
     assert!(buffer.contains("Name: external-command-with-a-long-name"));
@@ -1187,10 +1356,197 @@ fn command_details_shows_complete_identity_and_non_default_source_without_device
     assert!(buffer.contains("Source: External command set"));
     assert!(buffer.contains("File: /tmp/external-commands.toml"));
     assert!(buffer.contains("Search match: Source: External command set"));
+    assert!(!buffer.contains("Run: confirmation required"));
+    assert!(!buffer.contains("Risk: effects unknown"));
     assert!(buffer.contains("Categories: diagnostics"));
-    assert!(buffer.contains("Timeout: 30 seconds (default)"));
-    assert!(buffer.contains("Execution review:"));
+    assert!(buffer.contains("Timeout: 30 seconds"));
+    assert!(!buffer.contains("seconds (default)"));
+    assert_contains_in_order(&buffer, &["Overview:", "Definition:", "Execution:"]);
+    assert!(!buffer.contains("Before running:"));
+    assert!(!buffer.contains("Inputs:"));
+    assert!(!buffer.contains("Execution review:"));
+    assert!(buffer.contains("Assessment: unknown"));
+    assert!(buffer.contains("Effects are not fully known."));
+    assert!(buffer.contains("Confirmation: required"));
     assert!(state.pending_execution.is_none());
+}
+
+#[test]
+fn details_timeout_matches_effective_command_and_sequence_timeout() {
+    let cases = vec![
+        (
+            "command product default",
+            ExecutableItem::Preset(Preset::new_with_timeout(
+                "command-default",
+                "AT",
+                vec!["review".to_owned()],
+                PresetOrigin::BuiltIn,
+                None,
+            )),
+            None,
+            "Timeout: 30 seconds",
+        ),
+        (
+            "command item timeout",
+            ExecutableItem::Preset(Preset::new_with_timeout(
+                "command-item-timeout",
+                "AT",
+                vec!["review".to_owned()],
+                PresetOrigin::BuiltIn,
+                Some(75),
+            )),
+            None,
+            "Timeout: 75 seconds",
+        ),
+        (
+            "command session timeout",
+            ExecutableItem::Preset(Preset::new_with_timeout(
+                "command-session-timeout",
+                "AT",
+                vec!["review".to_owned()],
+                PresetOrigin::BuiltIn,
+                Some(75),
+            )),
+            Some(120),
+            "Timeout: 120 seconds",
+        ),
+        (
+            "Sequence product default",
+            ExecutableItem::Sequence(Sequence::built_in(
+                "sequence-default",
+                "Inspect modem response.",
+                vec!["review".to_owned()],
+                None,
+                Vec::new(),
+                vec![test_sequence_step("AT")],
+            )),
+            None,
+            "Timeout: 30 seconds",
+        ),
+        (
+            "Sequence item timeout",
+            ExecutableItem::Sequence(Sequence::built_in(
+                "sequence-item-timeout",
+                "Inspect modem response.",
+                vec!["review".to_owned()],
+                Some(90),
+                Vec::new(),
+                vec![test_sequence_step("AT")],
+            )),
+            None,
+            "Timeout: 90 seconds",
+        ),
+        (
+            "Sequence session timeout",
+            ExecutableItem::Sequence(Sequence::built_in(
+                "sequence-session-timeout",
+                "Inspect modem response.",
+                vec!["review".to_owned()],
+                Some(90),
+                Vec::new(),
+                vec![test_sequence_step("AT")],
+            )),
+            Some(150),
+            "Timeout: 150 seconds",
+        ),
+    ];
+
+    for (case, item, session_timeout, expected) in cases {
+        let mut state = TuiState::new_with_all_usb(
+            vec![item],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            TuiTheme::dark(),
+        );
+        state.timeout_override_secs = session_timeout;
+
+        rendered_buffer(&mut state, 160, 24);
+        handle_key_code(&mut state, KeyCode::Char('d'));
+        let buffer = rendered_buffer(&mut state, 160, 24);
+
+        assert!(buffer.contains(expected), "{case}: {buffer}");
+        assert!(!buffer.contains("seconds (default)"), "{case}: {buffer}");
+    }
+}
+
+#[test]
+fn built_in_source_metadata_is_not_searchable_or_disclosed() {
+    let cases = vec![
+        (
+            ExecutableItem::Preset(Preset::built_in("product-command", "AT", ["review"])),
+            "Product presets",
+        ),
+        (
+            ExecutableItem::Sequence(Sequence::built_in(
+                "product-sequence",
+                "Inspect modem response.",
+                vec!["review".to_owned()],
+                Some(30),
+                Vec::new(),
+                vec![test_sequence_step("AT")],
+            )),
+            "Product Sequences",
+        ),
+    ];
+
+    for (item, source_label) in cases {
+        assert!(!command_matches_search(&item, source_label));
+        assert_eq!(hidden_search_match(&item, source_label, item.name()), None);
+
+        let mut state = TuiState::new_with_all_usb(
+            vec![item],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            TuiTheme::dark(),
+        );
+        state.search_query = source_label.to_owned();
+
+        assert!(state.visible_commands().is_empty());
+        let empty_buffer = rendered_buffer(&mut state, 160, 24);
+        assert!(
+            empty_buffer.contains(&format!("No commands or Sequences match `{source_label}`."))
+        );
+
+        state.search_query.clear();
+        rendered_buffer(&mut state, 160, 24);
+        handle_key_code(&mut state, KeyCode::Char('d'));
+        let details_buffer = rendered_buffer(&mut state, 160, 24);
+
+        assert!(!details_buffer.contains("Source:"));
+        assert!(!details_buffer.contains("Search match: Source:"));
+        assert!(!details_buffer.contains(source_label));
+    }
+}
+
+#[test]
+fn repository_managed_sequence_source_is_searchable_and_disclosed() {
+    let sequence = crate::sequences::loader::parse_sequences(include_str!(
+        "../../examples/sequences/soracom.toml"
+    ))
+    .unwrap()
+    .into_iter()
+    .find(|sequence| sequence.name == "soracom-ping-check")
+    .expect("repository-managed SORACOM Sequence");
+    let mut state = TuiState::new_with_all_usb(
+        executable_items(Vec::new(), vec![sequence]),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+    state.search_query = "SORACOM Sequences".to_owned();
+
+    assert_eq!(state.visible_commands().len(), 1);
+    rendered_buffer(&mut state, 160, 30);
+    handle_key_code(&mut state, KeyCode::Char('d'));
+    let buffer = rendered_buffer(&mut state, 160, 30);
+
+    assert!(buffer.contains("Name: soracom-ping-check"));
+    assert!(buffer.contains("Source: SORACOM Sequences"));
+    assert!(buffer.contains("File: <inline>"));
+    assert!(buffer.contains("Search match: Source: SORACOM Sequences"));
 }
 
 #[test]
@@ -1238,7 +1594,8 @@ fn sequence_rows_are_selectable_from_commands_pane() {
 
     assert!(buffer.contains("Commands / Sequences"));
     assert!(buffer.contains("sms-send-check"));
-    assert!(buffer.contains("│ Purpose:"));
+    assert!(buffer.contains("[confirm]"));
+    assert!(!buffer.contains("│ Purpose:"));
     assert!(!buffer.contains("Product Sequences"));
 }
 
@@ -1256,8 +1613,10 @@ fn selected_sequence_status_does_not_show_summary_text() {
 
     assert!(buffer.contains("Selected Sequence:"));
     assert!(buffer.contains("sms-receive-check"));
+    assert!(!buffer.contains("Run: confirmation required"));
     assert!(!buffer.contains("Confirmation:"));
     assert!(!buffer.contains("Assessment:"));
+    assert!(!buffer.contains("Risk: effects unknown"));
     assert!(!buffer.contains("Summary:"));
     assert!(!buffer.contains("List received SMS material"));
 }
@@ -1360,6 +1719,72 @@ fn failed_sequence_status_keeps_full_error_out_of_compact_status() {
 }
 
 #[test]
+fn timeout_failure_keeps_status_concise_and_guidance_in_response() {
+    let mut state = test_state();
+    let item = state.selected_command().cloned().expect("selected command");
+    state.running_execution = Some(RunningExecution {
+        started_at: Instant::now(),
+        timeout: Duration::from_secs(75),
+    });
+
+    finish_execution_result(
+        &mut state,
+        item,
+        75,
+        Err(AtctlError::Timeout { timeout_secs: 75 }),
+    );
+
+    let status = rendered_status_buffer(&mut state, 96, 12);
+    assert!(status.contains("Status: failed"));
+    assert!(status.contains("Result: failed"));
+    assert!(!status.contains("Timed out after"));
+    assert!(!status.contains("modem may still"));
+    assert!(
+        state
+            .response
+            .contains("Result: failed\n\nTimed out after 75 seconds.")
+    );
+    assert!(
+        state
+            .response
+            .contains("The modem may still be processing the operation.")
+    );
+    assert!(
+        state
+            .response
+            .contains("Wait for it to settle before deciding whether to retry.")
+    );
+}
+
+#[test]
+fn sequence_timeout_failure_identifies_step_in_response_only() {
+    let mut state = test_state_with_sequences();
+    let item = state
+        .commands
+        .iter()
+        .find(|item| item.as_sequence().is_some())
+        .cloned()
+        .expect("Sequence");
+
+    finish_execution_result(
+        &mut state,
+        item,
+        120,
+        Err(AtctlError::SequenceStepTimeout {
+            sequence: "sms-send-check".to_owned(),
+            step: "submit-message".to_owned(),
+            timeout_secs: 45,
+        }),
+    );
+
+    let status = rendered_status_buffer(&mut state, 96, 12);
+    assert!(status.contains("Result: failed"));
+    assert!(!status.contains("submit-message"));
+    assert!(state.response.contains("Timed out after 45 seconds."));
+    assert!(state.response.contains("Sequence step: submit-message"));
+}
+
+#[test]
 fn sequence_error_status_is_failed_state_even_when_transcript_exists() {
     let mut state = test_state_with_sequences();
     let mut executor = TestExecutor {
@@ -1429,9 +1854,24 @@ fn run_sequence_modal_collects_params_and_confirmation_before_execution() {
     assert!(state.sequence_input.is_some());
     assert!(state.pending_execution.is_none());
     let buffer = rendered_buffer(&mut state, 120, 32);
-    assert!(buffer.contains("Run Sequence"));
+    assert!(buffer.contains("Run Sequence: sms-send-check"));
+    assert!(buffer.contains("Value 1 of 2"));
     assert!(buffer.contains("Recipient"));
-    assert!(buffer.contains("Message body"));
+    assert!(!buffer.contains("Message body"));
+    assert!(!buffer.contains("Details "));
+    assert!(buffer.contains("Enter: Next value (2 of 2)."));
+
+    handle_key_code(&mut state, KeyCode::Enter);
+    assert_eq!(
+        state
+            .sequence_input
+            .as_ref()
+            .map(|input| input.active_param),
+        Some(0)
+    );
+    let validation_buffer = rendered_buffer(&mut state, 120, 32);
+    assert!(validation_buffer.contains("Value 1 of 2"));
+    assert!(validation_buffer.contains("Error:"));
 
     for value in "+819012345678".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
@@ -1439,6 +1879,9 @@ fn run_sequence_modal_collects_params_and_confirmation_before_execution() {
     let input_buffer = rendered_buffer(&mut state, 120, 32);
     assert!(input_buffer.contains("+819012345678"));
     handle_key_code(&mut state, KeyCode::Enter);
+    let second_value_buffer = rendered_buffer(&mut state, 120, 32);
+    assert!(second_value_buffer.contains("Value 2 of 2"));
+    assert!(second_value_buffer.contains("Enter: Review Sequence."));
     for value in "hello from atctl".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
@@ -1448,7 +1891,10 @@ fn run_sequence_modal_collects_params_and_confirmation_before_execution() {
         Some(SequenceInputPhase::Confirmation)
     );
     let confirmation_buffer = rendered_buffer(&mut state, 120, 32);
-    assert!(confirmation_buffer.contains("Review:"));
+    assert!(confirmation_buffer.contains("Review 1-"));
+    assert!(confirmation_buffer.contains("Resolved values:"));
+    assert!(confirmation_buffer.contains("Operation:"));
+    assert!(!confirmation_buffer.contains("Value 2 of 2"));
     assert!(confirmation_buffer.contains("Destination"));
     assert!(confirmation_buffer.contains("+819012345678"));
     assert!(confirmation_buffer.contains("Message body"));
@@ -1496,36 +1942,42 @@ fn run_sequence_modal_shows_value_sources_defaults_and_hints() {
     .find(|sequence| sequence.name == "soracom-unified-endpoint-tcp-send-check")
     .unwrap();
     let mut state = TuiState::new_with_all_usb(
-        executable_items(Vec::new(), vec![sequence]),
+        executable_items(crate::presets::builtin::builtins(), vec![sequence]),
         vec![test_usb_device(1, 3, "Onyx A")],
         vec![test_usb_device(1, 3, "Onyx A")],
         Vec::new(),
         TuiTheme::dark(),
     );
+    state.selected_command = state
+        .visible_commands()
+        .iter()
+        .position(|item| item.name() == "soracom-unified-endpoint-tcp-send-check")
+        .expect("SORACOM Sequence");
 
     handle_key_code(&mut state, KeyCode::Enter);
 
     let buffer = rendered_buffer(&mut state, 140, 36);
-    assert!(buffer.contains("Run Sequence"));
-    assert!(buffer.contains("Values overview:"));
-    assert!(buffer.contains("PDP context ID: 1  default"));
-    assert!(buffer.contains("Socket connect ID: 0  default"));
-    assert!(buffer.contains("Payload (sensitive): <empty>  user"));
-    assert!(buffer.contains("Read length: 1500  default"));
-    let mut all_context_pages = buffer.clone();
-    for _ in 0..8 {
-        handle_key_code(&mut state, KeyCode::PageDown);
-        all_context_pages.push_str(&rendered_buffer(&mut state, 140, 36));
-    }
-    for _ in 0..8 {
-        handle_key_code(&mut state, KeyCode::PageUp);
-        rendered_buffer(&mut state, 140, 36);
-    }
-    assert!(all_context_pages.contains("Confirm the PDP context"));
-    assert!(all_context_pages.contains("During execution"));
-    assert!(all_context_pages.contains("AT+QIACT?"));
-    assert!(buffer.contains("Load active PDP contexts  AT+CGACT?"));
-    assert!(buffer.contains("Load PDP context definitions  AT+CGDCONT?"));
+    assert!(buffer.contains("Run Sequence: soracom-unified-endpoint-tcp-send-check"));
+    assert!(buffer.contains("Value 1 of 4"));
+    assert!(buffer.contains("PDP context ID"));
+    assert!(buffer.contains("> 1  default"));
+    assert!(buffer.contains("Confirm the PDP context"));
+    assert!(!buffer.contains("Values overview:"));
+    assert!(!buffer.contains("Socket connect ID: 0  default"));
+    assert!(!buffer.contains("Payload (sensitive): <empty>  user"));
+    assert!(!buffer.contains("Read length: 1500  default"));
+    assert!(!buffer.contains("During execution"));
+    assert!(!buffer.contains("Details "));
+    handle_key_code(&mut state, KeyCode::PageDown);
+    assert_eq!(
+        state
+            .sequence_input
+            .as_ref()
+            .map(|input| input.detail_scroll),
+        Some(0)
+    );
+    assert!(line_containing(&buffer, "Run active-pdp-contexts").contains("Preset"));
+    assert!(line_containing(&buffer, "Run pdp-contexts").contains("Preset"));
     assert!(!buffer.contains("Load Quectel PDP contexts  AT+QIACT?"));
 
     handle_key_code(&mut state, KeyCode::Down);
@@ -1547,20 +1999,42 @@ fn run_sequence_modal_shows_value_sources_defaults_and_hints() {
         Some(SequenceInputPhase::Confirmation)
     );
     let confirmation_buffer = rendered_buffer(&mut state, 140, 44);
-    assert!(confirmation_buffer.contains("Confirm Sequence"));
-    assert!(confirmation_buffer.contains("Values:"));
+    assert!(
+        confirmation_buffer.contains("Confirm Sequence: soracom-unified-endpoint-tcp-send-check")
+    );
+    assert!(!confirmation_buffer.contains("Value 1 of 4"));
+    assert!(!confirmation_buffer.contains("Value 4 of 4"));
+    assert!(confirmation_buffer.contains("Review 1-"));
+    assert!(confirmation_buffer.contains("Resolved values:"));
     assert!(confirmation_buffer.contains("PDP context ID: 1  default"));
     assert!(confirmation_buffer.contains("Socket connect ID: 0  default"));
     assert!(confirmation_buffer.contains("Payload (sensitive): hello  user"));
     assert!(confirmation_buffer.contains("Read length: 1500  default"));
+    assert!(confirmation_buffer.contains("Operation:"));
     assert!(confirmation_buffer.contains("Destination"));
     assert!(confirmation_buffer.contains("unified.soracom.io:23080"));
+    assert!(confirmation_buffer.contains("Before running:"));
+    assert!(confirmation_buffer.contains("Execution:"));
     assert!(confirmation_buffer.contains("What will happen:"));
     assert!(confirmation_buffer.contains("Type `run` to run."));
     assert!(confirmation_buffer.contains("Input: <empty>"));
+    assert_contains_in_order(
+        &confirmation_buffer,
+        &[
+            "Review 1-",
+            "Resolved values:",
+            "Operation:",
+            "Before running:",
+            "Execution:",
+            "What will happen:",
+            "Type `run` to run.",
+            "Input: <empty>",
+        ],
+    );
 
     let compact_confirmation_buffer = rendered_buffer(&mut state, 140, 24);
-    assert!(compact_confirmation_buffer.contains("Details "));
+    assert!(compact_confirmation_buffer.contains("Review "));
+    assert!(!compact_confirmation_buffer.contains("Details "));
     assert!(!compact_confirmation_buffer.contains("detail omitted"));
     assert!(compact_confirmation_buffer.contains("Type `run` to run."));
     assert!(compact_confirmation_buffer.contains("Input: <empty>"));
@@ -1582,7 +2056,7 @@ fn run_sequence_modal_shows_value_sources_defaults_and_hints() {
 }
 
 #[test]
-fn every_sequence_modal_phase_shows_complete_name_and_purpose() {
+fn every_sequence_modal_phase_keeps_identity_and_only_phase_relevant_content() {
     let mut params = test_state_with_sequences();
     params.selected_category = params
         .categories
@@ -1605,9 +2079,23 @@ fn every_sequence_modal_phase_shows_complete_name_and_purpose() {
     params.sequence_input.as_mut().expect("params phase").error =
         Some("Keep identity visible with an input error.".to_owned());
     let params_buffer = rendered_buffer(&mut params, 160, 44);
-    assert!(params_buffer.contains("Name: sms-send-check"));
-    assert!(params_buffer.contains(&format!("Purpose: {params_purpose}")));
+    assert!(params_buffer.contains("Run Sequence: sms-send-check"));
+    assert!(!params_buffer.contains(&format!("Purpose: {params_purpose}")));
     assert!(params_buffer.contains("Keep identity visible with an input error."));
+    assert!(!params_buffer.contains("Current value:"));
+    assert!(!params_buffer.contains("Value 1/2:"));
+    assert!(!params_buffer.contains("Details "));
+    assert!(!params_buffer.contains("Values overview:"));
+    assert_contains_in_order(
+        &params_buffer,
+        &[
+            "Run Sequence: sms-send-check",
+            "Value 1 of 2",
+            "Recipient",
+            "Keep identity visible with an input error.",
+            "Enter: Next value (2 of 2).",
+        ],
+    );
 
     let mut candidate = test_state_with_sequences();
     candidate.selected_category = candidate
@@ -1635,9 +2123,27 @@ fn every_sequence_modal_phase_shows_complete_name_and_purpose() {
         .summary
         .clone();
     let candidate_buffer = rendered_buffer(&mut candidate, 160, 44);
-    assert!(candidate_buffer.contains("Name: sms-read-message"));
-    assert!(candidate_buffer.contains(&format!("Purpose: {candidate_purpose}")));
-    assert!(candidate_buffer.contains("AT command: AT+CMGL=\"ALL\""));
+    assert!(candidate_buffer.contains("Confirm action: sms-read-message"));
+    assert!(!candidate_buffer.contains(&format!("Purpose: {candidate_purpose}")));
+    assert!(candidate_buffer.contains("Provider: Sequence"));
+    assert!(candidate_buffer.contains("Name: sms-receive-check"));
+    assert!(
+        candidate_buffer.contains("Purpose: List received SMS material and decode message bodies")
+    );
+    assert!(!candidate_buffer.contains("AT command: AT+CMGL=\"ALL\""));
+    assert!(!candidate_buffer.contains("Value 1 of 1"));
+    assert!(candidate_buffer.contains("Action review 1-"));
+    assert!(!candidate_buffer.contains("Details "));
+    assert_contains_in_order(
+        &candidate_buffer,
+        &[
+            "Action review 1-",
+            "Provider: Sequence",
+            "Name: sms-receive-check",
+            "Type `run` to run.",
+            "Input: <empty>",
+        ],
+    );
 
     let review_sequence = Sequence::built_in(
         "review-only",
@@ -1669,9 +2175,23 @@ fn every_sequence_modal_phase_shows_complete_name_and_purpose() {
     }
     handle_key_code(&mut review, KeyCode::Enter);
     let review_buffer = rendered_buffer(&mut review, 160, 44);
-    assert!(review_buffer.contains("Review Sequence"));
-    assert!(review_buffer.contains("Name: review-only"));
-    assert!(review_buffer.contains("Purpose: Review a known observation before execution."));
+    assert!(review_buffer.contains("Review Sequence: review-only"));
+    assert!(!review_buffer.contains("Value 1 of 1"));
+    assert!(!review_buffer.contains("Purpose: Review a known observation before execution."));
+    assert!(review_buffer.contains("Review 1-"));
+    assert!(review_buffer.contains("Resolved values:"));
+    assert!(review_buffer.contains("Execution:"));
+    assert!(!review_buffer.contains("Details "));
+    assert_contains_in_order(
+        &review_buffer,
+        &[
+            "Review 1-",
+            "Resolved values:",
+            "Execution:",
+            "What will happen:",
+            "Press Enter to run.",
+        ],
+    );
 
     for (name, purpose, command, title) in [
         (
@@ -1684,7 +2204,7 @@ fn every_sequence_modal_phase_shows_complete_name_and_purpose() {
             "unknown-confirmation",
             "Confirm an operation whose effects are unknown.",
             "AT+VENDOR=1",
-            "! Confirm unknown Sequence",
+            "Confirm unknown Sequence",
         ),
     ] {
         let sequence = Sequence::built_in(
@@ -1704,14 +2224,19 @@ fn every_sequence_modal_phase_shows_complete_name_and_purpose() {
         );
         handle_key_code(&mut state, KeyCode::Enter);
         let buffer = rendered_buffer(&mut state, 160, 44);
-        assert!(buffer.contains(title));
-        assert!(buffer.contains(&format!("Name: {name}")));
-        assert!(buffer.contains(&format!("Purpose: {purpose}")));
+        assert!(buffer.contains(&format!("{title}: {name}")));
+        assert!(!buffer.contains(&format!("Purpose: {purpose}")));
+        assert!(buffer.contains("Review 1-"));
+        assert!(!buffer.contains("Details "));
+        assert_contains_in_order(
+            &buffer,
+            &["Review 1-", "Execution:", "Type `", "Input: <empty>"],
+        );
     }
 }
 
 #[test]
-fn sequence_details_scroll_independently_from_current_value_navigation() {
+fn sequence_input_stays_focused_and_final_review_scrolls_independently() {
     let sequence = Sequence::built_in(
         "long-input-context",
         "Resolve values while long context remains reviewable.",
@@ -1756,23 +2281,59 @@ fn sequence_details_scroll_independently_from_current_value_navigation() {
     handle_key_code(&mut state, KeyCode::Enter);
 
     let first = rendered_buffer(&mut state, 120, 18);
-    assert!(first.contains("Details 1-"));
-    assert!(first.contains("Current value:"));
-    assert!(first.contains("> First value: one  default"));
+    assert!(!first.contains("Current value:"));
+    assert!(first.contains("Value 1 of 2"));
+    assert!(!first.contains("Value 1/2:"));
+    assert!(first.contains("First value"));
+    assert!(first.contains("> one  default"));
+    assert!(!first.contains("Details "));
+    assert!(!first.contains("Context line 1"));
+    assert!(!first.contains("Purpose:"));
+    assert_contains_in_order(
+        &first,
+        &[
+            "Run Sequence: long-input-context",
+            "Value 1 of 2",
+            "First value",
+            "> one  default",
+            "Enter: Next value (2 of 2).",
+        ],
+    );
+    assert!(footer_text(&state, 160).contains("Enter Next value"));
+    assert!(footer_text(&state, 160).contains("Up/Down Values"));
     handle_key_code(&mut state, KeyCode::PageDown);
-    let scrolled = rendered_buffer(&mut state, 120, 18);
-    assert!(scrolled.contains("Current value:"));
-    assert!(scrolled.contains("> First value: one  default"));
-    assert!(
+    let unchanged = rendered_buffer(&mut state, 120, 18);
+    assert!(unchanged.contains("First value"));
+    assert_eq!(
         state
             .sequence_input
             .as_ref()
-            .is_some_and(|input| input.detail_scroll > 0)
+            .map(|input| input.detail_scroll),
+        Some(0)
+    );
+    assert_eq!(
+        state
+            .sequence_input
+            .as_ref()
+            .map(|input| input.active_param),
+        Some(0)
     );
 
     handle_key_code(&mut state, KeyCode::Down);
     let second = rendered_buffer(&mut state, 120, 18);
-    assert!(second.contains("> Second value: two  default"));
+    assert!(second.contains("Value 2 of 2"));
+    assert!(second.contains("Second value"));
+    assert!(second.contains("> two  default"));
+    assert_contains_in_order(
+        &second,
+        &[
+            "Run Sequence: long-input-context",
+            "Value 2 of 2",
+            "Second value",
+            "> two  default",
+            "Enter: Review Sequence.",
+        ],
+    );
     assert_eq!(
         state
             .sequence_input
@@ -1787,6 +2348,62 @@ fn sequence_details_scroll_independently_from_current_value_navigation() {
             .map(|input| input.detail_scroll),
         Some(0)
     );
+    assert!(footer_text(&state, 160).contains("Enter Review"));
+
+    handle_key_code(&mut state, KeyCode::Enter);
+    let review = rendered_buffer(&mut state, 120, 18);
+    assert!(review.contains("Review Sequence: long-input-context"));
+    assert!(review.contains("Review 1-"));
+    assert!(review.contains("Resolved values:"));
+    assert!(review.contains("Press Enter to run."));
+    assert!(!review.contains("Details "));
+    handle_key_code(&mut state, KeyCode::PageDown);
+    let scrolled_review = rendered_buffer(&mut state, 120, 18);
+    assert!(scrolled_review.contains("Review "));
+    assert!(scrolled_review.contains("Press Enter to run."));
+    assert!(
+        state
+            .sequence_input
+            .as_ref()
+            .is_some_and(|input| input.detail_scroll > 0)
+    );
+
+    let narrow = rendered_buffer(&mut state, 30, 18);
+    assert!(narrow.contains("Review"));
+    assert!(narrow.contains("Press Enter"));
+    assert!(!narrow.contains("Executable details"));
+}
+
+#[test]
+fn multi_value_position_is_literal_in_dark_light_and_no_color_themes() {
+    for theme in [TuiTheme::dark(), TuiTheme::light(), TuiTheme::no_color()] {
+        let mut state = test_state_with_sequences_and_theme(theme);
+        state.selected_category = state
+            .categories
+            .iter()
+            .position(|category| category == "sms")
+            .expect("sms category");
+        state.selected_command = state
+            .visible_commands()
+            .iter()
+            .position(|command| command.name() == "sms-send-check")
+            .expect("sms-send-check");
+
+        handle_key_code(&mut state, KeyCode::Enter);
+        let first = rendered_buffer(&mut state, 140, 36);
+        assert!(first.contains("Value 1 of 2"));
+        assert!(first.contains("Recipient"));
+        assert!(!first.contains("Value 1/2:"));
+
+        for value in "+819012345678".chars() {
+            handle_key_code(&mut state, KeyCode::Char(value));
+        }
+        handle_key_code(&mut state, KeyCode::Enter);
+        let second = rendered_buffer(&mut state, 140, 36);
+        assert!(second.contains("Value 2 of 2"));
+        assert!(second.contains("Message body (sensitive)"));
+        assert!(second.contains("Enter: Review Sequence."));
+    }
 }
 
 #[test]
@@ -1956,12 +2573,18 @@ fn run_sequence_modal_runs_candidate_action_and_keeps_modal_open() {
     .find(|sequence| sequence.name == "soracom-unified-endpoint-tcp-send-check")
     .unwrap();
     let mut state = TuiState::new_with_all_usb(
-        executable_items(Vec::new(), vec![sequence]),
+        executable_items(crate::presets::builtin::builtins(), vec![sequence]),
         vec![test_usb_device(1, 3, "Onyx A")],
         vec![test_usb_device(1, 3, "Onyx A")],
         Vec::new(),
         TuiTheme::dark(),
     );
+    state.selected_command = state
+        .visible_commands()
+        .iter()
+        .position(|item| item.name() == "soracom-unified-endpoint-tcp-send-check")
+        .expect("SORACOM Sequence");
+    state.timeout_override_secs = Some(75);
     let mut executor = TestExecutor::default();
 
     handle_key_code(&mut state, KeyCode::Enter);
@@ -1970,7 +2593,8 @@ fn run_sequence_modal_runs_candidate_action_and_keeps_modal_open() {
 
     assert!(state.sequence_input.is_some());
     let pending = state.pending_execution.as_ref().expect("candidate action");
-    assert_eq!(pending.item.name(), "Load active PDP contexts");
+    assert_eq!(pending.item.name(), "active-pdp-contexts");
+    assert_eq!(pending.timeout_secs, 75);
 
     execute_pending_command(&mut state, &mut executor);
 
@@ -1980,8 +2604,15 @@ fn run_sequence_modal_runs_candidate_action_and_keeps_modal_open() {
     assert!(buffer.contains("> 1  active"));
     assert!(buffer.contains("No modem read is performed by this modal."));
     assert!(buffer.contains("Actions:"));
-    assert!(buffer.contains("Load active PDP contexts  AT+CGACT?"));
-    assert!(buffer.contains("Load PDP context definitions  AT+CGDCONT?"));
+    let active_action = line_containing(&buffer, "Run active-pdp-contexts");
+    assert!(active_action.contains("Preset"));
+    assert!(!active_action.contains("[confirm]"));
+    let definitions_action = line_containing(&buffer, "Run pdp-contexts");
+    assert!(definitions_action.contains("Preset"));
+    assert!(!definitions_action.contains("[confirm]"));
+    handle_key_code(&mut state, KeyCode::Down);
+    let selected_action_buffer = rendered_buffer(&mut state, 140, 36);
+    assert!(selected_action_buffer.contains("Enter: Run action."));
 }
 
 #[test]
@@ -1994,12 +2625,17 @@ fn run_sequence_modal_can_refresh_loaded_pdp_candidates() {
     .find(|sequence| sequence.name == "soracom-unified-endpoint-tcp-send-check")
     .unwrap();
     let mut state = TuiState::new_with_all_usb(
-        executable_items(Vec::new(), vec![sequence]),
+        executable_items(crate::presets::builtin::builtins(), vec![sequence]),
         vec![test_usb_device(1, 3, "Onyx A")],
         vec![test_usb_device(1, 3, "Onyx A")],
         Vec::new(),
         TuiTheme::dark(),
     );
+    state.selected_command = state
+        .visible_commands()
+        .iter()
+        .position(|item| item.name() == "soracom-unified-endpoint-tcp-send-check")
+        .expect("SORACOM Sequence");
     state.sequence_candidate_sets = vec![TuiSequenceCandidateSet {
         candidate: SequenceCandidateSource::PdpContext,
         candidates: vec![SequenceValueCandidate {
@@ -2017,15 +2653,17 @@ fn run_sequence_modal_can_refresh_loaded_pdp_candidates() {
     assert!(buffer.contains("Candidates: last direct PDP context check result (1 total"));
     assert!(buffer.contains("> 1  active"));
     assert!(buffer.contains("Actions:"));
-    assert!(buffer.contains("Load active PDP contexts  AT+CGACT?"));
+    assert!(line_containing(&buffer, "Run active-pdp-contexts").contains("Preset"));
 
     handle_key_code(&mut state, KeyCode::Down);
     let action_buffer = rendered_buffer(&mut state, 140, 36);
-    assert!(action_buffer.contains("> Load active PDP contexts  AT+CGACT?"));
+    let selected_action = line_containing(&action_buffer, "> Run active-pdp-contexts");
+    assert!(selected_action.contains("Preset"));
+    assert!(action_buffer.contains("Enter: Run action."));
 
     handle_key_code(&mut state, KeyCode::Enter);
     let pending = state.pending_execution.as_ref().expect("candidate action");
-    assert_eq!(pending.item.name(), "Load active PDP contexts");
+    assert_eq!(pending.item.name(), "active-pdp-contexts");
 }
 
 #[test]
@@ -2068,7 +2706,7 @@ fn run_sequence_modal_requires_confirmation_for_sms_list_status_change() {
 fn failed_candidate_action_is_not_rendered_as_selected_sequence_failure() {
     let mut state = test_state_with_sequences();
     let mut executor = TestExecutor {
-        preset_error: Some(AtctlError::Transport(
+        sequence_error: Some(AtctlError::Transport(
             "simulated candidate action failure".to_owned(),
         )),
         ..TestExecutor::default()
@@ -2096,7 +2734,7 @@ fn failed_candidate_action_is_not_rendered_as_selected_sequence_failure() {
     assert!(state.sequence_input.is_some());
     let status_buffer = rendered_status_buffer(&mut state, 64, 12);
     assert!(status_buffer.contains("Status: failed"));
-    assert!(status_buffer.contains("Action: Load received SMS list"));
+    assert!(status_buffer.contains("Action: sms-receive-check"));
     assert!(status_buffer.contains("Action result: failed"));
     assert!(!status_buffer.contains("Preset:"));
     assert!(!status_buffer.contains("Sequence: sms-read-message"));
@@ -2118,7 +2756,7 @@ fn failed_candidate_action_is_not_rendered_as_selected_sequence_failure() {
 }
 
 #[test]
-fn run_sequence_modal_selects_sms_index_candidate_without_leaving_modal() {
+fn run_sequence_modal_accepts_sms_index_candidate_and_opens_review() {
     let mut state = test_state_with_sequences();
     state.selected_category = state
         .categories
@@ -2150,7 +2788,8 @@ fn run_sequence_modal_selects_sms_index_candidate_without_leaving_modal() {
     handle_key_code(&mut state, KeyCode::Enter);
 
     let buffer = rendered_buffer(&mut state, 150, 36);
-    assert!(buffer.contains("SMS storage index: unresolved  select"));
+    assert!(buffer.contains("SMS storage index"));
+    assert!(buffer.contains("> unresolved  select"));
     assert!(buffer.contains("Candidates: last sms-receive-check result (2 total"));
     assert!(buffer.contains("No modem read is performed by this modal."));
     assert!(buffer.contains(
@@ -2162,8 +2801,11 @@ fn run_sequence_modal_selects_sms_index_candidate_without_leaving_modal() {
         )
     );
     assert!(buffer.contains("Actions:"));
-    assert!(buffer.contains("Load received SMS list  AT+CMGL=\"ALL\""));
-    assert!(buffer.contains("Enter selects or runs action"));
+    let sms_action = line_containing(&buffer, "Run sms-receive-check");
+    assert!(sms_action.contains("Sequence"));
+    assert!(sms_action.contains("[confirm]"));
+    assert!(buffer.contains("Enter: Use value and review Sequence."));
+    assert!(footer_text(&state, 150).contains("Enter Use and review"));
 
     handle_key_code(&mut state, KeyCode::Down);
     let moved_buffer = rendered_buffer(&mut state, 150, 36);
@@ -2184,21 +2826,67 @@ fn run_sequence_modal_selects_sms_index_candidate_without_leaving_modal() {
     );
     assert_eq!(
         state.sequence_input.as_ref().map(|input| input.phase),
-        Some(SequenceInputPhase::Params)
-    );
-    let selected_buffer = rendered_buffer(&mut state, 150, 36);
-    assert!(selected_buffer.contains("SMS storage index: 4  select"));
-
-    handle_key_code(&mut state, KeyCode::Enter);
-    assert_eq!(
-        state.sequence_input.as_ref().map(|input| input.phase),
         Some(SequenceInputPhase::Confirmation)
     );
+    assert!(state.pending_execution.is_none());
     let confirmation_buffer = rendered_buffer(&mut state, 150, 36);
     assert!(confirmation_buffer.contains("Confirm Sequence"));
-    assert!(confirmation_buffer.contains("Review:"));
+    assert!(confirmation_buffer.contains("Review 1-"));
+    assert!(confirmation_buffer.contains("Resolved values:"));
     assert!(confirmation_buffer.contains("SMS storage index"));
     assert!(confirmation_buffer.contains("4"));
+}
+
+#[test]
+fn run_sequence_modal_accepts_candidate_and_advances_to_next_value() {
+    let sequence = crate::sequences::loader::parse_sequences(include_str!(
+        "../../examples/sequences/soracom.toml"
+    ))
+    .unwrap()
+    .into_iter()
+    .find(|sequence| sequence.name == "soracom-ping-check")
+    .unwrap();
+    let mut state = TuiState::new_with_all_usb(
+        executable_items(crate::presets::builtin::builtins(), vec![sequence]),
+        vec![test_usb_device(1, 3, "Onyx A")],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+    state.selected_command = state
+        .visible_commands()
+        .iter()
+        .position(|item| item.name() == "soracom-ping-check")
+        .expect("SORACOM ping Sequence");
+    state.sequence_candidate_sets = vec![TuiSequenceCandidateSet {
+        candidate: SequenceCandidateSource::PdpContext,
+        candidates: vec![SequenceValueCandidate {
+            value: "2".to_owned(),
+            raw_label: "2  active".to_owned(),
+            masked_label: "2  active".to_owned(),
+        }],
+        source_label: "last direct PDP context check result".to_owned(),
+        acquired_at: "2026-07-04T00-00-00-000000000Z".to_owned(),
+    }];
+
+    handle_key_code(&mut state, KeyCode::Enter);
+
+    let first_value_buffer = rendered_buffer(&mut state, 140, 36);
+    assert!(first_value_buffer.contains("Value 1 of 3"));
+    assert!(first_value_buffer.contains("> 2  active"));
+    assert!(first_value_buffer.contains("Enter: Use value and continue to Value 2 of 3."));
+    assert!(footer_text(&state, 140).contains("Enter Use and next"));
+
+    handle_key_code(&mut state, KeyCode::Enter);
+
+    let input = state.sequence_input.as_ref().expect("Sequence input");
+    assert_eq!(input.phase, SequenceInputPhase::Params);
+    assert_eq!(input.active_param, 1);
+    assert_eq!(input.values.first().map(String::as_str), Some("2"));
+    assert!(state.pending_execution.is_none());
+    let second_value_buffer = rendered_buffer(&mut state, 140, 36);
+    assert!(second_value_buffer.contains("Value 2 of 3"));
+    assert!(second_value_buffer.contains("Ping timeout"));
 }
 
 #[test]
@@ -2236,12 +2924,16 @@ fn run_sequence_modal_can_refresh_loaded_sms_candidates_with_confirmation() {
     let buffer = rendered_buffer(&mut state, 150, 36);
     assert!(buffer.contains("Candidates: last sms-receive-check result (2 total"));
     assert!(buffer.contains("Actions:"));
-    assert!(buffer.contains("Load received SMS list  AT+CMGL=\"ALL\""));
+    let sms_action = line_containing(&buffer, "Run sms-receive-check");
+    assert!(sms_action.contains("Sequence"));
+    assert!(sms_action.contains("[confirm]"));
 
     handle_key_code(&mut state, KeyCode::Down);
     handle_key_code(&mut state, KeyCode::Down);
     let action_buffer = rendered_buffer(&mut state, 150, 36);
-    assert!(action_buffer.contains("> Load received SMS list  AT+CMGL=\"ALL\""));
+    let selected_action = line_containing(&action_buffer, "> Run sms-receive-check");
+    assert!(selected_action.contains("Sequence"));
+    assert!(action_buffer.contains("Enter: Review action."));
 
     handle_key_code(&mut state, KeyCode::Enter);
     assert!(state.pending_execution.is_none());
@@ -2251,6 +2943,7 @@ fn run_sequence_modal_can_refresh_loaded_sms_candidates_with_confirmation() {
     );
     let confirmation_buffer = rendered_buffer(&mut state, 150, 36);
     assert!(confirmation_buffer.contains("Confirm action"));
+    assert!(confirmation_buffer.contains("Value 1 of 2"));
     assert!(confirmation_buffer.contains("What will happen:"));
     assert!(confirmation_buffer.contains("Lists stored SMS content"));
     assert!(confirmation_buffer.contains("Sensitive data:"));
@@ -2261,8 +2954,114 @@ fn run_sequence_modal_can_refresh_loaded_sms_candidates_with_confirmation() {
     }
     handle_key_code(&mut state, KeyCode::Enter);
     let pending = state.pending_execution.as_ref().expect("candidate action");
-    assert_eq!(pending.item.name(), "Load received SMS list");
+    assert_eq!(pending.item.name(), "sms-receive-check");
     assert!(pending.confirmed);
+
+    let mut executor = TestExecutor {
+        sms_candidates: vec![sms_candidate(
+            "8",
+            "REC UNREAD",
+            "901001",
+            "26/07/29,08:15:00+00",
+            "new message",
+        )],
+        ..TestExecutor::default()
+    };
+    execute_pending_command(&mut state, &mut executor);
+
+    assert_eq!(
+        executor.calls.last().map(|(name, _)| name.as_str()),
+        Some("sms-receive-check")
+    );
+    assert!(state.sequence_input.is_some());
+    let refreshed = rendered_buffer(&mut state, 150, 36);
+    assert!(refreshed.contains("Candidates: last sms-receive-check result (1 total"));
+    assert!(refreshed.contains("storage=8"));
+}
+
+#[test]
+fn candidate_action_rows_share_confirmation_lane_and_preserve_tag_role() {
+    let mut state = test_state_with_sequences();
+    state.selected_category = state
+        .categories
+        .iter()
+        .position(|category| category == "sms")
+        .expect("sms category");
+    state.selected_command = state
+        .visible_commands()
+        .iter()
+        .position(|command| command.name() == "sms-read-message")
+        .expect("sms-read-message command");
+    handle_key_code(&mut state, KeyCode::Enter);
+    let input = state.sequence_input.as_mut().expect("Sequence input");
+    input.active_candidate = 1;
+
+    let actions = [
+        SequenceCandidateAction {
+            provider: SequenceCandidateProvider {
+                kind: SequenceCandidateProviderKind::Preset,
+                name: "inspect-modem",
+            },
+            item: Box::new(ExecutableItem::Preset(Preset::new(
+                "inspect-modem",
+                "AT",
+                vec!["review".to_owned()],
+                PresetOrigin::BuiltIn,
+            ))),
+        },
+        SequenceCandidateAction {
+            provider: SequenceCandidateProvider {
+                kind: SequenceCandidateProviderKind::Preset,
+                name: "apply-known-change",
+            },
+            item: Box::new(ExecutableItem::Preset(Preset::new(
+                "apply-known-change",
+                "AT+CMEE=2",
+                vec!["review".to_owned()],
+                PresetOrigin::BuiltIn,
+            ))),
+        },
+        SequenceCandidateAction {
+            provider: SequenceCandidateProvider {
+                kind: SequenceCandidateProviderKind::Preset,
+                name: "unknown-vendor-action",
+            },
+            item: Box::new(ExecutableItem::Preset(Preset::new(
+                "unknown-vendor-action",
+                "AT+VENDOR=1",
+                vec!["review".to_owned()],
+                PresetOrigin::BuiltIn,
+            ))),
+        },
+    ];
+    let theme = TuiTheme::dark();
+    let mut lines = Vec::new();
+    push_sequence_candidate_action_rows(&mut lines, input, &actions, 0, 64, &theme);
+    let plain = lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    let known_tag = plain[1].find("[confirm]").expect("known tag");
+    let unknown_tag = plain[2].find("[confirm]").expect("unknown tag");
+    assert_eq!(known_tag, unknown_tag);
+    assert!(display_cell_width(&plain[0]) <= known_tag);
+
+    let selected_name = lines[1].spans.first().expect("selected action name");
+    assert_eq!(
+        selected_name.style.fg,
+        theme.style(TuiStyleRole::Selected).fg
+    );
+    let tag = lines[1]
+        .spans
+        .iter()
+        .find(|span| span.content.as_ref() == "[confirm]")
+        .expect("confirmation tag span");
+    assert_eq!(tag.style.fg, theme.style(TuiStyleRole::ConfirmationFlow).fg);
 }
 
 #[test]
@@ -2537,6 +3336,45 @@ fn edit_before_run_material_command_requires_confirmation() {
     execute_pending_command(&mut state, &mut executor);
 
     assert_eq!(executor.calls, vec![("edited".to_owned(), true)]);
+}
+
+#[test]
+fn edited_command_keeps_selected_item_timeout() {
+    let preset = Preset::new_with_timeout(
+        "long-read",
+        "AT+COPS=?",
+        vec!["network".to_owned()],
+        PresetOrigin::BuiltIn,
+        Some(240),
+    );
+    let mut state = TuiState::new_with_all_usb(
+        executable_items(vec![preset], Vec::new()),
+        vec![test_usb_device(1, 3, "Onyx A")],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+
+    run_control(&mut state, ControlAction::EditCommand);
+    assert_eq!(
+        state.edit_input.as_ref().map(|input| input.timeout_secs),
+        Some(240)
+    );
+    for _ in 0.."AT+COPS=?".len() {
+        handle_key_code(&mut state, KeyCode::Backspace);
+    }
+    for value in "AT+CSQ".chars() {
+        handle_key_code(&mut state, KeyCode::Char(value));
+    }
+    handle_key_code(&mut state, KeyCode::Enter);
+
+    assert_eq!(
+        state
+            .pending_execution
+            .as_ref()
+            .map(|pending| pending.timeout_secs),
+        Some(240)
+    );
 }
 
 #[test]
@@ -2898,22 +3736,100 @@ fn running_command_blocks_new_actions_without_quitting() {
 }
 
 #[test]
-fn timeout_input_sets_temporary_execution_timeout() {
+fn timeout_input_sets_session_execution_timeout() {
     let mut state = test_state();
 
     run_control(&mut state, ControlAction::SetTimeout);
-    handle_key_code(&mut state, KeyCode::Backspace);
-    handle_key_code(&mut state, KeyCode::Backspace);
+    assert_eq!(
+        state
+            .timeout_input
+            .as_ref()
+            .map(|input| input.input.as_str()),
+        Some("")
+    );
+    let modal = rendered_buffer(&mut state, 120, 32);
+    assert!(modal.contains("Timeout"));
+    assert!(
+        modal.contains("Set the timeout for all Commands and Sequences until this TUI closes.")
+    );
+    assert!(modal.contains("Leave blank to use each Command or Sequence timeout."));
+    assert!(modal.contains("Seconds: <empty>"));
+    assert!(footer_text(&state, 120).contains("Enter Apply"));
+    assert!(footer_text(&state, 120).contains("Esc Cancel"));
+    assert!(!modal.contains("default"));
+    assert!(!modal.contains("override"));
     for value in "180".chars() {
         handle_key_code(&mut state, KeyCode::Char(value));
     }
     handle_key_code(&mut state, KeyCode::Enter);
 
     assert_eq!(state.timeout_override_secs, Some(180));
+    assert_eq!(
+        state
+            .controls_feedback
+            .as_ref()
+            .map(|feedback| feedback.message.as_str()),
+        Some("Timeout set to 180 seconds.")
+    );
     state.focus = Pane::Commands;
     handle_key_code(&mut state, KeyCode::Enter);
     let pending = state.pending_execution.as_ref().expect("pending execution");
     assert_eq!(pending.timeout_secs, 180);
+}
+
+#[test]
+fn blank_timeout_input_restores_each_item_timeout() {
+    let item = ExecutableItem::Preset(Preset::new_with_timeout(
+        "long-scan",
+        "AT+COPS=?",
+        vec!["network".to_owned()],
+        PresetOrigin::BuiltIn,
+        Some(240),
+    ));
+    let mut state = TuiState::new_with_all_usb(
+        vec![item.clone()],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+    state.timeout_override_secs = Some(120);
+
+    run_control(&mut state, ControlAction::SetTimeout);
+    for _ in 0.."120".len() {
+        handle_key_code(&mut state, KeyCode::Backspace);
+    }
+    handle_key_code(&mut state, KeyCode::Enter);
+
+    assert_eq!(state.timeout_override_secs, None);
+    assert_eq!(effective_timeout_secs(&state, &item), 240);
+    assert_eq!(
+        state
+            .controls_feedback
+            .as_ref()
+            .map(|feedback| feedback.message.as_str()),
+        Some("Using each Command or Sequence timeout.")
+    );
+    let compact = rendered_buffer(&mut state, 80, 24);
+    assert!(compact.contains("Using each Command or Sequence"));
+    assert!(compact.contains("timeout."));
+}
+
+#[test]
+fn cancelling_timeout_input_changes_neither_timeout_nor_status() {
+    let mut state = test_state();
+    state.timeout_override_secs = Some(75);
+    state.status = "Ready before timeout input.".to_owned();
+    state.status_role = TuiStyleRole::Status;
+
+    run_control(&mut state, ControlAction::SetTimeout);
+    handle_key_code(&mut state, KeyCode::Backspace);
+    handle_key_code(&mut state, KeyCode::Char('9'));
+    handle_key_code(&mut state, KeyCode::Esc);
+
+    assert_eq!(state.timeout_override_secs, Some(75));
+    assert_eq!(state.status, "Ready before timeout input.");
+    assert!(state.timeout_input.is_none());
 }
 
 #[test]
@@ -3441,6 +4357,91 @@ fn page_and_boundary_keys_apply_to_focused_list_pane() {
 }
 
 #[test]
+fn page_and_boundary_keys_select_only_items_in_grouped_executable_list() {
+    let mut state = TuiState::new_with_all_usb(
+        executable_items(
+            vec![
+                Preset::built_in("command-00", "AT", ["bulk"]),
+                Preset::built_in("command-01", "AT+CSQ", ["bulk"]),
+                Preset::new(
+                    "command-02",
+                    "AT+QCCID",
+                    vec!["bulk".to_owned()],
+                    PresetOrigin::file("External commands", "external.toml", None),
+                ),
+                Preset::new(
+                    "command-03",
+                    "AT+QCSQ",
+                    vec!["bulk".to_owned()],
+                    PresetOrigin::file("External commands", "external.toml", None),
+                ),
+            ],
+            vec![
+                Sequence::built_in(
+                    "sequence-00",
+                    "Inspect modem response.",
+                    vec!["bulk".to_owned()],
+                    Some(30),
+                    Vec::new(),
+                    vec![test_sequence_step("AT")],
+                ),
+                Sequence::new(
+                    "sequence-01",
+                    "Inspect vendor signal state.",
+                    vec!["bulk".to_owned()],
+                    SequenceOrigin::file("External Sequences", "external-sequences.toml", None),
+                    Some(30),
+                    Vec::new(),
+                    vec![test_sequence_step("AT+QCSQ")],
+                ),
+            ],
+        ),
+        vec![test_usb_device(1, 3, "Onyx A")],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+    state.focus = Pane::Commands;
+    state.commands_visible_height = 3;
+
+    let visible = state.visible_commands();
+    let rows = command_list_rows(&visible);
+    assert!(
+        rows.iter()
+            .any(|row| matches!(row, CommandListRow::KindHeader(_)))
+    );
+    assert!(
+        rows.iter()
+            .any(|row| matches!(row, CommandListRow::SourceHeader(_)))
+    );
+    assert!(
+        rows.iter()
+            .any(|row| matches!(row, CommandListRow::BlankSeparator))
+    );
+    drop(visible);
+
+    for (key, expected) in [
+        (KeyCode::PageDown, 3),
+        (KeyCode::PageUp, 0),
+        (KeyCode::End, 5),
+        (KeyCode::PageUp, 2),
+        (KeyCode::Home, 0),
+    ] {
+        handle_key_code(&mut state, key);
+        assert_eq!(state.selected_command, expected);
+
+        let visible = state.visible_commands();
+        let rows = command_list_rows(&visible);
+        let selected_row = selected_command_row_index(&rows, state.selected_command);
+        assert!(matches!(
+            rows[selected_row],
+            CommandListRow::Command { command_index, .. }
+                if command_index == state.selected_command
+        ));
+    }
+}
+
+#[test]
 fn selected_device_can_be_reselected_after_command_completion() {
     let mut state = TuiState::new(
         test_commands(),
@@ -3757,13 +4758,14 @@ fn renders_non_color_state_affordances() {
     let compact = buffer.split_whitespace().collect::<Vec<_>>().join(" ");
 
     assert!(buffer.contains("> modem-response"));
-    assert!(compact.contains("> modem-response │ AT: AT"));
+    assert!(compact.contains("> modem-response AT"));
     assert!(!buffer.contains("Confirmation: not required"));
-    assert!(buffer.contains("! Confirmation required"));
+    assert!(buffer.contains("[confirm]"));
+    assert!(!buffer.contains("! Confirmation required"));
 }
 
 #[test]
-fn command_rows_prioritize_identity_and_show_only_confirmation_exceptions() {
+fn command_rows_prioritize_identity_and_show_only_confirmation_flow_tags() {
     let mut state = TuiState::new(
         vec![
             Preset::built_in("inspect", "AT", ["review"]),
@@ -3783,12 +4785,13 @@ fn command_rows_prioritize_identity_and_show_only_confirmation_exceptions() {
     let buffer = format!("{:?}", terminal.backend().buffer());
     let compact = buffer.split_whitespace().collect::<Vec<_>>().join(" ");
 
-    assert!(compact.contains("> inspect │ AT: AT"));
+    assert!(compact.contains("> inspect AT"));
     assert!(!buffer.contains("Confirmation: not required"));
-    assert!(compact.contains("change │ AT: AT+CMEE=2 ! Confirmation required"));
-    assert!(
-        compact.contains("unknown │ AT: AT+VENDOR=1 ! Confirmation required (effects unknown)")
-    );
+    assert!(compact.contains("change AT+CMEE=2 [confirm]"));
+    assert!(compact.contains("unknown AT+VENDOR=1 [confirm]"));
+    assert!(!buffer.contains("│ AT:"));
+    assert!(!buffer.contains("│ Purpose:"));
+    assert!(!buffer.contains("! Confirmation required"));
     for removed in [
         "[safe]",
         "[sensitive]",
@@ -3805,7 +4808,7 @@ fn command_rows_prioritize_identity_and_show_only_confirmation_exceptions() {
 }
 
 #[test]
-fn executable_selection_keeps_row_height_and_warning_role_independent() {
+fn executable_selection_keeps_row_height_and_confirmation_tag_emphasis_independent() {
     let mut state = TuiState::new(
         vec![
             Preset::built_in("inspect", "AT", ["review"]),
@@ -3822,14 +4825,15 @@ fn executable_selection_keeps_row_height_and_warning_role_independent() {
         .draw(|frame| render_frame(frame, &mut state))
         .unwrap();
     let buffer = terminal.backend().buffer();
-    let inspect = buffer_line_position(buffer, "inspect │ AT:").expect("inspect row");
-    let unknown = buffer_line_position(buffer, "> unknown │ AT:").expect("unknown row");
+    let inspect = buffer_line_position(buffer, "inspect").expect("inspect row");
+    let unknown = buffer_line_position(buffer, "> unknown").expect("unknown row");
     assert_eq!(unknown.1, inspect.1 + 1);
 
     let name_cell = buffer.cell(unknown).expect("selected name cell");
-    let warning =
-        buffer_line_position(buffer, "! Confirmation required (effects unknown)").expect("warning");
-    let warning_cell = buffer.cell(warning).expect("warning cell");
+    let confirmation_tag = buffer_line_position(buffer, "[confirm]").expect("confirmation tag");
+    let confirmation_tag_cell = buffer
+        .cell(confirmation_tag)
+        .expect("confirmation tag cell");
     assert_eq!(
         name_cell.fg,
         TuiTheme::dark()
@@ -3838,41 +4842,31 @@ fn executable_selection_keeps_row_height_and_warning_role_independent() {
             .expect("selected color")
     );
     assert_eq!(
-        warning_cell.fg,
+        confirmation_tag_cell.fg,
         TuiTheme::dark()
-            .style(TuiStyleRole::Warning)
+            .style(TuiStyleRole::ConfirmationFlow)
             .fg
-            .expect("warning color")
+            .expect("confirmation-flow color")
     );
-    assert_ne!(name_cell.fg, warning_cell.fg);
+    assert_ne!(name_cell.fg, confirmation_tag_cell.fg);
 }
 
 #[test]
-fn narrow_command_rows_preserve_exception_warning_before_detail() {
-    let mut state = TuiState::new(
-        vec![Preset::built_in(
-            "vendor-command-with-a-long-name",
-            "AT+VENDORCOMMANDWITHLONGARGUMENT=1234567890",
-            ["review"],
-        )],
-        vec![test_usb_device(1, 3, "Onyx A")],
-        Vec::new(),
-        TuiTheme::dark(),
+fn narrow_command_rows_preserve_complete_confirmation_tag_before_detail() {
+    let item = ExecutableItem::Preset(Preset::built_in(
+        "vendor-command-with-a-long-name",
+        "AT+VENDORCOMMANDWITHLONGARGUMENT=1234567890",
+        ["review"],
+    ));
+
+    assert_eq!(
+        command_row_plain_text(false, &item, &[&item], 12),
+        "Executable details cannot fit safely. Resize the terminal to continue."
     );
-
-    let too_narrow = rendered_buffer(&mut state, 100, 32);
-
-    assert!(too_narrow.contains("Executable details cannot fit safely."));
-    assert!(too_narrow.contains("Resize the terminal to continue."));
-    handle_key_code(&mut state, KeyCode::Enter);
-    assert!(state.pending_execution.is_none());
-    assert!(state.confirmation.is_none());
-    assert!(state.status.contains("Resize the terminal to continue."));
-
-    let buffer = rendered_buffer(&mut state, 130, 32);
-
-    assert!(buffer.contains("! Confirmation required (effects unknown)"));
-    assert!(buffer.contains('…'));
+    assert_eq!(
+        command_row_plain_text(false, &item, &[&item], 13),
+        "  … [confirm]"
+    );
 }
 
 #[test]
@@ -3881,11 +4875,63 @@ fn executable_name_alignment_uses_terminal_display_cells() {
     let wide = ExecutableItem::Preset(Preset::built_in("通信確認", "AT+CSQ", ["review"]));
     let commands = [&ascii, &wide];
     let name_width = executable_name_column_width(&commands, 120).unwrap();
-    let ascii_row = executable_row_layout(&ascii, 120, name_width).unwrap();
-    let wide_row = executable_row_layout(&wide, 120, name_width).unwrap();
+    let confirmation_lane_width = executable_confirmation_lane_width(&commands);
+    let ascii_row =
+        executable_row_layout(&ascii, 120, name_width, confirmation_lane_width).unwrap();
+    let wide_row = executable_row_layout(&wide, 120, name_width, confirmation_lane_width).unwrap();
 
     assert_eq!(display_cell_width(&ascii_row.name), name_width);
     assert_eq!(display_cell_width(&wide_row.name), name_width);
+}
+
+#[test]
+fn executable_rows_share_confirmation_lane_and_reclaim_it_when_unused() {
+    let observation = ExecutableItem::Preset(Preset::built_in(
+        "observation",
+        "AT+THISISALONGOBSERVATIONCOMMAND=1234567890,ABCDEFGHIJKLMNOPQRSTUVWXYZ,1234567890",
+        ["review"],
+    ));
+    let known = ExecutableItem::Preset(Preset::built_in("known-change", "AT+CMEE=2", ["review"]));
+    let unknown = ExecutableItem::Preset(Preset::built_in(
+        "unknown-change",
+        "AT+VENDOR=1",
+        ["review"],
+    ));
+    let mixed = [&observation, &known, &unknown];
+    let mixed_name_width = executable_name_column_width(&mixed, 80).unwrap();
+    let lane_width = executable_confirmation_lane_width(&mixed);
+    assert_eq!(lane_width, display_cell_width(" [confirm]"));
+
+    let known_row = executable_row_layout(&known, 80, mixed_name_width, lane_width).unwrap();
+    let unknown_row = executable_row_layout(&unknown, 80, mixed_name_width, lane_width).unwrap();
+    assert_eq!(
+        known_row.body_padding
+            + known_row
+                .detail
+                .as_deref()
+                .map_or(0, |value| display_cell_width(value) + 1),
+        unknown_row.body_padding
+            + unknown_row
+                .detail
+                .as_deref()
+                .map_or(0, |value| display_cell_width(value) + 1)
+    );
+
+    let mixed_observation =
+        executable_row_layout(&observation, 80, mixed_name_width, lane_width).unwrap();
+    let only_observation = [&observation];
+    let only_name_width = executable_name_column_width(&only_observation, 80).unwrap();
+    let reclaimed = executable_row_layout(&observation, 80, only_name_width, 0).unwrap();
+    assert!(
+        reclaimed
+            .detail
+            .as_ref()
+            .map_or(0, |value| display_cell_width(value))
+            > mixed_observation
+                .detail
+                .as_ref()
+                .map_or(0, |value| display_cell_width(value))
+    );
 }
 
 #[test]
@@ -3894,9 +4940,32 @@ fn compact_status_does_not_duplicate_execution_review() {
     let status = rendered_status_buffer(&mut state, 80, 12);
 
     assert!(status.contains("Selected Command:"));
+    assert!(!status.contains("Run: confirmation required"));
+    assert!(!status.contains("Risk: effects unknown"));
     assert!(!status.contains("Confirmation:"));
     assert!(!status.contains("Assessment:"));
     assert!(!status.contains("Effects:"));
+    assert!(!status.contains("Consequences:"));
+}
+
+#[test]
+fn selected_unknown_item_status_does_not_duplicate_execution_review() {
+    let mut state = TuiState::new(
+        vec![Preset::built_in("unknown", "AT+VENDOR=1", ["review"])],
+        vec![test_usb_device(1, 3, "Onyx A")],
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+
+    let status = rendered_status_buffer(&mut state, 80, 12);
+
+    assert!(status.contains("Selected Command: unknown"));
+    assert!(!status.contains("Run: confirmation required"));
+    assert!(!status.contains("Risk: effects unknown"));
+    assert!(!status.contains("Assessment:"));
+    assert!(!status.contains("Effects:"));
+    assert!(!status.contains("Data handling:"));
+    assert!(!status.contains("Reversibility:"));
     assert!(!status.contains("Consequences:"));
 }
 
@@ -3945,8 +5014,10 @@ fn confirmation_behavior_separates_known_and_unknown_consequences() {
         );
         let buffer = rendered_buffer(&mut state, 100, 32);
         if unknown {
-            assert!(buffer.contains("! Confirm unknown command"));
-            assert!(buffer.contains("! Effects are not fully known"));
+            assert!(buffer.contains("Confirm unknown command"));
+            assert!(buffer.contains("Effects are not fully known."));
+            assert!(!buffer.contains("! Confirm unknown command"));
+            assert!(!buffer.contains("! Effects are not fully known"));
             assert!(buffer.contains("Known:"));
             assert!(buffer.contains("Possible consequences:"));
             assert!(buffer.contains("Not established:"));
@@ -3954,7 +5025,7 @@ fn confirmation_behavior_separates_known_and_unknown_consequences() {
         } else {
             assert!(buffer.contains("Confirm command"));
             assert!(buffer.contains("What will happen:"));
-            assert!(!buffer.contains("! Effects are not fully known"));
+            assert!(!buffer.contains("Effects are not fully known."));
             assert!(!buffer.contains("Not established:"));
         }
         assert!(!buffer.contains("Assessment:"));
@@ -5053,6 +6124,7 @@ fn semantic_style_roles_are_declared() {
         TuiStyleRole::Background,
         TuiStyleRole::Text,
         TuiStyleRole::Emphasis,
+        TuiStyleRole::ConfirmationFlow,
         TuiStyleRole::Focus,
         TuiStyleRole::Selected,
         TuiStyleRole::Status,
@@ -5082,20 +6154,32 @@ fn approved_colored_accents_are_retained() {
 fn confirmation_roles_use_approved_dark_and_light_palettes() {
     let dark = TuiTheme::dark();
     assert_eq!(
-        dark.style(TuiStyleRole::Warning).fg,
-        Some(Color::Rgb(0xff, 0xd1, 0x66))
+        dark.style(TuiStyleRole::ConfirmationFlow).fg,
+        Some(Color::Rgb(0xbe, 0x95, 0xff))
     );
     assert!(
-        dark.style(TuiStyleRole::Warning)
+        dark.style(TuiStyleRole::ConfirmationFlow)
             .add_modifier
             .contains(Modifier::BOLD)
     );
 
     let light = TuiTheme::light();
     assert_eq!(
-        light.style(TuiStyleRole::Warning).fg,
-        Some(Color::Rgb(0x7a, 0x5a, 0x00))
+        light.style(TuiStyleRole::ConfirmationFlow).fg,
+        Some(Color::Rgb(0x69, 0x29, 0xc4))
     );
+    assert!(
+        contrast_ratio((0xbe, 0x95, 0xff), (0x26, 0x32, 0x38)) >= 4.5,
+        "dark confirmation-flow contrast"
+    );
+    assert!(
+        contrast_ratio((0x69, 0x29, 0xc4), (0xfa, 0xfa, 0xfa)) >= 4.5,
+        "light confirmation-flow contrast"
+    );
+
+    let no_color = TuiTheme::no_color().style(TuiStyleRole::ConfirmationFlow);
+    assert_eq!(no_color.fg, None);
+    assert!(no_color.add_modifier.contains(Modifier::BOLD));
 }
 
 #[test]
@@ -5106,7 +6190,10 @@ fn modal_control_copy_is_consistent_across_all_states_and_themes() {
         let help_buffer = rendered_buffer(&mut help, 160, 44);
         assert!(help_buffer.contains(ModalDismissal::Help.instruction()));
         assert!(help_buffer.contains("q             Quit (idle base screen)"));
-        assert_eq!(footer_text(&help, 160), "Esc Close  ? Close");
+        assert_eq!(
+            footer_text(&help, 160),
+            "Up/Down Scroll  PgUp/PgDn Page  Esc Close  ? Close"
+        );
         assert!(!help_buffer.contains("q Close"));
 
         let mut empty_menu = test_state_with_theme(theme);
@@ -5174,6 +6261,7 @@ fn modal_control_copy_is_consistent_across_all_states_and_themes() {
         edit.edit_input = Some(EditInputState {
             input: "AT+QCFG?".to_owned(),
             error: None,
+            timeout_secs: DEFAULT_COMMAND_TIMEOUT_SECS,
         });
         cancel_states.push(edit);
 
@@ -5264,17 +6352,228 @@ fn modal_control_copy_is_consistent_across_all_states_and_themes() {
 
         for (index, state) in cancel_states.iter_mut().enumerate() {
             let buffer = rendered_buffer(state, 160, 44);
-            assert!(
-                buffer.contains(ModalDismissal::Cancel.instruction()),
-                "missing cancel instruction in {:?} modal state {index}",
-                theme.mode(),
-            );
+            if state.timeout_input.is_none() {
+                assert!(
+                    buffer.contains(ModalDismissal::Cancel.instruction()),
+                    "missing cancel instruction in {:?} modal state {index}",
+                    theme.mode(),
+                );
+            }
             assert!(footer_text(state, 160).contains("Esc Cancel"));
             assert!(!buffer.contains("Esc/q"));
             assert!(!buffer.contains("Esc or q"));
             assert!(!buffer.contains("q Close"));
         }
     }
+}
+
+#[test]
+fn modal_geometry_uses_wrapped_content_height_and_existing_maximum() {
+    let screen = Rect::new(0, 0, 100, 40);
+    let short = vec![
+        Line::from("first"),
+        Line::from("second"),
+        Line::from("third"),
+    ];
+    let short_geometry = modal_geometry_for_lines(screen, 64, 32, &short);
+    assert_eq!(short_geometry.area.height, 5);
+    assert!(short_geometry.content_fits);
+
+    let long = (1..=40)
+        .map(|index| Line::from(format!("line {index}")))
+        .collect::<Vec<_>>();
+    let long_geometry = modal_geometry_for_lines(screen, 64, 32, &long);
+    assert_eq!(
+        long_geometry.area.height,
+        centered_rect(64, 32, screen).height
+    );
+    assert!(!long_geometry.content_fits);
+}
+
+#[test]
+fn representative_modal_states_end_after_their_last_visible_control() {
+    let mut search = test_state();
+    handle_key_code(&mut search, KeyCode::Char('/'));
+    assert_content_fit_modal_bottom(
+        &mut search,
+        "Commands / Sequences search",
+        "Enter applies. Esc cancels.",
+        160,
+        44,
+    );
+
+    let mut confirmation = test_state();
+    confirmation.selected_command = 1;
+    handle_key_code(&mut confirmation, KeyCode::Enter);
+    assert_content_fit_modal_bottom(
+        &mut confirmation,
+        "Confirm command",
+        "Input: <empty>",
+        160,
+        44,
+    );
+
+    let mut action_menu = test_state();
+    action_menu.response = ResponseState::masked("OK");
+    action_menu.focus = Pane::Response;
+    handle_key_code(&mut action_menu, KeyCode::Enter);
+    assert_content_fit_modal_bottom(
+        &mut action_menu,
+        "Response actions",
+        "Enter selects. Esc cancels.",
+        160,
+        44,
+    );
+
+    let mut sequence = test_state_with_sequences();
+    sequence.selected_category = sequence
+        .categories
+        .iter()
+        .position(|category| category == "sms")
+        .expect("sms category");
+    sequence.selected_command = sequence
+        .visible_commands()
+        .iter()
+        .position(|item| item.name() == "sms-send-check")
+        .expect("sms-send-check");
+    handle_key_code(&mut sequence, KeyCode::Enter);
+    assert_content_fit_modal_bottom(
+        &mut sequence,
+        "Run Sequence: sms-send-check",
+        "Enter: Next value (2 of 2).",
+        160,
+        44,
+    );
+
+    let mut details = test_state();
+    handle_key_code(&mut details, KeyCode::Char('d'));
+    assert_content_fit_modal_bottom(
+        &mut details,
+        "Details ·",
+        "Confirmation: not required",
+        160,
+        44,
+    );
+
+    let mut help = test_state();
+    handle_key_code(&mut help, KeyCode::Char('?'));
+    assert_content_fit_modal_bottom(
+        &mut help,
+        "Help",
+        "Unmasked Response: copy / export confirmation",
+        160,
+        44,
+    );
+}
+
+#[test]
+fn representative_modal_states_paint_their_complete_rectangle_in_colored_themes() {
+    for (theme, expected_background) in [
+        (TuiTheme::dark(), Color::Rgb(0x26, 0x32, 0x38)),
+        (TuiTheme::light(), Color::Rgb(0xfa, 0xfa, 0xfa)),
+    ] {
+        let mut search = test_state_with_theme(theme);
+        handle_key_code(&mut search, KeyCode::Char('/'));
+        assert_modal_background(
+            &mut search,
+            "Commands / Sequences search",
+            expected_background,
+            160,
+            44,
+        );
+
+        let mut confirmation = test_state_with_theme(theme);
+        confirmation.selected_command = 1;
+        handle_key_code(&mut confirmation, KeyCode::Enter);
+        assert_modal_background(
+            &mut confirmation,
+            "Confirm command",
+            expected_background,
+            160,
+            44,
+        );
+
+        let mut action_menu = test_state_with_theme(theme);
+        action_menu.response = ResponseState::masked("OK");
+        action_menu.focus = Pane::Response;
+        handle_key_code(&mut action_menu, KeyCode::Enter);
+        assert_modal_background(
+            &mut action_menu,
+            "Response actions",
+            expected_background,
+            160,
+            44,
+        );
+
+        let mut sequence = test_state_with_sequences_and_theme(theme);
+        sequence.selected_category = sequence
+            .categories
+            .iter()
+            .position(|category| category == "sms")
+            .expect("sms category");
+        sequence.selected_command = sequence
+            .visible_commands()
+            .iter()
+            .position(|item| item.name() == "sms-send-check")
+            .expect("sms-send-check");
+        handle_key_code(&mut sequence, KeyCode::Enter);
+        assert_modal_background(
+            &mut sequence,
+            "Run Sequence: sms-send-check",
+            expected_background,
+            160,
+            44,
+        );
+        for value in "+819012345678".chars() {
+            handle_key_code(&mut sequence, KeyCode::Char(value));
+        }
+        handle_key_code(&mut sequence, KeyCode::Enter);
+        for value in "hello".chars() {
+            handle_key_code(&mut sequence, KeyCode::Char(value));
+        }
+        handle_key_code(&mut sequence, KeyCode::Enter);
+        assert_modal_background(
+            &mut sequence,
+            "Confirm Sequence: sms-send-check",
+            expected_background,
+            160,
+            44,
+        );
+
+        let mut details = test_state_with_theme(theme);
+        handle_key_code(&mut details, KeyCode::Char('d'));
+        assert_modal_background(&mut details, "Details ·", expected_background, 160, 44);
+
+        let mut help = test_state_with_theme(theme);
+        handle_key_code(&mut help, KeyCode::Char('?'));
+        assert_modal_background(&mut help, "Help", expected_background, 160, 44);
+    }
+}
+
+#[test]
+fn help_uses_a_bounded_working_viewport_when_content_is_long() {
+    let mut state = test_state();
+    handle_key_code(&mut state, KeyCode::Char('?'));
+
+    let first = rendered_buffer(&mut state, 100, 12);
+    assert!(first.contains("Help 1-"));
+    assert!(first.contains("atctl TUI"));
+    assert!(footer_text(&state, 100).contains("PgUp/PgDn Page"));
+
+    handle_key_code(&mut state, KeyCode::PageDown);
+    let next = rendered_buffer(&mut state, 100, 12);
+    assert!(state.help_scroll > 0);
+    assert!(next.contains("Help "));
+    assert!(!next.contains("atctl TUI"));
+
+    handle_key_code(&mut state, KeyCode::Home);
+    rendered_buffer(&mut state, 100, 12);
+    assert_eq!(state.help_scroll, 0);
+
+    handle_key_code(&mut state, KeyCode::End);
+    let last = rendered_buffer(&mut state, 100, 12);
+    assert!(state.help_scroll > 0);
+    assert!(last.contains("Unmasked Response: copy / export confirmation"));
 }
 
 #[test]
@@ -5515,10 +6814,98 @@ fn sms_value_candidate(candidate: SmsMessageCandidate) -> SequenceValueCandidate
 }
 
 fn rendered_buffer(state: &mut TuiState, width: u16, height: u16) -> String {
+    format!("{:?}", rendered_buffer_cells(state, width, height))
+}
+
+fn rendered_buffer_cells(state: &mut TuiState, width: u16, height: u16) -> Buffer {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|frame| render_frame(frame, state)).unwrap();
-    format!("{:?}", terminal.backend().buffer())
+    terminal.backend().buffer().clone()
+}
+
+fn assert_content_fit_modal_bottom(
+    state: &mut TuiState,
+    title: &str,
+    final_line: &str,
+    width: u16,
+    height: u16,
+) {
+    let buffer = rendered_buffer_cells(state, width, height);
+    let bounds = modal_bounds(&buffer, title).unwrap_or_else(|| panic!("missing modal: {title}"));
+    let (_, final_y) = buffer_line_position(&buffer, final_line)
+        .unwrap_or_else(|| panic!("missing final modal line: {final_line}"));
+    assert_eq!(
+        bounds.y.saturating_add(bounds.height).saturating_sub(1),
+        final_y.saturating_add(1),
+        "{title} retained rows below its final visible control"
+    );
+}
+
+fn assert_modal_background(
+    state: &mut TuiState,
+    title: &str,
+    expected_background: Color,
+    width: u16,
+    height: u16,
+) {
+    let theme = state.theme;
+    let buffer = rendered_buffer_cells(state, width, height);
+    let bounds = modal_bounds(&buffer, title).unwrap_or_else(|| panic!("missing modal: {title}"));
+    for y in bounds.y..bounds.y.saturating_add(bounds.height) {
+        for x in bounds.x..bounds.x.saturating_add(bounds.width) {
+            assert_eq!(
+                buffer.cell((x, y)).map(|cell| cell.bg),
+                Some(expected_background),
+                "unexpected modal background at ({x}, {y}) for {:?}",
+                theme.mode()
+            );
+        }
+    }
+}
+
+fn modal_bounds(buffer: &Buffer, title: &str) -> Option<Rect> {
+    for top_y in 0..buffer.area.height {
+        let mut line = String::new();
+        for x in 0..buffer.area.width {
+            line.push_str(buffer.cell((x, top_y))?.symbol());
+        }
+        let Some(byte_index) = line.find(title) else {
+            continue;
+        };
+        let title_x = line[..byte_index].chars().count() as u16;
+        let Some(left_x) = (0..=title_x).rev().find(|x| {
+            buffer
+                .cell((*x, top_y))
+                .is_some_and(|cell| cell.symbol() == "┌")
+        }) else {
+            continue;
+        };
+        let Some(right_x) = (title_x..buffer.area.width).find(|x| {
+            buffer
+                .cell((*x, top_y))
+                .is_some_and(|cell| cell.symbol() == "┐")
+        }) else {
+            continue;
+        };
+        let Some(bottom_y) = (top_y..buffer.area.height).find(|y| {
+            buffer
+                .cell((left_x, *y))
+                .is_some_and(|cell| cell.symbol() == "└")
+                && buffer
+                    .cell((right_x, *y))
+                    .is_some_and(|cell| cell.symbol() == "┘")
+        }) else {
+            continue;
+        };
+        return Some(Rect::new(
+            left_x,
+            top_y,
+            right_x.saturating_sub(left_x).saturating_add(1),
+            bottom_y.saturating_sub(top_y).saturating_add(1),
+        ));
+    }
+    None
 }
 
 fn rendered_status_buffer(state: &mut TuiState, width: u16, height: u16) -> String {
@@ -5529,6 +6916,13 @@ fn rendered_status_buffer(state: &mut TuiState, width: u16, height: u16) -> Stri
         .draw(|frame| render_status(frame, frame.area(), state, &theme))
         .unwrap();
     format!("{:?}", terminal.backend().buffer())
+}
+
+fn line_containing<'a>(buffer: &'a str, needle: &str) -> &'a str {
+    buffer
+        .lines()
+        .find(|line| line.contains(needle))
+        .unwrap_or_else(|| panic!("missing {needle:?} in buffer:\n{buffer}"))
 }
 
 fn assert_contains_in_order(haystack: &str, needles: &[&str]) {
@@ -5554,6 +6948,25 @@ fn buffer_line_position(buffer: &Buffer, needle: &str) -> Option<(u16, u16)> {
         }
     }
     None
+}
+
+fn contrast_ratio(foreground: (u8, u8, u8), background: (u8, u8, u8)) -> f64 {
+    fn luminance(color: (u8, u8, u8)) -> f64 {
+        fn channel(value: u8) -> f64 {
+            let value = f64::from(value) / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+
+        0.2126 * channel(color.0) + 0.7152 * channel(color.1) + 0.0722 * channel(color.2)
+    }
+
+    let foreground = luminance(foreground);
+    let background = luminance(background);
+    (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
 }
 
 fn test_commands() -> Vec<Preset> {
@@ -5710,8 +7123,12 @@ impl TuiCommandExecutor for TestExecutor {
         self.timeouts.push(pending.timeout_secs);
         self.devices.push(pending.device_selection);
         self.normal_logging.push(pending.normal_logging_enabled);
-        match &pending.item {
-            ExecutableItem::Preset(preset) | ExecutableItem::CandidateAction { preset, .. } => {
+        let item = match &pending.item {
+            ExecutableItem::CandidateAction(action) => action.item.as_ref(),
+            item => item,
+        };
+        match item {
+            ExecutableItem::Preset(preset) => {
                 if let Some(error) = self.preset_error.take() {
                     return Err(error);
                 }
@@ -5821,6 +7238,7 @@ impl TuiCommandExecutor for TestExecutor {
                     duration: Duration::from_millis(7),
                 })))
             }
+            ExecutableItem::CandidateAction(_) => unreachable!("candidate actions are unwrapped"),
         }
     }
 }

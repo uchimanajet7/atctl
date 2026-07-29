@@ -104,7 +104,7 @@ runtime control.
 | `restart-modem` | `AT+CFUN=1,1` | `modem` | required | Request modem restart. | 3GPP TS 27.007 |
 | `disable-command-echo` | `ATE0` | `basic` | required | Disable command echo for the current AT session. | ITU-T V.250 |
 
-`available-operators` declares `timeout_secs = 180` because `AT+COPS=?` can
+`available-operators` declares `timeout_secs = 240` because `AT+COPS=?` can
 take longer than ordinary reads.
 
 The operator format, operator auto-selection, and registration detail presets
@@ -164,6 +164,8 @@ Optional preset fields:
 - `categories`: workflow categories such as `basic`, `identity`, `sim`,
   `network`, `pdp`, `apn`, `signal`, `sms`, `diagnostics`, or `modem`.
 - `timeout_secs`: preset-specific timeout hint for known long-running commands.
+  `preset run` uses an explicit `--timeout` first, then this hint, then the
+  30-second product default.
 
 The product derives the execution review from the final command. Definition
 metadata cannot override the assessment, effects, data handling, reversibility,
@@ -191,12 +193,16 @@ loaded preset. `atctl` validates the TOML shape, duplicate names, masking, and
 execution review, but it does not certify that an external definition is
 appropriate for the current device, SIM, network, or endpoint.
 
-Human-readable `atctl preset list` output shows `NAME`, `AT COMMAND`, and
-`ATTENTION`. Only confirmation-required rows show an attention warning; normal
-rows do not repeat `not required`. File definitions are grouped once by title
-and file path. `atctl preset show <NAME>` displays the complete command,
-definition origin, categories, timeout, and execution review without USB
-access. Use `--json` with `list` or `show` for complete structured records.
+Human-readable `atctl preset list` output shows `NAME` and `AT COMMAND`.
+Only confirmation-required rows append `[confirm]`; normal rows omit it. The tag
+means that selection leads to a confirmation step and is not a warning or risk
+classification. When tagged and untagged rows are mixed, the tag is aligned in
+a fixed trailing lane; when no row requires confirmation, that lane is
+reclaimed for the command preview. File definitions are grouped once by title and file path.
+`atctl preset show <NAME>` displays the complete command without USB access,
+using `Overview`, `Definition`, and `Execution` sections for the definition
+origin, categories, timeout, and execution review. Use `--json` with `list` or
+`show` for complete structured records.
 `atctl preset run` prints the source label, file path,
 and review notice before USB access when a file preset is executed, including
 non-interactive `--yes` or `--yes --allow-unknown` runs.
@@ -271,15 +277,38 @@ user-authored or repository-managed Sequence definitions are visible, their
 top-level TOML `title` is shown as a non-selectable source group header, such
 as `Quectel Sequences`; the TUI does not add an `Add-on:` prefix.
 
-The TUI keeps every executable item to one list row. Command rows use
-`name │ AT: command`; Sequence rows use `name │ Purpose: preview`. Selection
-does not expand a row. Press `d` for the complete name, AT command or Sequence
-purpose, definition origin, categories, timeout, parameters, and execution
-review; Details also shows the source title and file path for a non-default
-loaded definition. Details is read-only and does not access the modem. Every
-`Run Sequence` phase repeats the complete Sequence name and purpose. Long
-review context scrolls with `PageUp`/`PageDown` while the active value,
-candidate action, or confirmation input remains visible.
+The TUI keeps every executable item to one list row. Command rows show the name
+and AT command; Sequence rows show the name and a purpose preview. A
+confirmation-required row appends `[confirm]`, while a directly executable row
+does not. Mixed rows align the tag in a fixed trailing lane. The TUI reinforces
+the tag with a dedicated confirmation-flow color while the literal text and
+bold no-color form carry the meaning. Selection does not expand a row. Press
+`d` for the complete name, AT command or Sequence purpose, confirmation state,
+effects that remain unknown, definition origin, categories, timeout,
+parameters, and execution review. The read-only Details overlay organizes that
+information as `Overview`, `Definition`, `Before running`, `Inputs`, and
+`Execution`, omits empty sections, and identifies the current section and
+visible range in its border title. Details also shows the source title and file
+path for a non-default loaded definition and does not access the modem.
+
+`Run Sequence` is an operation surface rather than a second complete-definition
+view. Value input keeps the active value, directly relevant hint, candidates or
+candidate actions, current error, and exact next action visible without
+repeating the complete Details content. Final review shows all resolved values,
+applicable before-running notes, and execution consequences before the run
+instruction. If that review is longer than the available area, its explicit
+Review region scrolls with `PageUp`/`PageDown` while the instruction and current
+input remain visible. When more than one value must be resolved, the modal's
+top-right title shows
+`Value <current> of <total>` during value input and candidate-action
+confirmation. The active label and value stay at the top of the body, and the
+operation footer says whether `Enter` moves to the next numbered value, reviews
+the Sequence, accepts a candidate and continues to the next value or review,
+reviews a confirmation-required candidate action, or runs a confirmation-free
+candidate action. Accepting a candidate does not run the selected Sequence.
+Candidate-action completion returns to the modal without choosing a returned
+value. Review paging does not change the value position. Single-value Sequences
+and final review/confirmation omit the counter.
 
 Sequence add-ons are external executable definitions. To use repository-managed
 examples or project-local definitions, provide their locations for the current
@@ -299,13 +328,14 @@ running loaded Sequences may change modem state, send SMS, or transmit network
 payloads. Review the file source, steps, parameters, destination values, and
 the product-derived execution review before running a loaded Sequence.
 
-Human-readable `atctl sequence list` output shows `NAME`, `PURPOSE`, and
-`ATTENTION`, with the same exception-only warning and one-time file grouping as
-preset lists. `atctl sequence show <SEQUENCE>` displays complete purpose,
-definition origin, categories, timeout, before-running notes, parameter
+Human-readable `atctl sequence list` output shows `NAME` and `PURPOSE`, with the
+same exception-only `[confirm]` tag and one-time file grouping as preset lists.
+`atctl sequence show <SEQUENCE>` displays the complete definition without USB
+access, using the same `Overview`, `Definition`, `Before running`, `Inputs`, and
+`Execution` semantic sections as TUI Details. It includes purpose, definition
+origin, categories, timeout, before-running notes, parameter
 sources/defaults/hints/candidate sources, and the definition-boundary execution
-review without USB access. Use `--json` with `list` or `show` for complete
-structured records.
+review. Use `--json` with `list` or `show` for complete structured records.
 List rows review the complete definition boundary while parameter values are
 still unresolved. Before a run, atctl binds operator values and defaults,
 re-derives the execution review from the resulting commands, payload boundary,
@@ -381,7 +411,9 @@ Optional Sequence fields:
 
 - `categories`: workflow categories such as `sms`, `data`, `network`, `pdp`,
   `apn`, or `diagnostics`.
-- `timeout_secs`: Sequence-specific total timeout hint.
+- `timeout_secs`: Sequence-specific total timeout hint. `sequence run` uses an
+  explicit `--timeout` first, then this hint, then the 30-second product
+  default. The resulting value is one total Sequence deadline.
 - `params`: required or optional values. Sensitive inputs must be marked.
   Values may also define `default`, `source`, `candidate`, and `hint` so TUI
   and CLI users can see where the value comes from before execution.
@@ -406,21 +438,36 @@ Parameter value-resolution fields:
 - `hint`: concise instruction for how the operator confirms, selects, derives,
   or enters the value.
 
-The same parameter metadata appears in TUI input and CLI missing-value errors,
-so values such as PDP context ID, socket connect ID, and SMS storage index can
-include a default, source, candidate list, or entry hint.
+The same parameter metadata appears in TUI input, interactive CLI input, CLI
+`sequence show`, and non-interactive missing-value errors. Candidate-backed
+values also expose the existing executable items that can obtain candidates:
+`sms-message` references the product Sequence `sms-receive-check`, while
+`pdp-context` references the product Presets `active-pdp-contexts` and
+`pdp-contexts`.
 
-### Selecting Candidate Values in the TUI
+### Selecting Candidate Values
 
 For `source = "select"` or a parameter with `candidate`, the `Run Sequence`
 dialog shows available values and their source. If values have not been loaded,
 select the action shown in the dialog to obtain them. Opening the dialog alone
 does not read the modem or contact a network endpoint.
 
-Candidate actions use the normal execution review, confirmation, timeout, masking, Response,
-and logging behavior. A failed candidate action is reported separately from the
-selected Sequence. Manual entry remains available when the candidate list is
-empty or does not contain the required value.
+Candidate actions are references to those existing Presets and Sequences; they
+are not separate copied commands. They use the referenced item's normal
+execution review, confirmation, timeout, masking, Response, logging, and raw
+diagnostic export behavior. An action row appends `[confirm]` only when the
+referenced item's own review requires confirmation; it does not inherit the
+selected Sequence's tag. Mixed candidate actions align the tag in the same
+fixed trailing lane as other executable lists. A failed provider run is
+reported separately from the selected Sequence. Manual entry remains available
+when the candidate list is empty or does not contain the required value.
+
+Interactive `atctl sequence run` offers the same manual-entry and provider
+choices when a candidate-backed value is missing. Non-interactive and JSON
+invocations do not prompt or run providers; they report the provider kind/name
+and the exact `--param` retry. Direct `send`, `preset run`, and PTY bridge do
+not own Sequence parameter resolution, so they run only the command, Preset, or
+PTY traffic explicitly requested by the operator.
 
 Repository-managed and project-local Sequences can use a named `candidate`
 when `atctl` supports that candidate type. The currently supported names are

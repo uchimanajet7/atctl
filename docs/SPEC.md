@@ -1,7 +1,7 @@
 # atctl Product and Technical Specification
 
-- Document version: 0.4.118
-- Date: 2026-07-16
+- Document version: 0.4.121
+- Date: 2026-07-29
 - Implementation language: Rust
 - Product name: `atctl`
 - Repository name: `atctl`
@@ -678,9 +678,40 @@ Endpoint auto-detection AT probe timeout: 3 seconds
 User AT command timeout: 30 seconds
 ```
 
-Preset definitions MAY declare a recommended per-command timeout. A preset
-timeout is not a transport default; it is a command-specific time budget for
-known long-running commands.
+The USB write timeout and endpoint-probe timeout are fixed transport bounds.
+They MUST NOT inherit a user AT operation timeout, preset timeout, Sequence
+timeout, or TUI session timeout. Preset and Sequence definitions MAY declare
+recommended timeouts for known long-running operations; those values are
+operation budgets, not transport defaults.
+
+REQ-AT-007A: The effective host-side AT operation timeout MUST be resolved as
+follows:
+
+- `send`: explicit `--timeout`, otherwise 30 seconds;
+- `preset run`: explicit `--timeout`, otherwise the preset `timeout_secs`,
+  otherwise 30 seconds;
+- `sequence run`: explicit `--timeout`, otherwise the Sequence total
+  `timeout_secs`, otherwise 30 seconds;
+- TUI Command, Sequence, and candidate actions: current TUI-session timeout,
+  otherwise the selected definition timeout, otherwise 30 seconds; and
+- PTY bridge: explicit startup `--timeout`, otherwise 30 seconds.
+
+An explicitly supplied 30-second CLI value MUST remain explicit and MUST NOT be
+replaced by a definition hint. PTY bridge mode does not provide an in-band
+timeout-setting interaction.
+
+REQ-AT-007B: A host-side timeout means atctl stopped waiting; it does not prove
+that the modem stopped processing the operation. Timeout handling MUST remain
+distinct from modem-reported AT `ERROR`, MUST NOT automatically retry, and MUST
+tell the operator that modem processing may continue when that affects safe
+recovery.
+
+REQ-AT-007C: CLI command timeout errors MUST identify the effective number of
+seconds. TUI timeout failures MUST keep compact Status to the concise failed
+state and put the full failure in Response, beginning with `Result: failed`, a
+blank line, and `Timed out after N seconds.` A Sequence timeout MUST identify
+the failing step. PTY timeout MUST stop the bridge because later modem output
+can no longer be matched safely.
 
 REQ-AT-008: Commands with material effects and unknown commands MUST NOT be
 automatically retried.
@@ -748,10 +779,14 @@ the product-derived review. Each actual command and payload MUST be checked
 again at its write boundary and execution MUST stop if it exceeds the reviewed
 boundary.
 
-REQ-SEQ-ENGINE-006: Sequence timeout handling MUST support a total Sequence
-timeout and per-step timeout hints. A user-supplied command timeout is an
-override for the execution budget, not a guarantee that a modem-side operation
-can be cancelled safely.
+REQ-SEQ-ENGINE-006: Sequence timeout handling MUST use one resolved total
+Sequence deadline and MAY use per-step timeout hints. An explicit CLI timeout
+MUST override the Sequence total hint; a TUI-session timeout MUST override the
+Sequence total hint in the TUI. Each step wait MUST use the lesser of its own
+hint or default step budget and the remaining total Sequence budget. A step
+MUST NOT start a new full budget after the total deadline has elapsed. The
+resolved timeout is a host-side execution budget, not a guarantee that a
+modem-side operation can be cancelled safely.
 
 REQ-SEQ-ENGINE-007: Sequence output MUST include enough context for a human to
 verify what was attempted and what evidence was returned. For example,
@@ -1025,11 +1060,19 @@ REQ-CLI-PRESET-001: `atctl preset list` MUST list loaded product presets and
 loaded file presets.
 
 REQ-CLI-PRESET-002: Human-readable list output MUST be a concise scan surface
-with `NAME`, `AT COMMAND`, and `ATTENTION` columns. `ATTENTION` MUST be empty
-when confirmation is not required and MUST show the complete applicable
-confirmation warning otherwise. Rows MUST remain one line, reserve the complete
-warning before truncating other content, use terminal display-cell width, and
-ellipsize the AT command preview before the name. Categories remain workflow
+with `NAME` and `AT COMMAND` columns. A row MUST append the complete ASCII
+action-flow tag `[confirm]` only when execution requires explicit confirmation.
+The tag has the same meaning as in TUI executable-item rows: selecting the item
+leads to a confirmation step; it is not a warning or effects classification.
+Rows MUST remain one line and use terminal display-cell width. When the current
+result set contains at least one confirmation-required row, the list MUST
+reserve one trailing lane of one separator cell plus the complete `[confirm]`
+width for every row and align every displayed tag to that lane. A
+confirmation-free row leaves that lane blank. When the result set contains no
+confirmation-required row, the lane MUST NOT be reserved. The implementation
+MUST reserve the complete lane before truncating other content, ellipsize the
+AT command preview before the name, and MUST NOT render a partial tag. Rows
+that do not require confirmation MUST omit the tag. Categories remain workflow
 filters in the TUI and complete discovery metadata in `show` and JSON output.
 
 REQ-CLI-PRESET-003: `atctl preset list` MUST distinguish file preset sets from
@@ -1041,7 +1084,12 @@ untruncated preset records with structured definition origin.
 REQ-CLI-PRESET-003A: `atctl preset show <NAME>` MUST be read-only and MUST NOT
 access USB, the modem, or the network. Human-readable output MUST show complete
 name, AT command, definition origin and file metadata when applicable,
-categories, effective timeout hint, and the product-derived execution review.
+categories, the numeric timeout in seconds without a provenance/default suffix,
+and the product-derived execution review. Human-readable output MUST organize
+that information under the stable semantic sections `Overview`, `Definition`,
+and `Execution`, in that order. It MUST omit an empty section, separate each
+shown section from the previous section with one blank line, and place section
+content immediately after its heading.
 `--json` MUST expose the same information as structured, untruncated data.
 
 REQ-CLI-PRESET-004: Normal startup MUST load product-provided presets. File
@@ -1056,9 +1104,10 @@ REQ-CLI-PRESET-006: Repository-managed example file presets MUST use and be
 verified through the same multi-file loading path as other file presets. They
 are part of the maintained product and verification surface.
 
-REQ-CLI-PRESET-007: `atctl preset run <NAME>` SHOULD use the preset's
-`timeout_secs` value when the command would otherwise use the default user AT
-command timeout. A user-supplied `--timeout` remains the explicit override.
+REQ-CLI-PRESET-007: `atctl preset run <NAME>` MUST use an explicitly supplied
+`--timeout` value when present, including an explicit value of 30 seconds. When
+`--timeout` is omitted, it MUST use the preset `timeout_secs` value when present
+and otherwise use the 30-second user AT operation default.
 
 REQ-CLI-PRESET-008: Preset loading is an application-level feature, not a
 TUI-only feature. The same loaded preset set MUST be visible in
@@ -1126,17 +1175,23 @@ are not a replacement for direct `send` or one-shot `preset run`.
 
 REQ-CLI-SEQ-001: `atctl sequence list` MUST list loaded product-provided
 standard Sequences and loaded user or repository-managed Sequence definitions.
-Human-readable output MUST be a concise one-line scan surface with `NAME`,
-`PURPOSE`, and `ATTENTION` columns and the same warning reservation,
-display-cell-width, grouping, and truncation rules as preset list output.
+Human-readable output MUST be a concise one-line scan surface with `NAME` and
+`PURPOSE` columns and the same `[confirm]` reservation, display-cell-width,
+grouping, and truncation rules as preset list output.
 `--json` MUST return complete, untruncated Sequence records with structured
 definition origin, categories, timeout, parameters, and execution review.
 
 REQ-CLI-SEQ-001A: `atctl sequence show <NAME>` MUST be read-only and MUST NOT
 access USB, the modem, or the network. Human-readable output MUST show complete
 name, purpose, definition origin and file metadata when applicable, categories,
-timeout, before-running notes, parameter requirements/defaults/hints/sources/
+the numeric timeout in seconds without a provenance/default suffix,
+before-running notes, parameter requirements/defaults/hints/sources/
 candidate sources, and the product-derived definition-boundary execution review.
+Human-readable output MUST organize that information under the stable semantic
+sections `Overview`, `Definition`, `Before running`, `Inputs`, and `Execution`,
+in that order. It MUST omit an empty section, separate each shown section from
+the previous section with one blank line, and place section content immediately
+after its heading.
 `--json` MUST expose the same information as structured, untruncated data.
 
 REQ-CLI-SEQ-002: `atctl sequence run <SEQUENCE>` MUST execute a named Sequence
@@ -1148,6 +1203,11 @@ execution context.
 REQ-CLI-SEQ-003: `atctl sequence run <SEQUENCE>` MUST accept the same USB
 target selection options as direct device commands: `--vid`, `--pid`, `--bus`,
 `--address`, `--interface`, `--bulk-in`, `--bulk-out`, and `--timeout`.
+
+REQ-CLI-SEQ-003A: `atctl sequence run <SEQUENCE>` MUST resolve its total
+deadline from explicit `--timeout`, then the Sequence `timeout_secs`, then the
+30-second product default. The explicit value MUST win even when it equals the
+product default.
 
 REQ-CLI-SEQ-004: `atctl sequence list`, `atctl sequence run <SEQUENCE>`, and
 `atctl tui` SHOULD support explicit per-invocation Sequence definition location
@@ -1197,13 +1257,21 @@ normal Sequence JSON output MUST NOT expose a top-level or per-step `evidence`
 field.
 
 REQ-CLI-SEQ-008B: `atctl sequence run <SEQUENCE>` MUST use the same Sequence
-value-resolution contract as the TUI. If a required value is missing in a
-non-interactive invocation, the error MUST identify the missing parameter and
-include the Sequence-provided default value, value source, or resolution hint
-when available. CLI help and list output MAY remain compact, but they MUST NOT
-hide the fact that a value is supplied by a default, selected from modem output,
-derived during execution, provided by the Sequence, or entered by the operator
-when that distinction affects how the user obtains the value.
+value-resolution contract as the TUI. When stdin is interactive and a required
+candidate-backed value is missing, the CLI MUST offer manual entry and the
+candidate source's referenced executable providers. Selecting a provider MUST
+execute that existing Preset or Sequence through its normal review,
+confirmation, timeout, masking, Response, logging, and raw diagnostic export
+path, then return to the unresolved value and offer parsed candidates. The CLI
+MUST NOT execute a provider merely because input is missing.
+
+If stdin is non-interactive, or structured JSON output is requested, the CLI
+MUST NOT prompt or perform hidden provider execution. Its missing-value error
+MUST identify the parameter, the candidate source, every referenced provider
+kind and name, the Sequence-provided default/source/hint when available, and
+the exact `--param <NAME>=<VALUE>` retry path. CLI help and list output MAY
+remain compact, but `sequence show` MUST expose provider references for
+candidate-backed parameters in both human-readable and JSON output.
 
 REQ-CLI-SEQ-008C: When a file Sequence is executed, CLI and TUI execution
 surfaces MUST show the Sequence source label, file path, and a concise notice
@@ -1379,6 +1447,15 @@ remains explicit. A known prompt/payload command whose framing is not supported,
 including fixed-length `AT+QISEND=<connectID>,<length>`, MUST be rejected before
 USB access and directed to a Sequence that implements the required framing.
 
+REQ-CLI-BRIDGE-020: For a supported prompt-required command, waiting for the
+prompt and waiting for the final response after payload transmission MUST share
+one command timeout budget. The second wait MUST receive only the time remaining
+after the prompt wait; it MUST NOT start another full command timeout. If that
+budget expires, the bridge MUST print
+`atctl: command timed out after N seconds; bridge stopped because later modem
+output can no longer be matched safely.` and stop instead of accepting another
+command into an unsynchronized response stream.
+
 PTY bridge runtime contract:
 
 - `atctl bridge --symlink <PATH>` creates a `portable-pty` slave and exposes it
@@ -1397,13 +1474,16 @@ PTY bridge runtime contract:
   consequence-oriented review. Known operations group relevant information as
   `What will happen`, `Sensitive data`, and `Persists / Recovery`; empty
   optional groups are omitted. Unknown operations begin with
-  `! Effects are not fully known` and separate `Known`, `Possible consequences`,
+  `Effects are not fully known.` and separate `Known`, `Possible consequences`,
   and `Not established`. Known material operations require `run`; unknown
   operations require `unknown`.
 - Supported SMS prompt commands collect the command and payload before sending,
   review them together, wait for the modem prompt after authorization, append
   Ctrl-Z to the collected payload, and return the final response. Other known
   prompt framing is rejected before USB access and directed to a Sequence.
+- Prompt wait and payload-response wait share one command timeout budget. A
+  timeout stops the bridge because subsequent modem output cannot be matched
+  safely to later commands.
 - `screen /tmp/atctl 115200` and equivalent clients use the speed argument as a
   serial-tool compatibility value only.
 - A terminal client owns optional normal session-transcript recording. With GNU
@@ -1449,7 +1529,7 @@ operating system's controls.
 | Active context | lowercase `q` | `Esc` | `Enter` and navigation |
 | --- | --- | --- | --- |
 | Idle base screen | Quit the TUI | No action | Perform the focused pane's visible primary action; navigation follows the visible panes |
-| Help overlay | No action | Close Help | `?` also closes Help; all other keys are blocked from the underlying screen |
+| Help overlay | No action | Close Help | `?` also closes Help; `Up`/`Down`, `PageUp`/`PageDown`, `Home`, and `End` scroll Help when its content exceeds the viewport; all other keys are blocked from the underlying screen |
 | Non-editable modal or action menu | No action and no state change | Cancel, close, or go back | `Enter` performs the visible primary action; `Up`/`Down`, `Tab`, or other navigation keys act only when the modal visibly offers that movement |
 | Modal with a visible editable field | Insert `q` as ordinary text | Cancel the modal | `Enter` validates or performs the visible primary action; field-specific navigation acts only when visibly offered |
 | Command, Sequence, or candidate action running | Do not quit or terminate the operation | Do not claim modem-side cancellation | New execution actions remain blocked until completion or timeout |
@@ -1476,6 +1556,34 @@ REQ-TUI-MODAL-003: `Enter`, `Up`/`Down`, `Tab`, and other modal navigation keys
 MUST be advertised and handled only when the active modal visibly exposes the
 corresponding action or selection. A non-editable review phase MUST NOT accept
 typing or backspace into a hidden confirmation buffer.
+
+REQ-TUI-MODAL-004: Every atctl-owned modal and overlay MUST use one shared
+geometry and surface grammar:
+
+- a short input, acknowledgement, confirmation, or action-menu surface MUST
+  keep its established modal width and size its height to the wrapped visible
+  content, border, and at most one intentional separator before a pinned
+  instruction or footer;
+- a phase-based operation surface MUST keep a stable width between phases,
+  size short phases to their content, and cap long review context to a
+  scrollable viewport while keeping the phase title, critical instruction,
+  current input, and operation footer visible;
+- a read-only Details or Help surface MUST size to complete content when it fits
+  and otherwise use its established maximum viewport with visible range text
+  and working scrolling; and
+- an action menu MUST size to its current rows, current feedback, current
+  object context, and dismissal instruction rather than reserve unused rows.
+
+The required height is the border plus the wrapped visible body plus one
+intentional separator only when it distinguishes primary content from a pinned
+instruction or footer. The displayed height is the lesser of that required
+height and the surface's established safe maximum. Remaining height MUST belong
+only to an explicitly scrollable viewport; the renderer MUST NOT insert an
+unlabeled fill region merely to consume a fixed percentage. After clearing the
+underlying cells, the renderer MUST paint the complete modal rectangle with the
+active TUI theme background, including separators and unused cells inside a
+bounded viewport. If phase-critical content cannot fit within the safe maximum,
+REQ-TUI-005B applies.
 
 REQ-TUI-001: TUI command and Sequence execution MUST use the same transport,
 masking, logging, and execution-review policy as CLI execution.
@@ -1507,21 +1615,26 @@ masked Response, history, session log, and explicit Response export behavior
 unchanged.
 
 REQ-TUI-005: Every executable command row MUST use one physical row and show
-identity in this order: selection marker, command name, `│ AT:`, then the AT
-command string. A Sequence row MUST use the same physical height and show the
-selection marker, Sequence name, `│ Purpose:`, then a concise purpose preview.
-A row MUST append warning text only for an exception that requires operator
-attention:
-`! Confirmation required` for a known material operation or
-`! Confirmation required (effects unknown)` for an unknown operation. A row
-that does not require confirmation MUST NOT repeat a normal-state confirmation
-label. Rows MUST NOT use scalar safety, sensitivity, or write badges.
-Selection MUST NOT change row height or replace warning styling with selection
-styling. When available width cannot fit the full row, the implementation MUST
-reserve the complete applicable exception warning first, then the structural
-label and at least one visible character of the name. It MAY ellipsize the name
-and then shorten or omit the AT command or purpose preview. It MUST NOT show a
-partial warning.
+identity in this order: selection marker, command name, then the AT command
+string. A Sequence row MUST use the same physical height and show the selection
+marker, Sequence name, then a concise purpose preview. Rows MUST NOT repeat
+`AT:` or `Purpose:` before every preview. A row MUST append the complete ASCII
+action-flow tag `[confirm]` only when execution requires explicit confirmation.
+The tag means that execution has a confirmation step; it MUST NOT be presented
+as a warning, risk score, effects classification, or completed confirmation.
+A row that does not require confirmation MUST NOT show a normal-state
+confirmation label. Rows MUST NOT use scalar safety, sensitivity, write, or
+effects badges. Selection MUST NOT change row height or replace the tag's
+confirmation-flow styling with selection styling. When the current category or
+search result contains at least one confirmation-required item, every
+executable row MUST reserve one trailing lane of one separator cell plus the
+complete `[confirm]` width. Displayed tags MUST begin in the same terminal
+column; confirmation-free rows leave that lane blank. When the result contains
+no confirmation-required item, the lane MUST be reclaimed for command or
+purpose content. When available width cannot fit the full row, the
+implementation MUST reserve the complete lane first and at least one visible
+character of the name. It MUST shorten or omit the AT command or purpose
+preview before ellipsizing the name and MUST NOT show a partial tag.
 
 REQ-TUI-005A: With `Commands / Sequences` focused and the TUI idle, `d` MUST
 open a read-only `Details` overlay for the selected executable item without USB,
@@ -1532,28 +1645,38 @@ visible and MUST show:
 - the complete `Name:`;
 - the complete `AT command:` for a command or complete `Purpose:` for a
   Sequence;
-- an exception warning only when confirmation is required;
 - `Source:` and `File:` only for a non-default loaded definition; and
 - `Search match:` when the active query matched a field whose matching text is
   not fully visible in the list row.
 
-The overlay MUST wrap complete text. When its body exceeds the viewport, it
-MUST show the visible range as `Details <first>-<last>/<total>`, accept
+The overlay MUST organize complete text under the stable semantic sections
+`Overview`, `Definition`, `Before running`, `Inputs`, and `Execution`, in that
+order. It MUST omit an empty section, separate each shown section from the
+previous section with one blank line, and place section content immediately
+after its heading. The overlay MUST wrap complete text. Its border title MUST
+identify both the section at the first visible content line and the visible
+range as `Details · <section> <first>-<last>/<total>`. When its body exceeds the
+viewport, it MUST accept
 `Up`/`Down` for one-line scrolling and `PageUp`/`PageDown` for page scrolling,
 and keep `Esc` as its only close key. Lowercase `q` MUST have no effect. Closing
 MUST restore the same category, search query, selection, and list viewport.
 
-For a command, Details MUST also show categories, effective timeout, and the
-complete product-derived execution review. For a Sequence, Details MUST also
-show categories, timeout, before-running notes, parameter requirements,
+For a Command and a Sequence, Details MUST show the effective numeric timeout
+in seconds without a default, source, or override qualifier. For a command,
+Details MUST also show categories and the complete product-derived execution
+review. For a Sequence, Details MUST also show categories, before-running
+notes, parameter requirements,
 defaults, hints, value sources and candidate sources, and the complete
 definition-boundary execution review. These fields MUST use the same meanings as
 CLI `preset show` and `sequence show`; Details remains read-only.
+Details MUST present the complete execution review once. It MUST NOT prepend
+separate `Run:` or `Risk:` summary rows that duplicate confirmation or
+uncertainty already present in the complete review.
 
 REQ-TUI-005B: Empty category and search results MUST replace the executable rows
 with a concise explanation and an available recovery action. Empty-state
 rendering MUST NOT perform hidden device or network I/O. If the available area
-cannot safely show an executable row's complete exception warning, a complete
+cannot safely show an executable row's complete confirmation tag, a complete
 Details viewport, or phase-critical confirmation content, the affected surface
 MUST show `Executable details cannot fit safely.` and
 `Resize the terminal to continue.` instead of rendering partial actionable
@@ -1565,7 +1688,7 @@ REQ-TUI-006: TUI confirmation dialogs MUST show the target command or Sequence
 identity before review detail. Known reviews MUST group information as
 `What will happen`, optional `Sensitive data`, and optional
 `Persists / Recovery`. Unknown reviews MUST begin with
-`! Effects are not fully known` and separate `Known`,
+`Effects are not fully known.` and separate `Known`,
 `Possible consequences`, optional `Sensitive data`, optional
 `Persists / Recovery`, and `Not established`. Empty optional groups MUST be
 omitted. The exact acknowledgement instruction and current `Input:` value MUST
@@ -1616,7 +1739,7 @@ successful command cancellation.
 
 REQ-TUI-008E: The TUI SHOULD handle long-running AT commands
 with visible running state, elapsed time, timeout, remaining time, timeout-budget
-progress, timeout override, and blocking of conflicting command sends. It SHOULD
+progress, the current session timeout value, and blocking of conflicting command sends. It SHOULD
 NOT add a normal cancel key while modem-internal cancellation semantics remain
 unverified.
 
@@ -1663,9 +1786,14 @@ selected command or Sequence name, AT command string when relevant, current
 Sequence step when relevant, output masking state only when meaningful, and
 completion or failure summary. It MUST NOT duplicate the execution review,
 confirmation rationale, response body, Sequence transcript, or log content.
-It MUST NOT show confirmation requirement, Assessment, Effects, Data handling,
-Reversibility, or Consequences; warning exceptions belong in executable-item
-rows and detailed review belongs in confirmation/review surfaces.
+For a selected item that has not started, Status MUST NOT repeat confirmation
+or unknown-effects metadata already represented by the executable row and
+complete Details. Complete review content belongs in Details and the
+confirmation surface.
+When the compact Status height cannot fit all selected-item context, the
+selected identity, timeout, and device state MUST take precedence over
+repeating the source and AT command;
+the list grouping and Details retain the complete source and identity.
 Status content SHOULD use readable key-value lines instead of packing unrelated
 values into a single pipe-delimited line when vertical space is available.
 Status MUST NOT contain generic keyboard shortcut boilerplate such as
@@ -1861,11 +1989,23 @@ Reselecting a device changes the active execution target for subsequent
 commands but MUST NOT change the already displayed response history. Device
 reselection MUST be disabled while a command is actively running.
 
-REQ-TUI-014F: The TUI MUST provide a temporary command-timeout control for the
-current session. The timeout control MUST be reachable through normal focus
-navigation and `Enter` activation in the Controls pane. The value MUST be
-visible in Status before execution and MUST be used for the next command
-executions until changed or reset.
+REQ-TUI-014F: The TUI MUST provide a session timeout control for all Commands
+and Sequences until the current TUI closes. The control MUST be reachable by
+normal focus navigation and `Enter` activation from a stable `Timeout` row in
+Controls. The Controls row MUST NOT duplicate the current numeric value. The
+modal title MUST be `Timeout`; it MUST explain that the value applies to all
+Commands and Sequences until the TUI closes, accept positive seconds, and
+explain that blank input uses each Command or Sequence timeout. `Enter` MUST
+apply the value, blank plus `Enter` MUST clear the session value, and `Esc` MUST
+close the modal without changing the timeout or compact Status. The footer MUST
+show `Enter Apply` and `Esc Cancel`; no reset keyword is required.
+
+After setting a value, nearby Controls feedback MUST say `Timeout set to N
+seconds.` After clearing it, nearby Controls feedback MUST say `Using each
+Command or Sequence timeout.` Status MUST show the effective numeric timeout
+for the selected or active item. An edited selected command MUST retain the
+effective timeout resolved when edit input opened. Timeout presentation MUST
+NOT add default, source, provenance, override, or session-override qualifiers.
 
 REQ-TUI-015: Normal focus cycling MUST NOT include informational-only Status.
 Normal focus cycling MUST preserve a predictable visual order and MUST keep
@@ -1936,8 +2076,10 @@ aligned. Controls rows MUST use a stable list order and SHOULD remain visible
 even when the action is currently unavailable. Controls rows MUST primarily
 read as actions, not as a status table. Stable action labels MUST NOT be
 replaced by result sentences such as `Copy resp sent`. Inline state MAY be
-included only when it changes the action decision itself, such as `Timeout 30s`,
-`Start raw export`, `Stop raw export`, or `Output masking off`. Routine
+included only when it changes the action decision itself, such as `Start raw
+export`, `Stop raw export`, or `Output masking off`. The `Timeout` row is the
+action that opens the session timeout modal; its effective numeric value belongs
+in Status and Details rather than being duplicated in Controls. Routine
 availability values such as `avail`, `no resp`, `ready`, or `sel dev` MUST NOT
 be repeated on every row as a permanent state column. Activating an unavailable
 row MUST leave the TUI state unchanged and provide concise nearby Controls
@@ -2064,8 +2206,8 @@ or unspecified prefixes. Required label shape is:
 ```
 
 REQ-TUI-CMD-SET-003: Command rows MUST keep the same shape regardless of preset
-set: command name, `│ AT:`, AT command string, and an exception warning only
-when confirmation is required.
+set: command name, AT command string, and `[confirm]` only when confirmation is
+required.
 Command rows MUST NOT use inline preset set badges such as `[built-in]`,
 `[Quectel commands]`, or a file-path badge in the normal TUI command list.
 
@@ -2149,13 +2291,14 @@ These group headers are not executable rows and MUST follow the same
 non-selectable navigation rules as source group headers.
 
 REQ-TUI-SEQ-004: One-shot command rows MUST keep the command-row shape defined
-by REQ-TUI-005: command name, `│ AT:`, AT command string, then the applicable
-exception warning. Sequence rows MUST use the same one-row height: Sequence
-name, `│ Purpose:`, concise purpose preview, then the applicable exception
-warning. A Sequence row MUST NOT try to show every step's AT command inline.
-The complete purpose MUST be available through `d Details` and every Sequence
-modal phase. It MUST NOT be duplicated into compact Status as normal active or
-selected context.
+by REQ-TUI-005: command name, AT command string, then `[confirm]` when
+applicable. Sequence rows MUST use the same one-row height: Sequence name,
+concise purpose preview, then `[confirm]` when applicable. A Sequence row MUST
+NOT try to show every step's AT command inline.
+The complete purpose MUST be available through `d Details`. Sequence operation
+modals MUST identify the selected Sequence by name without duplicating its
+complete purpose into every input phase. The purpose MUST NOT be duplicated into
+compact Status as normal active or selected context.
 
 REQ-TUI-SEQ-005: Sequence source grouping MUST follow the same user-facing
 principles as preset source grouping. Product-provided standard Sequences MUST
@@ -2169,11 +2312,13 @@ REQ-TUI-SEQ-006: Selecting a Sequence with operator-supplied, defaulted, or
 resolvable values MUST open a `Run Sequence` modal before Sequence execution.
 Every phase, including value input, candidate selection, candidate-action
 confirmation, no-confirmation review, known confirmation, unknown confirmation,
-and error feedback, MUST show the complete Sequence `Name:` and `Purpose:`.
+and error feedback, MUST identify the selected Sequence by name in the modal
+title or phase-critical content.
 The value-input phase MUST also show required values, sensitive-input masking
 state, current value, and value source without a stale pre-resolution
 confirmation label. The final review phase MUST show the resolved Sequence
-identity and the consequence-oriented groups defined by REQ-TUI-006. It MUST
+identity, resolved values, applicable before-running notes, and the
+consequence-oriented groups defined by REQ-TUI-006. It MUST
 NOT reduce the
 experience to bare `required <empty>` rows when a value has a Sequence default,
 a known modem check, a selectable prior/current result, a derived value, or an
@@ -2184,10 +2329,27 @@ REQ-TUI-SEQ-006A: The `Run Sequence` modal MUST use a compact value-resolution
 grammar for Sequence values:
 
 ```text
-<label>: <current value or unresolved>  <value state>
+Run Sequence: <name>                      Value <current> of <total>
+<label>
+> <current value or unresolved>  <value state>
   <resolution hint, only when helpful for the active row or narrow displays>
   <resolution options or candidate rows, only for the active resolvable value>
 ```
+
+When a Sequence has more than one parameter, the value-input phase MUST render
+`Value <current> of <total>` as a right-aligned modal-border title opposite the
+phase title. The same position title MUST remain visible while confirming a
+candidate-acquisition action for that value. It MUST update when parameter
+navigation changes the active value and MUST NOT change when `PageUp` or
+`PageDown` scrolls Details. A Sequence with zero or one parameter MUST omit the
+position title. The final review or Sequence-confirmation phase MUST also omit
+it because value resolution is complete.
+
+The active parameter label belongs directly above its selected value row. The
+body MUST NOT repeat the value position, add a generic `Current value:` heading,
+or duplicate the active parameter label. The literal position text carries the
+meaning in every theme; focus styling MAY reinforce it but MUST NOT be the only
+position signal.
 
 The allowed value states are:
 
@@ -2224,19 +2386,44 @@ MAY be exposed as explicitly loaded add-on commands or Sequences, but MUST NOT
 be added to product-standard candidate assistance unless this specification is
 revised to expand the product contract.
 
-REQ-TUI-SEQ-006A.2: A candidate source MUST define its candidate acquisition
-actions as explicit product actions. The TUI MAY render those actions inside
-the `Run Sequence` modal, but selecting an action MUST execute the
-corresponding command or Sequence through the normal execution path, including
-execution review, confirmation when required, timeout, output masking,
-Response transcript, history/session logging, and raw diagnostic export
-behavior where applicable. Opening the modal MUST NOT execute candidate actions.
+REQ-TUI-SEQ-006A.2: A candidate source MUST define candidate acquisition as
+references to existing executable items, not as copied AT-command text or a
+second candidate-only execution definition. The current product references
+are:
+
+- `sms-message`: product Sequence `sms-receive-check`.
+- `pdp-context`: product Presets `active-pdp-contexts` and `pdp-contexts`.
+
+The provider reference MUST contain only the existing item kind and name. Its
+command steps, purpose, categories, review, confirmation requirement, timeout,
+masking, logging, raw diagnostic export, and parsing behavior remain owned by
+the referenced Preset or Sequence.
+
+The TUI MAY render those references as explicit actions inside the
+`Run Sequence` modal, but selecting an action MUST execute the referenced
+Preset or Sequence through its normal execution path and then return to the
+original unresolved value. For `sms-message`, this is an operator-visible
+transition from `sms-read-message` or `sms-reply-check` input to the existing
+two-step `sms-receive-check` Sequence and back; it is not a new general
+recursive Sequence-definition feature. Opening the modal MUST NOT execute
+candidate actions.
+Each visible candidate-action row MUST append the same complete `[confirm]`
+action-flow tag used by other human executable discovery surfaces when that
+action's derived review requires confirmation, and MUST omit the tag otherwise.
+The tag MUST be determined from the candidate action itself, not inherited from
+the selected Sequence. Candidate actions in the same action set MUST use the
+same conditional trailing-lane grammar as other executable discovery: reserve
+one separator cell plus the complete tag width for every action row when any
+action requires confirmation, align displayed tags to that lane, leave the lane
+blank on confirmation-free rows, reclaim it when no action requires
+confirmation, and truncate the command preview before the action label.
 
 REQ-TUI-SEQ-006B: TUI Sequence input MUST keep the normal TUI topology and MUST
 not add a permanent Sequence-only pane. The active modal MAY show only concise
 resolution hints inline, but the user must be able to determine where each
-required value comes from before execution. The modal footer MUST remain
-keyboard-operation focused.
+required value comes from before execution. The complete definition remains
+available through the read-only `d Details` surface before opening the operation
+modal. The modal footer MUST remain keyboard-operation focused.
 
 REQ-TUI-SEQ-006B.1: The `Run Sequence` modal MUST be specified and implemented
 as a phase-based operation surface, not as an unbounded text transcript. The
@@ -2245,16 +2432,56 @@ confirmation, and error feedback. In every phase, the visible content MUST make
 the current phase, next required action, and current input state clear without
 requiring the user to infer hidden continuation below the visible modal.
 
-REQ-TUI-SEQ-006B.2: If modal context exceeds the available area, the modal MUST
-use an upper scrollable context region labelled
-`Details <first>-<last>/<total>` and a lower pinned interaction region.
-`PageUp` and `PageDown` MUST scroll only the context region by one visible page.
+REQ-TUI-SEQ-006B.2: The modal MUST use a phase-specific but consistent operation
+grammar. During value resolution, it MUST show only the selected Sequence
+identity, active value and state, directly relevant hint, available candidates
+or candidate actions, current error feedback, and the exact next action. It
+MUST NOT embed the complete definition, complete value overview, source/file
+metadata, or general before-running notes as an always-visible Details region.
 `Up` and `Down` MUST retain parameter or candidate navigation where that phase
-offers it. The pinned region MUST keep the active value and candidate action,
-or the execution-confirmation instruction and current `Input:`, visible and
-operable. The modal MUST NOT silently omit context or show a visual continuation
-without working scrolling. When even the pinned region cannot fit safely,
-REQ-TUI-005B applies.
+offers it.
+
+During candidate-action review and final Sequence review or confirmation, the
+modal MUST show the review context before a visually separated, pinned
+instruction and current `Input:`. Final Sequence review MUST include all
+resolved values, applicable before-running notes, and the consequence-oriented
+execution review. If review context exceeds the available space, it MUST use an
+explicit `Review <first>-<last>/<total>` or `Action review
+<first>-<last>/<total>` region, and `PageUp` and `PageDown` MUST scroll only
+that region by one visible page. The instruction and current `Input:` MUST
+remain visible while review context scrolls. The modal MUST NOT silently omit
+context or show a visual continuation without working scrolling. When
+phase-critical content and the operation footer cannot fit safely while leaving
+an operable review viewport, REQ-TUI-005B applies.
+
+REQ-TUI-SEQ-006B.3: In the value-input phase, the operation footer MUST state
+the exact result of pressing `Enter` for the currently selected row:
+
+- `Enter: Next value (<next> of <total>)` when the current value advances to
+  another parameter.
+- `Enter: Review Sequence` for the last parameter and for a one-parameter
+  Sequence.
+- `Enter: Use value and continue to Value <next> of <total>` when a loaded
+  candidate value is selected and another parameter remains.
+- `Enter: Use value and review Sequence` when a loaded candidate value is
+  selected for the last parameter or for a one-parameter Sequence.
+- `Enter: Review action` when a confirmation-required candidate-acquisition
+  action is selected.
+- `Enter: Run action` when a confirmation-free candidate-acquisition action is
+  selected.
+
+The modal operation footer owns the exact next outcome. The global TUI footer
+MUST remain a concise key legend and MUST NOT contradict it. Candidate
+selection, candidate-action confirmation, validation errors, and Details
+scrolling MUST preserve the active value position. A validation error MUST NOT
+advance the position. The final review or confirmation phase title indicates
+the completed transition and MUST NOT retain a value position.
+
+REQ-TUI-SEQ-006B.4: Candidate-action labels, previews, review content, and
+confirmation tags MUST be derived from the referenced executable item. They
+MUST identify whether the provider is a Preset or Sequence and its existing
+name. The TUI MUST NOT present a copied one-command substitute as if it were the
+referenced multi-step Sequence.
 
 REQ-TUI-SEQ-006C: A value whose state is `select`, or whose parameter declares
 a product-known `candidate`, MUST NOT be treated as resolved by a hint line
@@ -2286,6 +2513,16 @@ data, including the applicable execution review, confirmation, timeout,
 masking, and transcript behavior. This applies to SMS candidates, PDP context
 IDs, TCP read data, provider endpoint checks, and any future `source=select`
 value source.
+
+REQ-TUI-SEQ-006C.1A: The same no-hidden-I/O boundary applies across production
+entry points. Direct `send`, `preset run`, and PTY bridge execute only the
+operator-requested command, Preset, or PTY traffic because those entry points
+do not resolve Sequence parameters. Interactive `sequence run` and TUI may
+offer the same referenced candidate providers because they own Sequence value
+resolution. Non-interactive and JSON `sequence run` MUST stop with provider and
+retry guidance instead of executing a provider. These differences preserve one
+shared outcome and responsibility model; they do not create surface-specific
+candidate commands or execution semantics.
 
 REQ-TUI-SEQ-006C.2: TUI candidate reuse MUST be scoped to the current TUI
 session. Candidate sets MUST NOT be loaded automatically from history files,
@@ -2355,13 +2592,14 @@ SMS candidate assistance.
 REQ-TUI-SEQ-006E: Candidate-selection keyboard behavior MUST be TUI-efficient
 and must not require mouse interaction. When a selectable candidate list is
 visible for the active value, `Up` and `Down` move through candidate rows and
-any visible candidate actions, `Enter` selects the highlighted candidate into
-the value or runs the highlighted candidate action, and repeated `Enter`
-continues the existing Sequence input flow once the current value is already
-resolved. `Tab` MAY move to the next value. Character input MUST remain a manual
-entry path for the active value. The modal footer MUST describe the current
-candidate-selection keys without adding normal-operation explanations to
-compact Status.
+any visible candidate actions. `Enter` on a highlighted candidate MUST accept
+that candidate as the active value, validate it, and continue to the next value
+or final Sequence review in the same keystroke. It MUST NOT execute the
+selected Sequence. `Enter` on a highlighted candidate action runs that action
+through the action behavior defined below. `Tab` MAY move to the next value.
+Character input MUST remain a manual entry path for the active value. The modal
+footer MUST describe the current candidate-selection keys without adding
+normal-operation explanations to compact Status.
 
 REQ-TUI-SEQ-006E.1: A candidate list MAY render only a window of rows when the
 modal cannot fit every candidate, but all candidates in the candidate set MUST
@@ -2381,12 +2619,15 @@ loaded, `Up` and `Down` SHOULD move between the current value option and the
 available candidate actions. When candidates are loaded, `Up` and `Down` SHOULD
 move between candidate rows and the available candidate actions. `Enter` on the
 current value option advances the normal Sequence input flow. `Enter` on a
-candidate row selects that value. `Enter` on a candidate action runs that
-action through the normal execution path and keeps the `Run Sequence` modal
-available so parsed candidates can be selected after the action completes. If
-the action requires typed confirmation, that confirmation happens inside the
-same `Run Sequence` modal before USB access and MUST use the same `run` or
-`unknown` token as the normal command/Sequence execution-review policy.
+candidate row accepts that value and immediately advances the normal Sequence
+input flow to the next value or final review. `Enter` on a candidate action
+runs that action through the normal execution path and keeps the `Run Sequence`
+modal available so parsed candidates can be selected after the action
+completes. Candidate-action completion MUST NOT select a returned value or
+advance the selected Sequence automatically. If the action requires typed
+confirmation, that confirmation happens inside the same `Run Sequence` modal
+before USB access and MUST use the same `run` or `unknown` token as the normal
+command/Sequence execution-review policy.
 
 REQ-TUI-SEQ-006E.3: Candidate acquisition action execution is part of Sequence
 input assistance, not execution of the selected Sequence body. While a
@@ -2425,10 +2666,11 @@ sizes. A known material Sequence MUST show `Type run to execute`; an unknown
 Sequence MUST show `Type unknown to execute`. Both MUST show
 `Input: <current input>` as phase-critical content. For Sequences that do not
 require typed confirmation, the modal MUST show the Enter-to-run instruction.
-Long `Values` or `Review` sections MUST be summarized, clipped, or placed in a
-scrollable detail region before they are allowed to push the confirmation
-instruction or input field out of view. The footer alone is not sufficient
-confirmation input visibility.
+All resolved values, applicable before-running notes, operation summary, and
+the consequence-oriented execution review MUST remain available in the
+scrollable Review region. The acknowledgement instruction and current input
+MUST be visually separated below that region and MUST remain pinned while
+Review pages. The footer alone is not sufficient confirmation input visibility.
 
 REQ-TUI-SEQ-006I: Sequence value input and ordinary review are focus phases and
 MUST use the focus/cyan visual role. A resolved Sequence that does not require
@@ -2680,28 +2922,33 @@ before implementation.
 
 REQ-TUI-A11Y-011: Confirmation-required rows and dialogs MUST remain
 distinguishable through text and structure when color is disabled or
-unavailable. Warning color MAY reinforce that state, but it MUST NOT replace
-the confirmation label, acknowledgement instruction, or cancel-default
-behavior.
+unavailable. The compact row tag MUST retain the literal `[confirm]` text and
+bold emphasis. In dark and light themes it MUST additionally use the dedicated
+ConfirmationFlow role rather than Text, Focus, Selected, Status, Muted,
+Warning, or Error. Warning color MAY reinforce actual warning content in a
+dialog, but it MUST NOT replace the confirmation label, acknowledgement
+instruction, or cancel-default behavior.
 
 REQ-TUI-A11Y-012: The TUI palette and emphasis design MUST preserve the
 specified cyan/yellow direction unless this specification defines a concrete
 replacement.
 
-REQ-TUI-A11Y-013: Selected-row styling MUST preserve an appended exception
-warning and MUST NOT erase warning emphasis from a confirmation-required token.
-Selection, item kind, warning state, truncation, and scrolling MUST also remain
-understandable without color through `>`, `│ AT:`, `│ Purpose:`, `!`, `...` or
-`…`, and visible range text respectively.
+REQ-TUI-A11Y-013: Selected-row styling MUST preserve the appended confirmation
+tag and MUST NOT erase the normal emphasis from `[confirm]`. Selection, item
+kind, confirmation flow, effects-unknown risk, truncation, and scrolling MUST
+remain understandable without color through `>`, kind/source grouping plus
+command or purpose content, `[confirm]`, the complete unknown-effects sentence
+in Details or confirmation, `...` or `…`, and visible range text respectively.
+`[confirm]` MUST NOT use the Warning role; the Warning role remains available
+for actual warning content such as effects that are not fully known.
 
 OQ-012 execution-review display contract:
 
-- Commands MUST display name, AT command, then an exception warning when one is
-  required. Sequences MUST display name, summary, then an exception warning
-  when one is required.
-- Allowed exception warning text is:
-  - `! Confirmation required`
-  - `! Confirmation required (effects unknown)`
+- Human CLI and TUI executable discovery MUST display command name, AT command,
+  then `[confirm]` when confirmation is required. Sequence discovery MUST
+  display name, summary, then `[confirm]` when confirmation is required.
+- `[confirm]` is the only confirmation-required token allowed in normal human
+  executable-item rows and TUI candidate-action rows.
 - Rows that do not require confirmation MUST omit confirmation status.
 - Scalar labels such as `[safe]`, `[sensitive]`, `[write]`, `[persistent]`,
   `[dangerous]`, and `[unknown]` MUST NOT appear in normal executable-item rows,
@@ -2717,30 +2964,40 @@ OQ-012 execution-review display contract:
 - The specified dark palette is:
   - background `#263238`
   - base text `#ECEFF1`
+  - confirmation flow `#BE95FF`
   - focus/status `#4DD0E1`
   - selection `#FFD54F`
-  - warning/confirmation `#FFD166`
+  - warning `#FFD166`
   - error `#FF6B6B`
   - muted `#B0BEC5`
 - The specified light palette is:
   - background `#FAFAFA`
   - base text `#263238`
+  - confirmation flow `#6929C4`
   - focus/status `#007C89`
-  - selection/warning/confirmation `#7A5A00`
+  - selection/warning `#7A5A00`
   - error `#B00020`
   - muted `#4B5563`
-- Selected rows MUST preserve confirmation-required warning styling.
+- The ConfirmationFlow text contrast against the specified background MUST
+  remain at least 4.5:1. The specified dark pair is approximately 5.60:1 and
+  the specified light pair is approximately 7.41:1.
+- Selected rows MUST preserve `[confirm]` as a distinct bold ConfirmationFlow
+  action-flow tag without converting it to the selection or Warning role.
+- No-color mode MUST preserve the literal tag and bold emphasis without
+  introducing a color-dependent distinction.
 - TUI theme selection MUST support default dark, `--theme dark`,
   `--theme light`, and `--theme no-color`.
 - `NO_COLOR` without an explicit `--theme` MUST use no-color mode.
 - Verification MUST cover theme selection, all required semantic roles,
-  selected-row warning-token preservation, both exception warnings, omission
-  of normal-state confirmation text, negative checks for all removed scalar
-  labels, and render-buffer evidence that masking state and confirmation
-  instructions remain separate from row warnings and compact Status. It MUST
-  compare built-in-only, mixed command/Sequence, loaded-definition, known
-  confirmation, unknown confirmation, no-confirmation Sequence review, adjacent
-  acknowledgement, and dark/light/no-color states.
+  selected-row tag preservation, identical `[confirm]` tags for known and
+  unknown confirmation cases, omission of `[confirm]` for no-confirmation
+  items, absence of repeated `AT:` and `Purpose:` row labels, negative checks
+  for all removed scalar labels, human CLI list coverage, TUI candidate-action
+  coverage, and render-buffer evidence that Details exposes the complete review
+  without duplicating it in compact Status. It MUST compare built-in-only,
+  mixed command/Sequence, loaded-definition, known confirmation, unknown
+  confirmation, no-confirmation Sequence review, adjacent acknowledgement, and
+  dark/light/no-color states.
 
 ### 16.2 TUI Output Masking Requirements
 
@@ -2959,6 +3216,26 @@ authorization, execution output, and logs. A value that can only be derived from
 a prior modem response MUST remain explicit in the pre-execution boundary and
 the resulting command MUST be checked again immediately before its write.
 
+REQ-REVIEW-015: Human executable discovery across `atctl preset list`,
+`atctl sequence list`, TUI `Commands / Sequences`, and TUI candidate-acquisition
+actions MUST use the same exception-only `[confirm]` tag. The tag communicates
+only that selection leads to a confirmation step. Complete effects,
+uncertainty, data handling, reversibility, consequences, and acknowledgement
+instructions belong in read-only `show` or Details and the action-time
+confirmation surface, not in a compact discovery row. Structured JSON MUST
+continue to expose the execution review as data and MUST NOT add this
+presentation tag as a field.
+
+REQ-REVIEW-016: Interactive action-time confirmation in direct `send`,
+`preset run`, `sequence run`, TUI command and Sequence execution, TUI candidate
+actions, edited TUI commands, and PTY bridge execution MUST derive its decision
+from the final operation known at that boundary. Known material operations MUST
+require `run`; unknown operations MUST require `unknown` and MUST state
+`Effects are not fully known.` without a standalone punctuation icon. No modem
+write may occur before authorization. Non-interactive CLI behavior remains
+`--yes` for known confirmation-required operations and
+`--yes --allow-unknown` for unknown operations.
+
 ### 17.2 Preset Purpose
 
 Presets exist to support practical modem workflows, not only passive
@@ -3106,7 +3383,7 @@ Radio access, operator selection, and network registration:
 radio-stack: AT+WS46? [confirmation not required]
 radio-stack-capabilities: AT+WS46=? [confirmation not required]
 current-operator: AT+COPS? [confirmation not required]
-available-operators: AT+COPS=? [confirmation not required; timeout_secs=180]
+available-operators: AT+COPS=? [confirmation not required; timeout_secs=240]
 operator-format-numeric: AT+COPS=3,2 [confirmation required]
 operator-auto-selection: AT+COPS=0 [confirmation required]
 circuit-registration: AT+CREG? [confirmation not required]
@@ -3143,8 +3420,8 @@ pdp-connection-details: AT+CGCONTRDP [confirmation not required]
 `available-operators` may take longer than ordinary read commands because it
 can trigger an available-operator scan. SORACOM documents this command as
 typically taking 2 to 3 minutes. The product preset SHOULD declare
-`timeout_secs = 180`. CLI users MAY still override this, for example
-`atctl preset run available-operators --timeout 240` when a local scan exceeds
+`timeout_secs = 240`. CLI users MAY still override this, for example
+`atctl preset run available-operators --timeout 600` when a local scan exceeds
 the preset hint.
 
 `radio-stack` and `radio-stack-capabilities` let a
@@ -4539,9 +4816,9 @@ require a separate explicit operator action.
 
 ## 23. Verification Strategy
 
-REQ-TEST-001: Unit tests MUST cover masking, AT parser status detection, config
-parsing, command and preset execution review, authorization boundaries, and CLI
-argument parsing where practical.
+REQ-TEST-001: Unit tests MUST cover masking, AT parser status detection, command
+and preset execution review, authorization boundaries, and CLI argument parsing
+where practical.
 
 REQ-TEST-002: USB transport MUST be testable through a mock transport or fixture
 without requiring physical hardware.
@@ -4611,13 +4888,36 @@ mixed product/file presets, mixed command/Sequence results, and loaded
 repository-managed examples.
 
 REQ-TEST-010: Executable discovery verification MUST cover command and Sequence
-row delimiters, equal selected/unselected row height, complete warning
-preservation in selected and narrow rows, command and Sequence Details without a
-device, hidden-field search-match disclosure, empty category/search recovery,
+rows in human CLI lists and TUI without repeated `AT:` or `Purpose:` labels,
+equal selected/unselected TUI row height, identical complete `[confirm]` tag
+preservation for known and unknown confirmation in selected and narrow rows,
+omission of the tag when confirmation is not required, fixed trailing tag
+alignment across mixed confirmation and confirmation-free rows, lane
+reclamation when a result set contains no confirmation-required row, the
+dedicated dark/light ConfirmationFlow colors and no-color bold fallback,
+candidate-action rows using the same derived tag and alignment grammar,
+command and Sequence Details without a device,
+complete review in Details without confirmation/unknown-effects duplication in
+Status, hidden-field search-match disclosure, empty category/search recovery,
 Details scrolling and exact state restoration, and the safe-resize fallback.
-Sequence modal verification MUST cover complete Name/Purpose identity in every
-phase, page scrolling of long context, unchanged parameter/candidate navigation,
-and pinned phase-critical controls at constrained heights.
+Sequence modal verification MUST cover Sequence name identity in every phase,
+the focused value-input grammar without complete-definition duplication, the
+final Review region with pinned instruction/input, current value position in
+the right modal-border title for multi-parameter value input
+and candidate-action confirmation, omission of that position for zero/one
+parameter and final review/confirmation, an active label above the value without
+a duplicate generic heading or body counter, exact next-value/review/candidate/
+action footer wording, unchanged position while Review pages, position changes
+through parameter navigation only after valid input, unchanged candidate
+navigation, consequence-oriented review before confirmation input, and pinned
+phase-critical controls at constrained heights. Dark, light, and no-color
+render-buffer checks MUST retain the literal position text without depending on
+color. Whole-modal verification MUST also compare representative short input,
+confirmation, action-menu, Sequence value, Sequence review, Details, and Help
+states; assert that content-fit states end immediately after their final visible
+instruction or footer; assert that capped reading/review states retain working
+range and paging behavior; and assert that every cell in the modal rectangle
+uses the active theme background in dark and light themes.
 
 ## 24. Accepted Decisions
 

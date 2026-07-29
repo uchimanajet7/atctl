@@ -185,31 +185,69 @@ evidence, not universal requirements.
 Normative owner: [SPEC.md](SPEC.md) USB requirements and
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
-## OQ-012: TUI Execution Review Presentation
+## OQ-012: Cross-Surface Execution Review Presentation
 
 Status: accepted
 
-Decision: A TUI command row uses the stable one-row shape
-`name │ AT: command`; a Sequence row uses `name │ Purpose: preview`. The
-selected row keeps the same height as every other row. Only exception states
-append warning text:
-`! Confirmation required` or
-`! Confirmation required (effects unknown)`. Normal rows omit confirmation
-status. The full applicable warning is preserved before a name or preview is
-shortened. `d Details` opens a read-only, scrollable full-identity overlay with
-complete command or purpose text, exceptional warning, applicable non-default
-source/file, and a hidden-field search match; it performs no device I/O. A
-required confirmation surface shows identity first, then
-consequence-oriented groups and the exact confirmation word. Known and unknown
-reviews use different headings so unknown effects cannot look complete.
-Compact Status remains limited to current state and execution context.
-Every Sequence modal phase shows the complete Sequence name and purpose. Long
-context scrolls in a visible upper Details region while the current value,
-candidate action, confirmation instruction, and input remain pinned and
-operable. Areas too small to show complete decision-critical content stop at a
-resize message instead of presenting partial executable or confirmation text.
+Decision: Human executable discovery uses one confirmation grammar across
+`atctl preset list`, `atctl sequence list`, TUI `Commands / Sequences`, and TUI
+candidate-acquisition actions. A command row uses `name command`; a Sequence row
+uses `name purpose-preview`. A row appends the ASCII action-flow tag `[confirm]`
+only when execution requires explicit confirmation. The tag is not a warning,
+risk score, or effects classification, and normal rows omit it. The complete
+tag is preserved before a name or preview is shortened. When a result set has
+at least one tagged row, human CLI lists, TUI `Commands / Sequences`, and TUI
+candidate-action sets reserve one separator cell plus the complete tag as a
+fixed trailing lane for every row. Untagged rows leave the lane blank; a result
+set with no tagged row reclaims the lane. Command or purpose detail is shortened
+before the name, and the tag is never split. TUI selection keeps the same row
+height. CLI `show` and TUI `d Details` are read-only full-review
+surfaces and perform no device I/O. They present the structured execution review
+once instead of adding separate confirmation or risk summary rows. Human
+`show` and TUI Details use the same semantic section order: Overview,
+Definition, Before running, Inputs, and Execution; empty sections are omitted.
+The TUI Details title identifies the current section and visible range. A
+required confirmation surface leads with consequence-oriented groups and the
+exact confirmation word. Known and unknown reviews use different headings so
+unknown effects cannot look complete.
+Unknown reviews state `Effects are not fully known.` without an ambiguous
+standalone icon. Compact Status remains limited to current state and execution
+context and does not duplicate selection-time review content.
+Sequence value input is focused on the selected Sequence's active value,
+directly relevant assistance, candidates, errors, and exact next action; it does
+not embed a second complete-definition view. Candidate-action and final
+Sequence reviews use an explicit scrollable Review region with a visually
+separated, pinned execution instruction and current confirmation input.
+Final Sequence review includes all resolved values, applicable before-running
+notes, operation summary, and execution consequences.
+For a Sequence with multiple parameters, value input and candidate-action
+confirmation keep `Value <current> of <total>` in a fixed right-aligned
+modal-border title opposite the current phase. The body leads with the active
+parameter label and value, without a second counter or generic `Current value:`
+heading. The operation footer states whether `Enter` advances to the next
+numbered value, reviews the Sequence, accepts a candidate and continues to the
+next value or review in the same keystroke, or reviews a candidate action before
+confirmation; a confirmation-free candidate action says that it runs.
+Accepting a candidate never runs the selected Sequence, and candidate-action
+completion never selects a returned value automatically. Review paging never
+changes that position. Single-value Sequences and the final
+review/confirmation phase omit the counter. Areas too small to show complete
+decision-critical content stop at a resize message instead of presenting
+partial executable or confirmation text.
+At action time, direct `send`, `preset run`, `sequence run`, TUI command and
+Sequence execution, TUI candidate actions, edited TUI commands, and PTY bridge
+execution derive the review from the final operation. Known material operations
+require `run`; unknown operations require `unknown`. Non-interactive CLI
+execution requires `--yes` for known operations and
+`--yes --allow-unknown` for unknown operations. Structured JSON retains the
+execution review and does not add the human presentation tag.
 Confirmation uses structure, text markers, and emphasis that remain usable in
-dark, light, and no-color modes; color is not the only signal. Help and
+dark, light, and no-color modes; color is not the only signal. TUI rows use a
+dedicated bold ConfirmationFlow color, `#BE95FF` on the dark background and
+`#6929C4` on the light background, while no-color mode keeps bold
+`[confirm]`. The selected name and marker retain selection styling without
+overwriting the tag role. Human CLI lists use the same text and trailing-lane
+grammar without adding TUI theme color. Help and
 all other atctl-owned modal surfaces use `Esc` as the single close, cancel, or
 back key. Help also accepts `?` because that key opens the overlay. Lowercase
 `q` quits only from the idle base screen, remains ordinary text while a visible
@@ -218,19 +256,106 @@ operation is running. The idle base screen does not use `Esc` as a second quit
 key and does not add a routine quit confirmation.
 
 Rationale and consequences: a stable one-row list supports scanning many mixed
-commands and Sequences without selection changing the surrounding layout. The
-explicit `AT:` and `Purpose:` delimiters keep name and meaning separate, while
-Details provides complete information without forcing long prose into every
-row. Exception-only warnings retain the decision-relevant signal, and pinning
-phase-critical controls prevents long context from hiding the next action. The
-confirmation surface owns detailed effects and uncertainty, while Status does
-not become a second help or policy pane. One visible root quit key and one modal
-cancellation key avoid competing meanings. Keeping `q` as text only when an
-input field is visible also prevents hidden state changes in review-only modals
-and preserves commands, paths, parameters, and acknowledgements that contain
-`q`.
+commands and Sequences without selection changing the surrounding layout.
+Removing repeated `AT:` and `Purpose:` labels and the CLI-only `ATTENTION`
+column leaves more of the command or purpose visible on constrained human list
+surfaces. The ASCII `[confirm]` tag states the next interaction exactly and
+remains legible across terminal fonts, dark/light themes, and no-color mode
+without implying warning severity. Details and `show` provide complete
+information without forcing long prose into every row. Pinning phase-critical
+controls prevents long context from hiding the next action. The confirmation
+surface owns detailed effects and uncertainty; compact Status does not repeat
+them. Re-deriving the action-time review prevents an unresolved Sequence row or
+edited command from authorizing a different final operation. One visible root
+quit key and one modal cancellation key avoid competing meanings. Keeping `q`
+as text only when an input field is visible also prevents hidden state changes
+in review-only modals and preserves commands, paths, parameters, and
+acknowledgements that contain `q`.
 
-Normative owner: [SPEC.md](SPEC.md) TUI review, Status, and theme requirements.
+Current-source basis:
+
+- [IBM Carbon notification guidance](https://carbondesignsystem.com/components/notification/usage/)
+  reserves warning treatment for potentially undesirable or unexpected
+  consequences, so the ordinary confirmation-flow tag does not use warning
+  styling.
+- [USWDS icon guidance](https://designsystem.digital.gov/components/icon/)
+  requires symbols to be conventional and understandable; the explicit ASCII
+  word avoids an ambiguous standalone icon.
+- [Apple button guidance](https://developer.apple.com/design/human-interface-guidelines/buttons),
+  [GNOME writing guidance](https://developer.gnome.org/hig/guidelines/writing-style.html),
+  and the [WAI-ARIA menu pattern](https://www.w3.org/WAI/ARIA/apg/patterns/menubar/)
+  associate an ellipsis with further input or a dialog, while atctl already
+  uses ellipsis for truncation; `[confirm]` avoids overloading it.
+- [Unicode Standard Annex #11](https://www.unicode.org/reports/tr11/)
+  documents context-dependent terminal widths for some symbols; ASCII gives
+  the list a deterministic width budget.
+- [Command Line Interface Guidelines](https://clig.dev/) recommends displaying
+  only as much information as users need, keeping behavior consistent across
+  subcommands, and confirming dangerous operations; this supports a compact
+  common discovery token with complete action-time review.
+- [Ratatui Table documentation](https://docs.rs/ratatui/latest/ratatui/widgets/struct.Table.html)
+  supports explicit fixed-width columns and spacing, and
+  [K9s custom views](https://github.com/derailed/k9s#resource-custom-columns)
+  expose stable left/right column alignment; these support treating the
+  repeated confirmation suffix as one trailing lane instead of appending it
+  after variable preview text.
+- [IBM Carbon tag guidance](https://carbondesignsystem.com/components/tag/usage/)
+  recommends concise text labels and distinct component colors for scanning;
+  atctl keeps the literal label as the meaning and uses color only as a
+  secondary TUI differentiator.
+- [Docker `system prune`](https://docs.docker.com/reference/cli/docker/system/prune/)
+  and [Terraform `apply`](https://developer.hashicorp.com/terraform/cli/commands/apply)
+  place consequences and approval at the action boundary rather than repeating
+  full warning prose in discovery lists.
+- [GitHub CLI `gh repo delete`](https://cli.github.com/manual/gh_repo_delete)
+  uses an explicit non-interactive acknowledgement option, supporting atctl's
+  separate interactive acknowledgement and non-interactive authorization
+  contracts.
+- [WCAG 2.2 Use of Color](https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html)
+  requires information conveyed by color to remain available through another
+  visual means; `[confirm]` and the full unknown-effects sentence remain
+  meaningful in no-color mode. WCAG 2.2 Contrast Minimum requires 4.5:1 for
+  normal text; the specified ConfirmationFlow colors provide approximately
+  5.60:1 in dark mode and 7.41:1 in light mode.
+- [W3C Forms Tutorial](https://www.w3.org/WAI/tutorials/forms/) recommends short,
+  logically staged forms that expose the information required for the current
+  transaction, and
+  [W3C Labels or Instructions](https://www.w3.org/WAI/WCAG22/Understanding/labels-or-instructions.html)
+  requires enough adjacent guidance to complete an input without cluttering the
+  surface with unnecessary instruction.
+- [GOV.UK question pages](https://design-system.service.gov.uk/patterns/question-pages/)
+  starts with one current question, while
+  [IBM Carbon form guidance](https://carbondesignsystem.com/patterns/forms-pattern/)
+  places the input label above the input and essential helper text immediately
+  with that field. These support leading the Sequence value phase with the
+  current parameter instead of preceding it with the complete context record.
+- [Fluent 2 dialog guidance](https://fluent2.microsoft.design/components/web/react/core/dialog/usage)
+  keeps dialogs focused, leads body content with the most important information,
+  and keeps supporting body content scrollable while persistent regions remain
+  available. The
+  [Charmbracelet Huh](https://github.com/charmbracelet/huh) terminal form model
+  likewise organizes interactive terminal forms around current fields and
+  logical groups rather than placing the active field after the complete form
+  context.
+- [USWDS step indicator guidance](https://designsystem.digital.gov/components/step-indicator/)
+  places the current step and total near the task heading and makes the current
+  step visually prominent. Its
+  [pagination guidance](https://designsystem.digital.gov/components/pagination/)
+  explicitly directs sequential-process progress to a step indicator instead of
+  page navigation, matching atctl's separation of value position from Details
+  paging.
+- [IBM Carbon progress indicator guidance](https://carbondesignsystem.com/components/progress-indicator/usage/)
+  distinguishes linear multistep progress from
+  [progress bars](https://carbondesignsystem.com/components/progress-bar/usage/)
+  for loading or processing. atctl therefore uses a compact textual field
+  position, not a loading bar or a full visual stepper.
+- [Ratatui Block title guidance](https://ratatui.rs/recipes/widgets/block/)
+  supports multiple left-, center-, and right-aligned titles on one border, so
+  the fixed position can remain separate from both the active field body and
+  the scrollable Details label without a new pane or dependency.
+
+Normative owner: [SPEC.md](SPEC.md) CLI/TUI discovery, execution review,
+confirmation, Status, and theme requirements.
 
 ## OQ-013: TUI Output Masking
 
@@ -283,13 +408,18 @@ Normative owner: [SPEC.md](SPEC.md) preset and TUI requirements,
 
 Status: accepted
 
-Decision: The TUI Devices pane shows live candidates. User commands default to
-30 seconds, known long-running presets may provide hints such as 180 seconds for
-`AT+COPS=?`, and effective timeout precedence is session override, preset hint,
-then default.
+Decision: The TUI Devices pane shows live candidates. User AT operations default
+to 30 seconds, known long-running definitions may provide item hints, and
+`available-operators` uses 240 seconds. CLI precedence is explicit value, item
+hint, then product default where an item hint applies. TUI precedence is session
+value, item hint, then product default. The TUI shows the effective numeric value
+without source/default/override qualifiers; blank input clears the session value.
+USB writes and endpoint probes retain separate fixed three-second bounds.
 
-Rationale and consequences: Device and timeout state must be actionable and
-visible instead of remaining static placeholders or hidden execution settings.
+Rationale and consequences: Device and effective timeout state must be
+actionable and visible without making the normal interface explain internal
+precedence. Sequence execution uses one total deadline, and PTY prompt/payload
+execution shares one command budget so the selected duration is not doubled.
 
 Normative owner: [SPEC.md](SPEC.md) TUI device, Status, Controls, and timeout
 requirements.
@@ -314,7 +444,7 @@ Status: accepted
 
 Decision: The TUI does not present a normal running-command Cancel action or
 claim that stopping a host read cancels modem-side execution. It uses visible
-progress, timeout, override, and conflicting-send blocking instead.
+progress, the current timeout, and conflicting-send blocking instead.
 
 Rationale and consequences: Host-side waiting can stop while the modem
 continues and later emits output; calling that successful cancellation would be

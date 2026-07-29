@@ -46,8 +46,12 @@ All notable project changes should be recorded in this file.
   surfaces reject prompt-required operations before USB access. Unmasked
   Response copy and export continue to require action-specific confirmation
   before clipboard or file output.
-- Reworked execution-review presentation around user decisions: TUI rows now
-  prioritize item identity and show confirmation only as an exception warning;
+- Reworked execution-review presentation around user decisions: human CLI and
+  TUI discovery rows now prioritize item identity and append the same
+  exception-only `[confirm]` action-flow tag, align it in a conditional fixed
+  trailing lane, and reclaim the lane when a result set has no confirmation
+  rows. TUI uses a dedicated accessible confirmation-flow color with a bold
+  no-color fallback, while human CLI output remains plain text;
   known and unknown confirmations use consequence-oriented sections; Sequence
   input, review, and warning phases use distinct focus/warning styling; and
   modal controls now use `Esc` consistently for cancel, close, or back. Lowercase
@@ -55,11 +59,19 @@ All notable project changes should be recorded in this file.
   input fields, and has no hidden effect in non-editable modals or while an
   operation is running.
 - Standardized executable discovery on stable one-row command and Sequence
-  shapes with explicit `AT:` and `Purpose:` delimiters, a read-only scrollable
-  `d Details` view, complete warnings that survive selection and constrained
-  widths, actionable empty states, and safe resize fallback. Every Sequence
-  modal phase now keeps complete name/purpose context while long details scroll
-  independently of pinned values, candidate actions, and confirmation input.
+  shapes without repeated `AT:` or `Purpose:` delimiters, a read-only scrollable
+  `d Details` view, complete confirmation tags that survive selection and
+  constrained widths, actionable empty states, and safe resize fallback. TUI
+  candidate-acquisition actions use the same tag. Every Sequence
+  modal phase now pins the current value, candidate action, or confirmation
+  decision first, keeps complete name/purpose and supporting context in a lower
+  scrollable Details region, and leaves operation keys at the bottom.
+  Multi-value input keeps a right-aligned `Value <current> of <total>` position
+  through value and candidate-action phases, separates the active label from
+  that counter, and states the exact next `Enter` outcome without coupling
+  Details paging to value navigation. One `Enter` on a loaded candidate now
+  accepts it and continues to the next value or final review; provider
+  completion still returns to value selection without choosing a value.
 - Added pre-publication release checks for Apple Silicon architecture, archive
   contents and permissions, checksums, dependency notices, and dynamic linkage
   to Homebrew `libusb`.
