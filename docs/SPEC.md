@@ -1,7 +1,7 @@
 # atctl Product and Technical Specification
 
-- Document version: 0.4.121
-- Date: 2026-07-29
+- Document version: 0.4.122
+- Date: 2026-07-31
 - Implementation language: Rust
 - Product name: `atctl`
 - Repository name: `atctl`
@@ -125,6 +125,7 @@ together:
 TUI
 atctl send
 atctl preset run
+atctl sequence run
 atctl bridge --symlink <PATH>
 ```
 
@@ -188,9 +189,11 @@ The product scope includes:
 - AT command send and response read
 - Raw response display with masking enabled by default
 - Basic response status detection
-- Standard workflow AT command presets
-- Repository-managed vendor and carrier file preset examples
-- User-defined presets through TOML single-file and drop-in configuration
+- Product-provided one-shot AT command presets
+- Product-provided multi-step Sequences
+- Repository-managed vendor and provider preset and Sequence examples
+- Explicit per-invocation loading of user-authored preset and Sequence TOML
+  definitions from files or directories
 - Structured command execution review
 - Confirmation flow for known material and unknown operations
 - TUI AT command input
@@ -809,8 +812,8 @@ foreground output and Response export MAY expose those values. Raw diagnostic
 export MAY expose the underlying exchange only through its separate sensitive
 output controls.
 
-REQ-SEQ-ENGINE-007A: Normal Sequence text transcripts, TUI Response, saved
-Response, history, and session logs MUST NOT render the literal `Evidence:`
+REQ-SEQ-ENGINE-007A: Normal Sequence text transcripts, TUI Response, Response
+exports, history, and session logs MUST NOT render the literal `Evidence:`
 prefix. The word `evidence` remains a domain concept and a Sequence definition
 field name, but user-visible transcript output MUST label atctl-derived
 interpretation as `Analysis:` so it is not mistaken for modem-originated output
@@ -1256,7 +1259,7 @@ export with the same sensitive-export policy as direct `send` and
 `--raw-log-ack raw-log`, no default raw-log destination, overwrite refusal, and
 unchanged masked terminal/session/history logging behavior.
 
-REQ-CLI-SEQ-008A: `atctl sequence run <SEQUENCE> --output json` MUST include
+REQ-CLI-SEQ-008A: `atctl sequence run <SEQUENCE> --json` MUST include
 structured step results and success notes in addition to the selected masked or
 raw transcript. Step results MUST include step id, optional label, final status,
 and selected masked/raw analysis text when a Sequence step defines `evidence` or
@@ -1927,7 +1930,7 @@ operation reference.
 
 REQ-TUI-014H: The `?` help overlay MUST behave as a modal overlay. While help
 is visible, the TUI MUST NOT pass `Enter`, letter keys, device selection, command
-execution, raw export, response save/copy/clear, or quit actions to the
+execution, raw export, Response export/copy/clear, or quit actions to the
 underlying panes. `Esc` and `?` MUST close the help overlay and return to the
 previous TUI state without changing the selected command, selected device,
 current input, or current response. Lowercase `q` MUST leave Help open and MUST
@@ -2072,16 +2075,16 @@ shortcut reference and not a catch-all menu for every convenience action. It
 MUST provide `Enter`-activated rows for execution and session controls that
 belong to the current command session: AT command input, edit selected command
 or Sequence inputs, set command timeout, start or stop raw diagnostic export
-capture, and output masking. Response-specific actions such as copy, save, open
-the Response output folder, and clear MUST belong to the Response pane action
-menu when Response is showing an execution result. Opened-log actions such as
-copy displayed log, reveal the opened log in Finder, and close the opened log
-view MUST belong to the Response pane action menu when Response is showing a
-saved log. Opening a selected log in Response MUST belong to the Logs pane
-action menu. Controls MUST NOT provide
-`rerun last`; repeated execution should happen from the selected
-command/Sequence itself so the visible selection and executed item remain
-aligned. Controls rows MUST use a stable list order and SHOULD remain visible
+capture, and output masking. Response-specific actions such as copy, export,
+reveal the exact exported Response file in Finder, and clear MUST belong to the
+Response pane action menu when Response is showing an execution result.
+Opened-log actions such as copy displayed log, reveal the opened log in Finder,
+and close the opened log view MUST belong to the Response pane action menu when
+Response is showing a saved log. Opening a selected log in Response MUST belong
+to the Logs pane action menu. Controls MUST NOT provide `rerun last`; repeated
+execution should happen from the selected command/Sequence itself so the
+visible selection and executed item remain aligned. Controls rows MUST use a
+stable list order and SHOULD remain visible
 even when the action is currently unavailable. Controls rows MUST primarily
 read as actions, not as a status table. Stable action labels MUST NOT be
 replaced by result sentences such as `Copy resp sent`. Inline state MAY be
@@ -2133,12 +2136,13 @@ the execution result with a log-refresh result.
 
 REQ-TUI-015C: Global letter shortcuts MUST be limited to the small primary set:
 `/` for command search, `?` for help, and `q` for quit. Secondary operations
-such as AT command input, edit, timeout, raw export, output masking, response
-save/copy/clear, Response folder opening, opened-log close/copy/Finder reveal,
-log opening, device reselection, and full-USB view switching MUST be
-available through their relevant focusable panes and `Enter` activation rather
-than requiring dedicated global letter shortcuts. `Enter` MUST NOT fall back to
-command execution from Response, Logs, Status, or any other non-command pane.
+such as AT command input, edit, timeout, raw export, output masking, Response
+export/copy/clear, exact exported Response file reveal, opened-log
+close/copy/Finder reveal, log opening, device reselection, and full-USB view
+switching MUST be available through their relevant focusable panes and `Enter`
+activation rather than requiring dedicated global letter shortcuts. `Enter`
+MUST NOT fall back to command execution from Response, Logs, Status, or any
+other non-command pane.
 
 REQ-TUI-CAT-001: The Categories pane MUST contain workflow categories only.
 Preset set title, Sequence set title, vendor, provider, file path,
@@ -2709,9 +2713,9 @@ not replace the underlying transcript.
 REQ-TUI-SEQ-010: Controls MUST remain a compact operation pane. It MUST NOT add
 a permanent Sequence-only controls section. Controls actions such as timeout,
 raw diagnostic export, and output masking MUST apply to Sequence execution
-where semantically valid. Response actions such as save, copy, saved
-Response folder opening, and clear MUST apply to Sequence output through the
-Response action menu where semantically valid. The edit-before-run row MAY
+where semantically valid. Response actions such as export, copy, reveal of the
+exact exported Response file, and clear MUST apply to Sequence output through
+the Response action menu where semantically valid. The edit-before-run row MAY
 change wording only when the selected executable item is a Sequence and the
 action actually opens or edits Sequence inputs; it MUST NOT use misleading
 one-shot command wording for Sequence parameters.
@@ -2757,9 +2761,9 @@ contains the command echo, the copied text MUST NOT duplicate the command line.
 REQ-TUI-024: Response copy MUST follow the current visible masking state. In
 the normal state it MUST copy masked response text. If TUI session output
 masking is off and the current Response has unmasked foreground material,
-Response copy MAY copy the same unmasked text that is visible on screen. Saved
-responses, history, session logs, and raw diagnostic export behavior are not
-changed by Response copy.
+Response copy MAY copy the same unmasked text that is visible on screen.
+Response copy MUST NOT change Response export, history, session log, or raw
+diagnostic export behavior.
 
 REQ-TUI-025: When the Response pane is temporarily showing a saved masked log,
 Response copy MUST copy only the displayed masked log body. It MUST NOT include
@@ -2836,9 +2840,9 @@ compact Status area.
 REQ-TUI-026D: The Response pane action menu MUST keep action labels stable and
 show unavailable reasons as nearby menu feedback when the menu remains open.
 If no Response body is available, including after the user has cleared the
-Response body, copy/export/clear MUST not execute. The menu MUST NOT expose a
-fixed saved-Responses-folder action because each export destination is selected
-by the operator and may differ.
+Response body, copy/export/clear MUST not execute. The menu MUST NOT expose an
+action that opens a fixed destination folder because each export destination
+is selected by the operator and may differ.
 
 REQ-TUI-026E: When the currently displayed Response has a successfully exported
 file association, its action menu MUST expose `Reveal in Finder`. The shared
@@ -4184,7 +4188,8 @@ unmasked foreground display or acknowledged raw diagnostic export.
 REQ-MASK-003A: The TUI and interactive CLI active Sequence input/review
 surfaces may show user-entered sensitive values before sending, as specified by
 REQ-SEQ-FILE-012. This exception is limited to active input/review and does not
-change Response, log, raw export, save, copy, or JSON masking requirements.
+change Response, log, raw diagnostic export, Response export, copy, or JSON
+masking requirements.
 
 REQ-MASK-003B: A bounded execution MUST create context-preserving raw and masked
 forms before routing output to user-facing or retained consumers. CLI text and
