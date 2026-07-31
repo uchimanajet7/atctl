@@ -1,11 +1,11 @@
 # atctl
 
-[English README](https://github.com/uchimanajet7/atctl/blob/main/README.md)
+[English README](README.md)
 
 `atctl` は、Apple Silicon搭載MacからUSBセルラーモデムへATコマンドを
 送信・管理するためのRust製CLI/TUIです。
 
-![デバイス情報、コマンド分類、コマンド一覧、応答、保存済みログを表示するatctl TUI](https://github.com/uchimanajet7/atctl/raw/main/docs/assets/atctl-tui-overview.png)
+![デバイス情報、コマンド分類、コマンド一覧、応答、保存済みログを表示するatctl TUI](docs/assets/atctl-tui-overview.png)
 
 検証済み環境:
 
@@ -34,7 +34,7 @@ brew install uchimanajet7/atctl/atctl
 
 Homebrew Formulaは実行時依存関係の`libusb`もインストールします。必要条件と
 インストール後の確認方法は
-[インストールガイド](https://github.com/uchimanajet7/atctl/blob/main/docs/INSTALL.md)
+[インストールガイド](docs/INSTALL.md)
 を参照してください。
 
 ## 最初の操作
@@ -51,7 +51,7 @@ atctl tui
 
 現在のUSB接続先は`atctl devices`で確認します。想定したモデムが表示されない
 場合は`atctl devices --all-usb`を実行し、
-[トラブルシューティング](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md)
+[トラブルシューティング](docs/TROUBLESHOOTING.md)
 を参照してください。
 
 ## 主なワークフロー
@@ -110,7 +110,7 @@ Response exportは選択中のforeground masking modeに従い、新しいファ
 TUIのResponseがunmaskedの場合、copyには`copy`、exportには保存先選択後の
 `export`確認が必要です。
 CLIとTUIでの確認、Response export、Finderでの表示、削除による影響は、
-[ログの確認と管理](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md#review-and-manage-logs)
+[ログの確認と管理](docs/TROUBLESHOOTING.md#review-and-manage-logs)
 を参照してください。
 
 ## 安全
@@ -150,7 +150,7 @@ ATコマンドは機微な識別子を読み取ったり、モデムの状態を
 `atctl`は機微な出力を初期状態でマスクし、状態変更など実質的な影響がある操作では
 確認を求め、利用者が出力ファイルを選んで警告を確認した場合だけraw診断ファイルを作成
 します。未確認のコマンドや状態変更コマンドを実行する前に、
-[安全ガイド](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md)
+[安全ガイド](docs/SAFETY.md)
 を参照してください。
 既知の電話番号・SMSアドレス欄は短い番号でもマスクし、index、status、
 message referenceなど診断に必要な短い値は表示したままにします。
@@ -191,15 +191,15 @@ atctl tui --preset-dir examples/presets --sequence-dir examples/sequences
 単一のリスクラベルは記述しません。実行前に定義の入手元と送信先の値を確認してください。
 プリセット一覧、TOML形式、読み込みオプション、
 Sequenceのパラメーター、証跡の読み方は
-[プリセットとSequenceのリファレンス](https://github.com/uchimanajet7/atctl/blob/main/docs/PRESETS.md)
+[プリセットとSequenceのリファレンス](docs/PRESETS.md)
 を参照してください。
 
 ## 利用者向けドキュメント
 
-- [インストール](https://github.com/uchimanajet7/atctl/blob/main/docs/INSTALL.md)
-- [プリセットとSequenceのリファレンス](https://github.com/uchimanajet7/atctl/blob/main/docs/PRESETS.md)
-- [安全ガイド](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md)
-- [トラブルシューティング](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md)
+- [インストール](docs/INSTALL.md)
+- [プリセットとSequenceのリファレンス](docs/PRESETS.md)
+- [安全ガイド](docs/SAFETY.md)
+- [トラブルシューティング](docs/TROUBLESHOOTING.md)
 
 ## 質問・報告
 
@@ -221,15 +221,15 @@ TUI操作、再現手順、期待する結果、実際の結果を記載し、�
 
 コードおよびドキュメントのコントリビューションを受け付けています。
 Pull Requestを作成する前に、
-[コントリビューションガイド](https://github.com/uchimanajet7/atctl/blob/main/CONTRIBUTING.md)を
+[コントリビューションガイド](CONTRIBUTING.md)を
 参照してください。
 
 ## メンテナ向け情報
 
-- [開発ガイド](https://github.com/uchimanajet7/atctl/blob/main/docs/DEVELOPMENT.md)
-- [パッケージングとリリース](https://github.com/uchimanajet7/atctl/blob/main/docs/PACKAGING.md)
-- [製品・技術仕様](https://github.com/uchimanajet7/atctl/blob/main/docs/SPEC.md)
-- [確定済みの製品・アーキテクチャ判断](https://github.com/uchimanajet7/atctl/blob/main/docs/DECISIONS.md)
+- [開発ガイド](docs/DEVELOPMENT.md)
+- [パッケージングとリリース](docs/PACKAGING.md)
+- [製品・技術仕様](docs/SPEC.md)
+- [確定済みの製品・アーキテクチャ判断](docs/DECISIONS.md)
 
 ## ライセンス
 

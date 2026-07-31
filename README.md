@@ -1,15 +1,15 @@
 # atctl
 
-[日本語 README](https://github.com/uchimanajet7/atctl/blob/main/README-ja.md)
+[日本語 README](README-ja.md)
 
 `atctl` is a Rust CLI/TUI for sending and managing AT commands for USB
 cellular modems from macOS on Apple Silicon.
 
-![atctl TUI showing device details, command categories, command list, response output, and saved logs](https://github.com/uchimanajet7/atctl/raw/main/docs/assets/atctl-tui-overview.png)
+![atctl TUI showing device details, command categories, command list, response output, and saved logs](docs/assets/atctl-tui-overview.png)
 
 The validated environment is an Apple Silicon Mac with a SORACOM Onyx LTE USB
 Dongle (Quectel EG25-G, USB ID `0x2c7c:0x0125`). See the
-[installation guide](https://github.com/uchimanajet7/atctl/blob/main/docs/INSTALL.md)
+[installation guide](docs/INSTALL.md)
 for the complete validation boundary and runtime prerequisites.
 
 Real-hardware workflows confirmed in this environment:
@@ -31,7 +31,7 @@ brew install uchimanajet7/atctl/atctl
 ```
 
 The Homebrew formula installs the `libusb` runtime dependency. See the
-[installation guide](https://github.com/uchimanajet7/atctl/blob/main/docs/INSTALL.md)
+[installation guide](docs/INSTALL.md)
 for prerequisites and installation checks.
 
 ## First Commands
@@ -48,7 +48,7 @@ atctl tui
 
 Use `atctl devices` to find the current USB target. If the expected modem is not
 shown, run `atctl devices --all-usb` and follow the
-[troubleshooting guide](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md).
+[troubleshooting guide](docs/TROUBLESHOOTING.md).
 
 ## Main Workflows
 
@@ -74,10 +74,10 @@ and session logs by default under the XDG state directory:
 ```
 
 See
-[Review and Manage Logs](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md#review-and-manage-logs)
+[Review and Manage Logs](docs/TROUBLESHOOTING.md#review-and-manage-logs)
 for XDG path overrides, `--no-log`, CLI and TUI review, Response export, Finder
 access, retention, and deletion. See the
-[safety guide](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md#logging)
+[safety guide](docs/SAFETY.md#logging)
 for the masking, sensitive-metadata, and raw-diagnostic boundaries.
 
 ## Safety
@@ -120,7 +120,7 @@ AT commands can read sensitive identifiers and change modem state. `atctl`
 masks sensitive output by default, requires confirmation for state-changing or
 otherwise material actions, and creates raw diagnostic exports only when the
 operator chooses an output file and acknowledges the warning. Read the
-[safety guide](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md)
+[safety guide](docs/SAFETY.md)
 before running unfamiliar or state-changing commands.
 
 ## Presets and Sequences
@@ -156,19 +156,19 @@ atctl tui --preset-dir examples/presets --sequence-dir examples/sequences
 
 Review external definition sources and destination values before execution.
 See the
-[presets and Sequences reference](https://github.com/uchimanajet7/atctl/blob/main/docs/PRESETS.md)
+[presets and Sequences reference](docs/PRESETS.md)
 for inventories, TOML formats, loading options, source identity, Sequence
 parameters, execution behavior, and evidence interpretation. The
-[safety guide](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md)
+[safety guide](docs/SAFETY.md)
 defines the common review, confirmation, masking, logging, and raw-export
 protections.
 
 ## User Documentation
 
-- [Installation](https://github.com/uchimanajet7/atctl/blob/main/docs/INSTALL.md)
-- [Presets and Sequences reference](https://github.com/uchimanajet7/atctl/blob/main/docs/PRESETS.md)
-- [Safety guide](https://github.com/uchimanajet7/atctl/blob/main/docs/SAFETY.md)
-- [Troubleshooting](https://github.com/uchimanajet7/atctl/blob/main/docs/TROUBLESHOOTING.md)
+- [Installation](docs/INSTALL.md)
+- [Presets and Sequences reference](docs/PRESETS.md)
+- [Safety guide](docs/SAFETY.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
 
 ## Questions and reports
 
@@ -189,15 +189,15 @@ contents in a public issue.
 ## Contributing
 
 Code and documentation contributions are welcome. Read the
-[contribution guide](https://github.com/uchimanajet7/atctl/blob/main/CONTRIBUTING.md)
+[contribution guide](CONTRIBUTING.md)
 before opening a pull request.
 
 ## Maintainer Information
 
-- [Development guide](https://github.com/uchimanajet7/atctl/blob/main/docs/DEVELOPMENT.md)
-- [Packaging and release guide](https://github.com/uchimanajet7/atctl/blob/main/docs/PACKAGING.md)
-- [Product and technical specification](https://github.com/uchimanajet7/atctl/blob/main/docs/SPEC.md)
-- [Accepted product and architecture decisions](https://github.com/uchimanajet7/atctl/blob/main/docs/DECISIONS.md)
+- [Development guide](docs/DEVELOPMENT.md)
+- [Packaging and release guide](docs/PACKAGING.md)
+- [Product and technical specification](docs/SPEC.md)
+- [Accepted product and architecture decisions](docs/DECISIONS.md)
 
 ## License
 
