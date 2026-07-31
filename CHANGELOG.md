@@ -18,8 +18,9 @@ All notable project changes should be recorded in this file.
 
 ### Changed
 
-- Updated the Rust compiler and Cargo baseline from 1.96 to 1.97.0 and refreshed
-  compatible locked dependencies.
+- Updated the minimum supported Rust baseline from 1.96 to 1.97 and selected
+  Rust 1.97.1 for development, CI, and release builds to include the upstream
+  LLVM miscompilation fix.
 - Standardized generated history and session logs on the XDG state directory,
   including `XDG_STATE_HOME` overrides and the `$HOME/.local/state` fallback.
 - Changed default masking to classify product-known phone/SMS fields and

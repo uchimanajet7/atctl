@@ -26,12 +26,12 @@ brew install pkgconf
 ```
 
 The Rust installer provides `rustup`, `rustc`, and Cargo. `libusb` must still be
-available through Homebrew for the initial Apple Silicon Mac setup. The
-repository pins Rust 1.97.0 in `rust-toolchain.toml` for local and CI use and
-declares the corresponding Rust 1.97 baseline in `Cargo.toml`. Running Rust
-commands from the repository selects that pinned toolchain and installs its
-declared Rustfmt and Clippy components when needed. Verify the active toolchain
-and selected versions with:
+available through Homebrew for the initial Apple Silicon Mac setup.
+`Cargo.toml` declares the minimum supported Rust version, while
+`rust-toolchain.toml` independently selects the complete compiler release used
+for local development, CI, and release builds. Running Rust commands from the
+repository selects that toolchain and installs its declared Rustfmt and Clippy
+components when needed. Verify the active toolchain and selected versions with:
 
 ```sh
 rustup show active-toolchain
@@ -549,90 +549,56 @@ cargo install --locked cargo-outdated
 brew install actionlint
 ```
 
-Check dependency and workflow maintenance state with:
+Dependabot checks Cargo dependencies, `rust-toolchain.toml`, and remote GitHub
+Actions every week and creates update pull requests. Those pull requests
+present candidates and supporting release information; the maintainer decides
+what to adopt, applies the update locally, reviews the complete diff, and
+pushes it.
+
+Run the single local dependency-update command after reviewing the candidates:
 
 ```sh
-scripts/maintenance/check-deps.sh
+scripts/maintenance/update-dependencies.sh
 ```
 
-The check script runs:
+The command:
 
-- `cargo metadata --locked --format-version 1`
-- current stable Rust, repository toolchain, cargo-about, and actionlint pin
-  comparison against their authoritative upstreams
+- resolves the latest complete stable Rust release from the official Rust
+  channel manifest and updates `rust-toolchain.toml`
+- leaves the minimum supported Rust version in `Cargo.toml` unchanged
+- updates the repository-owned cargo-about and actionlint pins from their
+  authoritative upstreams
+- runs `cargo update` for every direct or transitive version currently allowed
+  by `Cargo.toml`
+- selected Rust, MSRV, lockfile, fixed-tool, and workflow consistency checks
 - `cargo audit`
 - `cargo outdated --workspace --root-deps-only`
 - `cargo tree --duplicates`
-- repository maintenance and release shell syntax checks
-- `cargo fetch --locked --target aarch64-apple-darwin` before offline notice
-  generation
-- pinned, target-specific third-party notice generation twice with an exact
-  output comparison
-- `actionlint`, or the pinned `rhysd/actionlint` Docker image defined by
-  `scripts/maintenance/tool-versions.env` when `actionlint` is not installed
-  but Docker is available
+- deterministic target-specific third-party notice generation
+- `actionlint`
+- `cargo fmt --check`
+- `cargo check --all-targets --all-features --locked`
+- `cargo test --all-features --locked`
+- `cargo clippy --all-targets --all-features --locked -- -D warnings`
+- `git diff --check`, local status, and a diff summary
 
-Dependabot checks Cargo dependencies, `rust-toolchain.toml`, and remote GitHub
-Actions every week. `scripts/maintenance/check-version-drift.sh`, which is also
-run by the scheduled maintenance workflow, covers the exact Rust release and
-the pinned cargo-about and actionlint versions. It fails with the exact update
-command when one of those upstreams publishes a newer stable release. The
-scheduled workflow also treats a newer direct Cargo dependency as a failing
-drift signal, while a normal local run prints the direct-dependency report.
+`cargo update` updates the lockfile only within the requirements already
+declared by `Cargo.toml`. When a reviewed Dependabot update or another explicit
+compatibility decision changes a direct dependency baseline, make that
+`Cargo.toml` change visible before running the same command. The update command
+does not parse or rewrite direct dependency requirements itself.
 
-Update a fixed tool version with one of these commands:
+Dependabot supplies remote GitHub Actions changes. Keep each external Action
+pinned to a full commit SHA with its release tag comment on the same line; the
+local command validates the selected references but does not independently
+rewrite them.
 
-```sh
-scripts/maintenance/update-tool-versions.sh rust <version>
-scripts/maintenance/update-tool-versions.sh cargo-about <version>
-scripts/maintenance/update-tool-versions.sh actionlint <version>
-```
+If the command fails, inspect its output and the current working-tree diff
+before deciding how to continue. It does not automatically restore, stash, or
+discard an existing or partial update. It also never commits, pushes, merges,
+tags, publishes, or creates a GitHub Release. After it succeeds, review every
+changed machine-owned file and generated notice, commit and push the intended
+update, and confirm CI before making the separate release decision.
 
-The Rust update command changes both `rust-toolchain.toml` and the matching
-`Cargo.toml` baseline. The other commands update the single version source used
-by local scripts and CI. Run `scripts/maintenance/check-deps.sh` afterward; a
-Rust baseline change may also permit newer compatible transitive packages, so
-review `cargo update --dry-run` and use the dependency update script when the
-lockfile should be refreshed.
-
-Use current Cargo and crates.io data before changing direct dependency
-versions:
-
-```sh
-cargo search <crate-name> --limit 1
-```
-
-When a direct dependency is intentionally moved to a newer compatible release,
-record the exact version in `Cargo.toml`; do not rely on a lockfile-only update
-to communicate the product dependency baseline. Duplicate transitive
-dependencies reported by `cargo tree --duplicates` should be reviewed, but they
-are not automatically product defects when they come from upstream dependency
-graphs that the product does not directly control.
-
-For compatible lockfile refreshes, run:
-
-```sh
-scripts/maintenance/update-rust-deps.sh all
-```
-
-For a single package lockfile refresh, run:
-
-```sh
-scripts/maintenance/update-rust-deps.sh package <crate-name>
-```
-
-For a precise package version allowed by `Cargo.toml`, run:
-
-```sh
-scripts/maintenance/update-rust-deps.sh package <crate-name> <version>
-```
-
-After refreshing `Cargo.lock`, the update script runs the maintenance checks and
-the normal Rust verification gate:
-
-```sh
-cargo fmt --check
-cargo check --all-targets --all-features --locked
-cargo test --all-features --locked
-cargo clippy --all-targets --all-features --locked -- -D warnings
-```
+Duplicate transitive dependencies remain a review signal, not automatically a
+product defect when the upstream graph controls them.

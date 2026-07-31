@@ -22,11 +22,10 @@ permissions:
 
 jobs:
   dependency-maintenance:
-    name: Check dependency and workflow drift
+    name: Check dependency and workflow state
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      ATCTL_OUTDATED_EXIT_CODE: "1"
       CARGO_TERM_COLOR: always
     steps:
       - name: Check out source

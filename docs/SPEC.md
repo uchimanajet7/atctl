@@ -268,10 +268,12 @@ Developers need:
 - `git`: source control, if cloning the repository
 
 REQ-DEP-004A: The Rust compiler baseline MUST be declared in `Cargo.toml` with
-`rust-version`. The repository developer and CI toolchain MUST be pinned to the
-corresponding complete stable release in `rust-toolchain.toml`. The current
-baseline is Rust 1.97 with Edition 2024, and the pinned toolchain is Rust
-1.97.0.
+`rust-version`; this value is the minimum supported Rust version, not a mirror
+of the active compiler. The repository developer, CI, and release toolchain
+MUST be pinned to one complete stable release in `rust-toolchain.toml`, and that
+selected compiler MUST NOT be older than the declared minimum. The complete
+selected point release MUST NOT be duplicated as a current value in prose
+documentation.
 
 REQ-DEP-004B: Dependency maintenance MUST update `Cargo.toml` and `Cargo.lock`
 together when direct dependency baselines change. Lockfile-only updates MAY be
@@ -292,20 +294,27 @@ review workflow. Vulnerabilities at moderate severity or higher MUST fail the
 review.
 
 REQ-DEP-004F: The source repository MUST carry a scheduled and manually
-triggerable dependency-maintenance workflow that checks the Cargo lockfile,
-Rust stable/toolchain drift, fixed maintenance-tool drift, RustSec advisories,
-direct dependency drift, duplicate dependency tree signal, and GitHub Actions
-workflow syntax. Newer direct Cargo dependencies and newer fixed Rust or
-maintenance-tool releases MUST fail the scheduled check so drift is visible.
+triggerable dependency-maintenance workflow that checks the Cargo lockfile, the
+selected Rust toolchain and MSRV relationship, fixed maintenance-tool pins,
+RustSec advisories, direct dependency status, duplicate dependency tree signal,
+deterministic license notices, and GitHub Actions workflow syntax. Newer
+dependency, Rust toolchain, and GitHub Actions candidates MUST be presented by
+Dependabot rather than making an otherwise internally consistent selected state
+invalid.
 
 REQ-DEP-004G: The scheduled dependency-maintenance workflow MUST use a
 non-zero minute value in its cron expression instead of scheduling exactly at
 the start of an hour.
 
 REQ-DEP-004H: Local dependency maintenance MUST use the same project scripts as
-the scheduled dependency-maintenance workflow. Direct dependency baseline
-changes still MUST be represented explicitly in `Cargo.toml`; automation MUST
-NOT hide a direct baseline change as only a lockfile refresh.
+the scheduled dependency-maintenance workflow. Maintainers MUST have one local
+update command that updates the complete selected stable Rust toolchain,
+repository-pinned maintenance tools, and every Cargo.lock dependency allowed by
+Cargo.toml, then runs the dependency checks and normal Rust verification gate.
+Direct dependency baseline changes MUST be represented explicitly in
+`Cargo.toml`; automation MUST NOT hide a direct baseline change as only a
+lockfile refresh. The update command MUST NOT commit, push, merge, tag, publish,
+create a GitHub Release, or make the release decision.
 
 REQ-DEP-004I: Remote GitHub Actions used by source-repository workflows MUST be
 pinned by full-length commit SHA. The same line SHOULD keep the corresponding
@@ -314,9 +323,9 @@ when a newer action version is available.
 
 REQ-DEP-004J: Fixed versions for repository maintenance tools that are not
 covered by a supported Dependabot ecosystem MUST have one repository-owned
-version source, a local and scheduled latest-version check against the
-authoritative upstream, and a documented project script that updates the pin.
-CI and local maintenance MUST consume the same fixed version source.
+version source and MUST be updated from their authoritative upstreams by the
+same local dependency-update command. CI and local maintenance MUST consume the
+same fixed version source.
 
 REQ-DEP-005: Development docs MUST list dependency install commands separately
 with comments explaining purpose.
@@ -5073,12 +5082,18 @@ supersedes.
   https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
 - GitHub CLI `gh release create`:
   https://cli.github.com/manual/gh_release_create
-- Rust 1.97.0 release announcement:
-  https://blog.rust-lang.org/2026/07/09/Rust-1.97.0/
+- Rust 1.97.1 release announcement:
+  https://blog.rust-lang.org/2026/07/16/Rust-1.97.1/
+- Cargo `rust-version` field:
+  https://doc.rust-lang.org/stable/cargo/reference/rust-version.html
+- Cargo `cargo update` command:
+  https://doc.rust-lang.org/stable/cargo/commands/cargo-update.html
 - rustup toolchain-file overrides:
   https://rust-lang.github.io/rustup/overrides.html#the-toolchain-file
 - Dependabot supported ecosystems, including Rust toolchains:
   https://docs.github.com/en/code-security/reference/supply-chain-security/supported-ecosystems-and-repositories
+- GitHub Actions secure-use reference:
+  https://docs.github.com/en/actions/reference/security/secure-use
 - cargo-about:
   https://docs.rs/crate/cargo-about/latest
 - actionlint releases:
