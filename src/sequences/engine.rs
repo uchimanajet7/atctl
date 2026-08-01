@@ -227,6 +227,7 @@ where
             sequence,
             step,
             &response_texts,
+            rendered_send.as_deref(),
             extra_analysis,
             failure_reason.is_none(),
             &mut raw_transcript,
@@ -855,6 +856,7 @@ fn push_step_analysis(
     sequence: &Sequence,
     step: &SequenceStep,
     response_texts: &[String],
+    rendered_send: Option<&str>,
     extra_analysis: Vec<SequenceAnalysisLine>,
     include_step_evidence: bool,
     raw_transcript: &mut Vec<String>,
@@ -871,7 +873,12 @@ fn push_step_analysis(
         });
     }
     analysis.extend(extra_analysis);
-    analysis.extend(derive_response_analysis(response_texts, bindings));
+    analysis.extend(derive_response_analysis(
+        response_texts,
+        bindings,
+        rendered_send,
+        step.require_tcp_ack,
+    ));
 
     if analysis.is_empty() {
         return Ok((None, None));
@@ -983,6 +990,8 @@ enum PingLine {
 fn derive_response_analysis(
     response_texts: &[String],
     bindings: &mut BTreeMap<String, BoundParam>,
+    command: Option<&str>,
+    require_tcp_ack: bool,
 ) -> Vec<SequenceAnalysisLine> {
     let mut analysis = Vec::new();
     for response in response_texts {
@@ -1011,7 +1020,12 @@ fn derive_response_analysis(
                 });
             }
         }
-        analysis.extend(parse_tcp_analysis(response, bindings));
+        analysis.extend(parse_quectel_data_analysis(
+            response,
+            bindings,
+            command,
+            require_tcp_ack,
+        ));
         analysis.extend(parse_ping_analysis(response));
     }
     analysis
@@ -1438,13 +1452,26 @@ fn decode_ucs2_hex_body(body: &str) -> Option<String> {
     }
 }
 
-fn parse_tcp_analysis(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QirdOperation {
+    ReadData,
+    QueryCounters,
+}
+
+fn parse_quectel_data_analysis(
     text: &str,
     bindings: &BTreeMap<String, BoundParam>,
+    command: Option<&str>,
+    require_tcp_ack: bool,
 ) -> Vec<SequenceAnalysisLine> {
     let mut analysis = Vec::new();
+    let is_tcp_ack_query = require_tcp_ack && command.is_some_and(is_qisend_counter_query_command);
+    let qird_operation = command.and_then(parse_qird_operation);
+
     for line in response_lines(text) {
-        if let Some((total, acknowledged, unacknowledged)) = parse_qisend_counters(&line) {
+        if is_tcp_ack_query
+            && let Some((total, acknowledged, unacknowledged)) = parse_qisend_counters(&line)
+        {
             analysis.push(qisend_analysis(
                 total,
                 acknowledged,
@@ -1452,11 +1479,53 @@ fn parse_tcp_analysis(
                 bindings,
             ));
         }
-        if let Some(length) = parse_qird_length(&line) {
-            analysis.push(qird_analysis(length));
+
+        match qird_operation {
+            Some(QirdOperation::QueryCounters) => {
+                if let Some((total, read, unread)) = parse_qird_counters(&line) {
+                    analysis.push(qird_counters_analysis(total, read, unread));
+                }
+            }
+            Some(QirdOperation::ReadData) => {
+                if let Some(length) = parse_qird_normal_read_length(&line) {
+                    analysis.push(qird_read_analysis(length));
+                }
+            }
+            None => {}
         }
     }
     analysis
+}
+
+fn is_qisend_counter_query_command(command: &str) -> bool {
+    let upper = command.trim().to_ascii_uppercase();
+    let Some(arguments) = upper.strip_prefix("AT+QISEND=") else {
+        return false;
+    };
+    let fields = arguments.split(',').map(str::trim).collect::<Vec<_>>();
+    fields.len() == 2
+        && fields[0].parse::<usize>().is_ok()
+        && fields[1].parse::<usize>().is_ok_and(|length| length == 0)
+}
+
+fn parse_qird_operation(command: &str) -> Option<QirdOperation> {
+    let upper = command.trim().to_ascii_uppercase();
+    let arguments = upper.strip_prefix("AT+QIRD=")?;
+    let fields = arguments.split(',').map(str::trim).collect::<Vec<_>>();
+    fields.first()?.parse::<usize>().ok()?;
+
+    match fields.as_slice() {
+        [_] => Some(QirdOperation::ReadData),
+        [_, read_length] => {
+            let read_length = read_length.parse::<usize>().ok()?;
+            if read_length == 0 {
+                Some(QirdOperation::QueryCounters)
+            } else {
+                Some(QirdOperation::ReadData)
+            }
+        }
+        _ => None,
+    }
 }
 
 fn parse_qisend_counters(line: &str) -> Option<(usize, usize, usize)> {
@@ -1658,22 +1727,62 @@ fn qisend_analysis(
     }
 }
 
-fn parse_qird_length(line: &str) -> Option<usize> {
-    let rest = line.strip_prefix("+QIRD:")?.trim();
-    rest.split(',')
-        .next()
-        .map(str::trim)
-        .and_then(|value| value.parse::<usize>().ok())
+fn parse_qird_counters(line: &str) -> Option<(usize, usize, usize)> {
+    let fields = split_csv_fields(line.strip_prefix("+QIRD:")?);
+    if fields.len() != 3 || fields.iter().any(|field| field.quoted) {
+        return None;
+    }
+    Some((
+        csv_usize(&fields, 0)?,
+        csv_usize(&fields, 1)?,
+        csv_usize(&fields, 2)?,
+    ))
 }
 
-fn qird_analysis(length: usize) -> SequenceAnalysisLine {
+fn parse_qird_normal_read_length(line: &str) -> Option<usize> {
+    let fields = split_csv_fields(line.strip_prefix("+QIRD:")?);
+    if fields.len() == 1 {
+        csv_usize(&fields, 0)
+    } else {
+        None
+    }
+}
+
+fn parse_qird_data_length(line: &str) -> Option<usize> {
+    let fields = split_csv_fields(line.strip_prefix("+QIRD:")?);
+    match fields.as_slice() {
+        [length] => length.value.trim().parse().ok(),
+        [length, remote_ip, remote_port]
+            if (remote_ip.quoted
+                || remote_ip.value.contains('.')
+                || remote_ip.value.contains(':'))
+                && remote_port.value.trim().parse::<u16>().is_ok() =>
+        {
+            length.value.trim().parse().ok()
+        }
+        _ => None,
+    }
+}
+
+fn qird_read_analysis(length: usize) -> SequenceAnalysisLine {
     let text = if length == 0 {
-        "TCP receive data: no buffered response data (+QIRD: 0).".to_owned()
+        "Quectel receive data: no buffered response data (+QIRD: 0).".to_owned()
     } else {
         format!(
-            "TCP receive data: {length} byte(s) of buffered response data were returned; this is response data."
+            "Quectel receive data: {length} byte(s) of buffered response data were returned; this is response data."
         )
     };
+    SequenceAnalysisLine {
+        kind: SequenceAnalysisKind::General,
+        raw: text.clone(),
+        masked: text,
+    }
+}
+
+fn qird_counters_analysis(total: usize, read: usize, unread: usize) -> SequenceAnalysisLine {
+    let text = format!(
+        "Quectel receive counters: total={total} read={read} unread={unread}; this query did not return or consume buffered payload data."
+    );
     SequenceAnalysisLine {
         kind: SequenceAnalysisKind::General,
         raw: text.clone(),
@@ -1706,7 +1815,7 @@ fn mask_sequence_protocol_data(text: &str) -> String {
             mask_next_qird_data = false;
             continue;
         }
-        if let Some(length) = parse_qird_length(line.trim()) {
+        if let Some(length) = parse_qird_data_length(line.trim()) {
             output.push(line);
             mask_next_qird_data = length > 0;
             mask_next_sms_body = false;

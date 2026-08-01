@@ -197,7 +197,8 @@ explicit about what was verified:
 
 - socket open evidence such as `+QIOPEN: <id>,0`;
 - module accepted payload evidence such as `SEND OK`;
-- TCP peer acknowledgement evidence such as `AT+QISEND=<id>,0` counters;
+- TCP peer acknowledgement evidence from an `AT+QISEND=<id>,0` step that
+  explicitly declares `require_tcp_ack = true`;
 - end-to-end application evidence such as non-empty `QIRD` response data or
   remote endpoint logs.
 
@@ -232,9 +233,14 @@ active, and send `AT+QIACT=<contextID>` only when activation is needed. If a
 Sequence opens a product-managed socket and later fails, configured cleanup such
 as `AT+QICLOSE=<connectID>` must be visible in the Response transcript and must
 not hide the original failed step reason.
-`AT+QISEND=<id>,0` counters must be presented as sent/acknowledged/
-unacknowledged byte evidence, not application processing proof. `+QIRD: 0`
-means no buffered receive data and must not be presented as response evidence.
+Only an `AT+QISEND=<id>,0` step with `require_tcp_ack = true` may present its
+three fields as TCP total/acknowledged/unacknowledged byte evidence. The same
+response shape has UDP total/sent/unsent semantics, so an undeclared context
+must remain modem response output rather than guessed TCP analysis. These
+counters are not application processing proof. For a normal QIRD read,
+`+QIRD: 0` means no buffered receive data and must not be presented as response
+evidence. For `AT+QIRD=<connectID>,0`, three numeric fields are receive
+counters and do not mean that payload data was returned.
 Direct `AT+QIRD=<connectID>,<read_length>` data retrieval requires confirmation
 because it advances the module's read/unread receive-buffer state. The
 `AT+QIRD=<connectID>,0` size query and `AT+QIRD=?` capability query do not

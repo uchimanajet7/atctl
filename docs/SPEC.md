@@ -1,6 +1,6 @@
 # atctl Product and Technical Specification
 
-- Document version: 0.4.122
+- Document version: 0.4.123
 - Date: 2026-07-31
 - Implementation language: Rust
 - Product name: `atctl`
@@ -77,6 +77,25 @@ Normative source categories:
 
 Supporting references appear in section 25, in role-specific operational
 documents, and beside the requirements they support.
+
+The AT-command reference editions checked for this specification on
+2026-07-31 are:
+
+- 3GPP TS 27.007 Release 19, version 19.6.0, uploaded 2026-03-16;
+- 3GPP TS 27.005 Release 19, version 19.0.0, uploaded 2025-10-14;
+- Quectel EC2x&EG2x&EG9x&EM05 Series AT Commands Manual, version 2.2,
+  dated 2026-02-11; and
+- Quectel EC2x&EG2x&EG9x&EM05 Series TCP(IP) Application Note, version 1.6,
+  dated 2026-05-11.
+
+The Quectel EG25-G product page is the applicability source for the validation
+module and states that EG25-G meets 3GPP Release 11. That module-conformance
+release is distinct from the current 3GPP specification editions used as
+standards references above. The same product page currently lists TCP(IP)
+Application Note version 1.7, but the unauthenticated listing does not expose
+that document body or its date. Version 1.6 is therefore the fixed, content-
+reviewed TCP/IP baseline for the requirements below; version 1.7 is recorded as
+the current official listing, not as a reviewed or adopted content baseline.
 
 ## 3. Normative Terms
 
@@ -832,20 +851,42 @@ in the transcript. The required derived value is `sms_sender`, extracted
 from `AT+CMGR` for SMS reply-by-index. Derived sensitive values MUST be masked
 under the same normal-output rules as user-entered sensitive parameters.
 
-REQ-SEQ-ENGINE-010: For Quectel TCP/IP socket checks, `+QIOPEN: <id>,0` is
-evidence that the socket opened, `SEND OK` is evidence that the module accepted
-the payload for sending, `AT+QISEND=<id>,0` counters are TCP/socket
-acknowledgement evidence, and a received echo or application response read
-through `QIRD` or remote endpoint evidence is needed to verify end-to-end data
-exchange. `+QIRD: 0` means there is no buffered receive data and MUST NOT be
-presented as application response evidence. Because TCP is a byte stream,
-product wording MUST NOT imply that one socket write equals one remote
-application message unless an application framing format is also in use.
+REQ-SEQ-ENGINE-010: For a Quectel TCP/IP socket check, `+QIOPEN: <id>,0` is
+evidence that the socket opened and `SEND OK` is evidence only that the module
+accepted the payload for sending. For the buffer and direct-push access modes
+used by the repository TCP examples, the command-accepted `OK` MUST NOT complete
+the open step; the step MUST wait up to the declared 150-second timeout for
+`+QIOPEN: <id>,0`. The transparent access mode completes with `CONNECT` and is
+not used by the current examples. The version 1.6 manual restricts
+`UDP LISTENER` to EG91 and EG95 series, so it MUST NOT be represented as an
+EG25-G capability. A Sequence step may interpret the three fields returned by
+`AT+QISEND=<id>,0` as TCP total, acknowledged, and unacknowledged byte counters
+only when that exact counter-query step declares `require_tcp_ack = true`. The
+same three-field response represents total, sent, and unsent byte counters for
+UDP, so a response that lacks the explicit TCP step contract MUST remain modem
+response output and MUST NOT be automatically labelled as TCP acknowledgement
+analysis.
+
 When a TCP Sequence step declares that TCP acknowledgement is required, atctl
 MUST treat `+QISEND:` counters with remaining unacknowledged payload bytes as
 an incomplete send condition, retry acknowledgement queries within the step
 timeout, and fail the Sequence rather than closing the socket and reporting
 `Result: OK` if the payload is still not acknowledged.
+
+Derived `QIRD` analysis MUST use the originating command form. For
+`AT+QIRD=<id>,0`, the three response fields are total received, already read,
+and unread byte counters; the query does not return or consume buffered
+payload. For a normal positive-length read, a single `+QIRD: <length>` field
+precedes any returned payload and `+QIRD: 0` means that no buffered data was
+returned. A UDP SERVICE read may instead return
+`+QIRD: <length>,<remoteIP>,<remotePort>`; that form MUST NOT be parsed as the
+three receive counters or labelled as TCP. If the command or response form does
+not establish one of these meanings, atctl MUST preserve the modem response
+without guessed derived analysis. A received echo or application response read
+through `QIRD`, or remote endpoint evidence, is needed to verify end-to-end
+data exchange. Because TCP is a byte stream, product wording MUST NOT imply
+that one socket write equals one remote application message unless an
+application framing format is also in use.
 
 REQ-SEQ-ENGINE-011: If a Sequence changes modem state only to perform a check,
 the state change MUST be explicit in the Sequence summary and execution review. Optional
@@ -3758,7 +3799,8 @@ check and one ICMP ping reachability check based on the Quectel TCP/IP AT
 command set. The TCP data-send Sequence SHOULD use
 commands such as `AT+QIACT?` or `AT+QIACT=<cid>` for context activation checks,
 `AT+QIOPEN=...` for socket opening, `AT+QISEND=...` for payload sending,
-`AT+QISEND=<connectID>,0` for sent/acknowledged/unacknowledged byte counters,
+`AT+QISEND=<connectID>,0` for TCP sent/acknowledged/unacknowledged byte
+counters when the step explicitly declares the TCP acknowledgement contract,
 `AT+QIRD=...` for reading an echo or response when available, and
 `AT+QICLOSE=...` for explicit socket close. The exact command forms MUST match
 the selected Quectel manual. `OK` after
@@ -3766,20 +3808,29 @@ the selected Quectel manual. `OK` after
 also reports success or failure through a later `+QIOPEN` URC. `SEND OK` MUST
 be reported as module-accepted-payload evidence, not remote application receipt
 evidence. `+QISEND:` counters MAY be reported as TCP peer acknowledgement
-evidence when the selected Quectel manual defines the fields and the transcript
-includes sent, acknowledged, and unacknowledged byte counts. They MUST NOT be
-reported as application-layer processing success. For fixed-length Quectel
+evidence only for an `AT+QISEND=<connectID>,0` step that declares
+`require_tcp_ack = true`; the transcript MUST include total, acknowledged, and
+unacknowledged byte counts. A three-field `+QISEND:` response without that
+explicit TCP contract MUST NOT be given derived TCP analysis because the same
+response shape has UDP sent/unsent semantics. The counters MUST NOT be reported
+as application-layer processing success. For fixed-length Quectel
 `AT+QISEND=<connectID>,<length>` payload entry, example Sequences MUST send
 exactly the declared payload bytes and MUST NOT append SMS-style Ctrl-Z unless
 the selected command form explicitly requires it. A TCP acknowledgement query
 step SHOULD declare `require_tcp_ack = true`; in that case the engine MUST
 retry the query within the step timeout until the acknowledged byte count covers
 the payload length and the unacknowledged byte count is zero, or fail the
-Sequence with the last counters visible in the transcript. `+QIRD: 0` MUST be
-reported as no received data. Non-empty `+QIRD:<length>` output MAY be reported
-as response data evidence, but returned data remains subject to normal masking
-and MUST NOT be treated as proof that a remote application committed the
-payload unless the endpoint protocol defines that response as such.
+Sequence with the last counters visible in the transcript. QIRD derived
+analysis MUST use the originating command form. `AT+QIRD=<connectID>,0` MUST
+interpret exactly three numeric response fields as total received, already
+read, and unread counters and MUST NOT treat the first field as returned payload
+length. A normal positive-length read MAY report a single-field
+`+QIRD:<length>` as returned response data, with `+QIRD: 0` reported as no
+buffered data. A UDP SERVICE response containing length, remote IP, and remote
+port MUST NOT be confused with the size-query counters or labelled as TCP.
+Returned data remains subject to normal masking and MUST NOT be treated as
+proof that a remote application committed the payload unless the endpoint
+protocol defines that response as such.
 `AT+QIRD=<connectID>,<read_length>` data retrieval MUST contribute an
 observe-data effect, a runtime receive-buffer state-change effect, sensitive
 output, irreversible buffer-consumption reversibility, and a confirmation
@@ -3989,8 +4040,8 @@ or prompts MUST declare the marker that completes that step; it MUST NOT rely on
 the first `OK` when that `OK` only means the command was accepted.
 If `require_ping_success = true` is set, the loader MUST reject definitions that
 do not wait for `+QPING:` result lines. If `require_tcp_ack = true` is set, the
-loader MUST reject definitions that do not read `+QISEND:` acknowledgement
-counters.
+loader MUST reject definitions unless the step sends exactly the
+`AT+QISEND=<connectID>,0` counter-query form and reads `+QISEND:` counters.
 
 REQ-SEQ-FILE-004: Sequence parameter definitions MUST identify whether a value
 is required and whether it is sensitive. They MAY also define:
@@ -4966,10 +5017,10 @@ supersedes.
   https://www.rfc-editor.org/rfc/rfc2119
 - RFC 3339:
   https://datatracker.ietf.org/doc/html/rfc3339
-- 3GPP TS 27.007:
-  https://www.3gpp.org/dynareport/27007.htm
-- 3GPP TS 27.005:
-  https://www.3gpp.org/DynaReport/27005.htm
+- 3GPP TS 27.007 Release 19, version 19.6.0, uploaded 2026-03-16:
+  https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1515
+- 3GPP TS 27.005 Release 19, version 19.0.0, uploaded 2025-10-14:
+  https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1514
 - 3GPP TS 23.038:
   https://www.3gpp.org/DynaReport/23038.htm
 - 3GPP TS 23.040:
@@ -4998,18 +5049,19 @@ supersedes.
   https://developers.soracom.io/en/docs/groups/binary-format-v1/
 - RFC 9293, Transmission Control Protocol:
   https://www.rfc-editor.org/rfc/rfc9293
-- Quectel EG25-G:
+- Quectel EG25-G official product page, including Release 11 applicability and
+  current document listings (checked 2026-07-31):
   https://www.quectel.com/product/lte-eg25-g/
 - Quectel EG25-G hardware design:
   https://quectel.com/content/uploads/2024/04/Quectel_EG25-G_Hardware_Design_V1.5.pdf
-- Quectel EC2x/EG2x/EG9x/EM05 AT commands manual landing page:
-  https://www.quectel.com/download/quectel_ec2xeg2xeg9xem05_series_at_commands_manual_v2-2/
+- Quectel EC2x&EG2x&EG9x&EM05 Series AT Commands Manual, version 2.2,
+  dated 2026-02-11, fixed reviewed edition:
+  https://forumschinese.quectel.com/uploads/short-url/oZLNP2tqnqtU88yJwrsiSqymYff.pdf
 - Quectel EC2x/EG2x/EG9x/EM05 QCFG AT commands manual:
   https://quectel.com/content/uploads/2024/02/Quectel_EC2xEG2xEG9xEM05_Series_QCFG_AT_Commands_Manual_V1.0.pdf
-- Quectel EC2x/EG9x/EM05 TCP/IP AT commands manual:
-  https://sixfab.com/wp-content/uploads/2018/09/Quectel_EC2xEG9xEM05_TCPIP_AT_Commands_Manual_V1.0.pdf
-- Quectel current online AT command manual with `AT+QIRD` buffer semantics:
-  https://developer.quectel.com/doc/shortrange/FGM842D/en/Resources/AT-Firmware/AT-Commands-Manual.html
+- Quectel EC2x&EG2x&EG9x&EM05 Series TCP(IP) Application Note, version 1.6,
+  dated 2026-05-11, fixed reviewed edition applicable to EG25-G:
+  https://forumschinese.quectel.com/uploads/short-url/2IJl5QD3BXtuTD55axw0HYYEfkL.pdf
 - Ratatui popup example:
   https://ratatui.rs/examples/apps/popup/
 - Ratatui key-binding template (`q` for quit):
@@ -5149,10 +5201,10 @@ supersedes.
   https://docs.rs/portable-pty/latest/portable_pty/
 - ctrlc:
   https://docs.rs/ctrlc/latest/ctrlc/
-- 3GPP TS 27.007:
-  https://www.3gpp.org/dynareport/27007.htm
-- 3GPP TS 27.005:
-  https://www.3gpp.org/DynaReport/27005.htm
+- 3GPP TS 27.007 Release 19, version 19.6.0, uploaded 2026-03-16:
+  https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1515
+- 3GPP TS 27.005 Release 19, version 19.0.0, uploaded 2025-10-14:
+  https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1514
 - TOML v1.0.0:
   https://toml.io/en/v1.0.0
 - XDG Base Directory Specification:

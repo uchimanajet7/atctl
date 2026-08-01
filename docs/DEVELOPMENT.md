@@ -307,9 +307,14 @@ Tests should cover at least:
 - SMS `+CMGL` / `+CMGR` response parsing, UCS2 decoded-body analysis in
   `Decoded SMS:`, default decoded-body masking, and reply recipient derivation
   from `AT+CMGR`.
-- TCP `+QISEND:` counter analysis, `require_tcp_ack` control behavior for
-  incomplete acknowledged/unacknowledged counters, fixed-length payload sending
-  without SMS-style Ctrl-Z, and `+QIRD:` no-data/response-data analysis.
+- TCP `+QISEND:` counter analysis only for a zero-length counter-query step
+  declaring `require_tcp_ack`, negative coverage that a generic three-field
+  `+QISEND:` response is not labelled as TCP, control behavior for incomplete
+  acknowledged/unacknowledged counters, fixed-length payload sending without
+  SMS-style Ctrl-Z, and command-aware `+QIRD:` receive-counter,
+  no-data/response-data analysis. Coverage must distinguish a three-numeric-field
+  `AT+QIRD=<id>,0` response from a normal read and from a UDP SERVICE
+  length/remote-IP/remote-port header.
 - Ping `+QPING:` response analysis and `require_ping_success` control behavior
   so terminal `OK` without at least one parsed received reply is not treated as
   reachability success. Coverage must include a command-accepted `OK` followed
@@ -328,7 +333,8 @@ Tests should cover at least:
   wait, URC wait, and per-step timeout behavior through mock transports.
 - Sequence loader validation for semantic success flags and wait markers:
   `require_ping_success` definitions must wait for `+QPING:`, and
-  `require_tcp_ack` definitions must read `+QISEND:` counters.
+  `require_tcp_ack` definitions must send the
+  `AT+QISEND=<connectID>,0` counter-query form and read `+QISEND:` counters.
 - Prompt or URC waits must surface terminal error responses such as `ERROR`,
   `+CME ERROR`, `+CMS ERROR`, and `NO CARRIER` instead of hiding them behind a
   generic timeout when the modem has already returned the failure.

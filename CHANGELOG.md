@@ -2,7 +2,7 @@
 
 All notable project changes should be recorded in this file.
 
-## 0.2.0 - 2026-07-13
+## 0.2.0 - 2026-08-01
 
 ### Added
 
@@ -76,6 +76,17 @@ All notable project changes should be recorded in this file.
 - Added pre-publication release checks for Apple Silicon architecture, archive
   contents and permissions, checksums, dependency notices, and dynamic linkage
   to Homebrew `libusb`.
+- Replaced the out-of-scope Quectel short-range manual and third-party
+  historical TCP/IP manual references with the official EG25-G product page,
+  fixed reviewed EC2x/EG2x/EG9x/EM05 AT Manual V2.2 and TCP(IP) Application
+  Note V1.6 editions, and explicit 3GPP TS 27.007 V19.6.0 / TS 27.005 V19.0.0
+  reference versions.
+- Made Sequence `QISEND` and `QIRD` analysis depend on the originating command
+  and step contract. TCP acknowledgement analysis now requires a validated
+  `AT+QISEND=<connectID>,0` step with `require_tcp_ack = true`; QIRD receive
+  counters, normal reads, and UDP SERVICE response headers are no longer
+  inferred from the same context-free field count, and buffered response data
+  remains masked.
 
 ### Removed
 

@@ -145,6 +145,17 @@ fn validate_step_completion_contract(
     }
 
     if step.require_tcp_ack {
+        if !step
+            .send
+            .as_deref()
+            .is_some_and(is_qisend_counter_query_template)
+        {
+            return Err(sequence_validation_error(
+                sequence,
+                step,
+                "require_tcp_ack requires send to use the AT+QISEND=<connectID>,0 counter-query form",
+            ));
+        }
         let has_qisend_marker = step
             .expect
             .as_deref()
@@ -163,6 +174,28 @@ fn validate_step_completion_contract(
     }
 
     Ok(())
+}
+
+fn is_qisend_counter_query_template(command: &str) -> bool {
+    let upper = command.trim().to_ascii_uppercase();
+    let Some(arguments) = upper.strip_prefix("AT+QISEND=") else {
+        return false;
+    };
+    let fields = arguments.split(',').map(str::trim).collect::<Vec<_>>();
+    fields.len() == 2 && is_connect_id_template(fields[0]) && fields[1] == "0"
+}
+
+fn is_connect_id_template(value: &str) -> bool {
+    value.parse::<usize>().is_ok()
+        || value
+            .strip_prefix("{{")
+            .and_then(|value| value.strip_suffix("}}"))
+            .is_some_and(|name| {
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+            })
 }
 
 fn sequence_validation_error(
@@ -505,6 +538,54 @@ mod tests {
 
         assert!(error.contains("invalid Sequence `bad-tcp-ack` step `ack`"));
         assert!(error.contains("+QISEND:"));
+    }
+
+    #[test]
+    fn rejects_tcp_ack_steps_that_do_not_send_zero_length_counter_query() {
+        let error = parse_sequences(
+            r#"
+            title = "Custom Sequences"
+
+            [[sequences]]
+            name = "bad-tcp-ack-command"
+            summary = "Bad TCP ack command."
+
+            [[sequences.steps]]
+            id = "ack"
+            send = "AT+QISEND=0,4"
+            expect = "+QISEND:"
+            require_tcp_ack = true
+            "#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("invalid Sequence `bad-tcp-ack-command` step `ack`"));
+        assert!(error.contains("AT+QISEND=<connectID>,0"));
+    }
+
+    #[test]
+    fn rejects_tcp_ack_steps_with_non_numeric_non_template_connect_id() {
+        let error = parse_sequences(
+            r#"
+            title = "Custom Sequences"
+
+            [[sequences]]
+            name = "bad-tcp-ack-connect-id"
+            summary = "Bad TCP ack connect ID."
+
+            [[sequences.steps]]
+            id = "ack"
+            send = "AT+QISEND=TCP,0"
+            expect = "+QISEND:"
+            require_tcp_ack = true
+            "#,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("invalid Sequence `bad-tcp-ack-connect-id` step `ack`"));
+        assert!(error.contains("AT+QISEND=<connectID>,0"));
     }
 
     #[test]

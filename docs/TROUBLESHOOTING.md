@@ -470,16 +470,20 @@ in Response; the original failed step remains the failure reason.
 
 For Quectel socket checks, `+QIOPEN: <id>,0` indicates socket open success,
 `SEND OK` indicates the module accepted the payload for sending,
-`AT+QISEND=<id>,0` counters indicate TCP/socket acknowledgement state, and a
-non-empty `QIRD` response or remote endpoint evidence is needed for
-end-to-end application proof. `OK` alone after `QIOPEN` is not full network
-success. `+QIRD: 0` means no buffered receive data. Read counter output as
-sent/acknowledged/unacknowledged byte evidence, not as remote application
-processing proof. For the repository-managed TCP examples,
+an `AT+QISEND=<id>,0` step with `require_tcp_ack = true` reports TCP/socket
+acknowledgement state, and a non-empty QIRD response or remote endpoint evidence
+is needed for end-to-end application proof. `OK` alone after `QIOPEN` is not
+full network success. The same three-field `+QISEND:` response has UDP
+sent/unsent semantics, so output without the explicit TCP step contract is not
+automatically labelled as TCP analysis. For the repository-managed TCP examples,
 `+QISEND:` counters with remaining unacknowledged payload bytes are not a
 successful send condition; the Sequence retries the acknowledgement query
 within the step timeout and fails with the last counters visible if the payload
-is still not acknowledged.
+is still not acknowledged. For a normal QIRD read, `+QIRD: 0` means no buffered
+receive data. `AT+QIRD=<id>,0` instead returns total received, already read, and
+unread counters without consuming payload; a UDP SERVICE read may return
+length, remote IP, and remote port. atctl uses the originating command to avoid
+confusing these forms.
 
 For the SORACOM reachability endpoints, Beam boundary, and TCP message-framing
 reference, see

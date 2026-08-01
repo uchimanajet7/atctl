@@ -228,6 +228,16 @@ fn quectel_sequence_waits_for_urc_and_send_ok() {
     .into_iter()
     .next()
     .unwrap();
+    let open_socket = sequence
+        .steps
+        .iter()
+        .find(|step| step.id == "open-socket")
+        .unwrap();
+    assert_eq!(
+        open_socket.expect_urc.as_deref(),
+        Some("+QIOPEN: {{connect_id}},0")
+    );
+    assert_eq!(open_socket.timeout_secs, Some(150));
     let transport = MockTransport::with_responses([
         b"\r\n+QIACT: 1,1,1,\"10.0.0.1\"\r\n\r\nOK\r\n".to_vec(),
         b"\r\nOK\r\n\r\n+QIOPEN: 0,0\r\n".to_vec(),
@@ -278,11 +288,115 @@ fn quectel_sequence_waits_for_urc_and_send_ok() {
     assert!(
         execution
             .masked_transcript
-            .contains("TCP receive data: no buffered response data")
+            .contains("Quectel receive data: no buffered response data")
     );
     assert!(execution.masked_transcript.contains("Analysis:"));
     assert!(!execution.masked_transcript.contains("Evidence:"));
     assert!(!execution.masked_transcript.contains("ping"));
+}
+
+#[test]
+fn generic_qisend_counters_are_not_labelled_as_tcp_without_step_contract() {
+    let sequence = single_command_sequence(
+        "generic-qisend-counters",
+        "AT+QISEND=0,0",
+        "+QISEND:",
+        false,
+    );
+    let transport = MockTransport::with_responses([b"\r\n+QISEND: 4,4,0\r\n\r\nOK\r\n".to_vec()]);
+
+    let execution = execute_sequence(
+        &sequence,
+        &[],
+        transport,
+        Duration::from_secs(30),
+        true,
+        None,
+    )
+    .unwrap();
+
+    assert!(execution.raw_transcript.contains("+QISEND: 4,4,0"));
+    assert!(!execution.raw_transcript.contains("TCP send counters:"));
+    assert!(!execution.raw_transcript.contains("TCP-acknowledged"));
+}
+
+#[test]
+fn qird_counter_query_reports_three_counters_without_masking_terminal_result() {
+    let sequence = single_command_sequence("qird-counters", "AT+QIRD=0,0", "+QIRD:", false);
+    let transport = MockTransport::with_responses([b"\r\n+QIRD: 100,40,60\r\n\r\nOK\r\n".to_vec()]);
+
+    let execution = execute_sequence(
+        &sequence,
+        &[],
+        transport,
+        Duration::from_secs(30),
+        true,
+        None,
+    )
+    .unwrap();
+
+    assert!(execution.masked_transcript.contains("+QIRD: 100,40,60"));
+    assert!(execution.masked_transcript.contains("OK"));
+    assert!(execution.masked_transcript.contains(
+        "Quectel receive counters: total=100 read=40 unread=60; this query did not return or consume buffered payload data."
+    ));
+    assert!(!execution.masked_transcript.contains("<masked qird data>"));
+    assert!(!execution.masked_transcript.contains("TCP receive data:"));
+}
+
+#[test]
+fn qird_positive_read_masks_data_and_reports_command_aware_length() {
+    let sequence = single_command_sequence("qird-read", "AT+QIRD=0,4", "+QIRD:", false);
+    let transport = MockTransport::with_responses([b"\r\n+QIRD: 4\r\npong\r\n\r\nOK\r\n".to_vec()]);
+
+    let execution = execute_sequence(
+        &sequence,
+        &[],
+        transport,
+        Duration::from_secs(30),
+        true,
+        None,
+    )
+    .unwrap();
+
+    assert!(execution.raw_transcript.contains("pong"));
+    assert!(!execution.masked_transcript.contains("pong"));
+    assert!(execution.masked_transcript.contains("<masked qird data>"));
+    assert!(
+        execution
+            .masked_transcript
+            .contains("Quectel receive data: 4 byte(s)")
+    );
+    assert!(!execution.masked_transcript.contains("TCP receive data:"));
+}
+
+#[test]
+fn qird_udp_service_header_is_masked_without_tcp_or_counter_analysis() {
+    let sequence = single_command_sequence("qird-udp-service", "AT+QIRD=0", "+QIRD:", false);
+    let transport = MockTransport::with_responses([
+        b"\r\n+QIRD: 4,\"192.0.2.1\",1234\r\npong\r\n\r\nOK\r\n".to_vec(),
+    ]);
+
+    let execution = execute_sequence(
+        &sequence,
+        &[],
+        transport,
+        Duration::from_secs(30),
+        true,
+        None,
+    )
+    .unwrap();
+
+    assert!(
+        execution
+            .raw_transcript
+            .contains("+QIRD: 4,\"192.0.2.1\",1234")
+    );
+    assert!(execution.raw_transcript.contains("pong"));
+    assert!(!execution.masked_transcript.contains("pong"));
+    assert!(execution.masked_transcript.contains("<masked qird data>"));
+    assert!(!execution.masked_transcript.contains("TCP receive data:"));
+    assert!(!execution.masked_transcript.contains("receive counters:"));
 }
 
 #[test]
@@ -1173,4 +1287,35 @@ fn tcp_params() -> Vec<SequenceParamValue> {
         value: value.to_owned(),
     })
     .collect()
+}
+
+fn single_command_sequence(
+    name: &str,
+    command: &str,
+    expect: &str,
+    require_tcp_ack: bool,
+) -> Sequence {
+    Sequence::built_in(
+        name,
+        "Exercise one command.",
+        vec!["test".to_owned()],
+        None,
+        Vec::new(),
+        vec![SequenceStep {
+            id: "command".to_owned(),
+            label: None,
+            ensure_pdp_context_active: None,
+            send: Some(command.to_owned()),
+            expect: Some(expect.to_owned()),
+            expect_prompt: None,
+            expect_urc: None,
+            payload: None,
+            terminator: StepTerminator::None,
+            require_tcp_ack,
+            require_ping_success: false,
+            timeout_secs: None,
+            evidence: None,
+            cleanup_on_failure: None,
+        }],
+    )
 }

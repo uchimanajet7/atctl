@@ -510,7 +510,8 @@ Semantic success flags must match the wait marker. A step with
 `require_ping_success = true` must wait for `+QPING:` using `expect_urc`; using
 only `expect = "OK"` is rejected because `AT+QPING` can return `OK` before the
 ping result lines. A step with `require_tcp_ack = true` must read `+QISEND:`
-counters before it can evaluate acknowledged and unacknowledged bytes.
+counters before it can evaluate acknowledged and unacknowledged bytes, and its
+command must be the `AT+QISEND=<connectID>,0` counter-query form.
 
 Normal Sequence text transcripts render origin sections such as `Command:`,
 `Modem response:`, `Decoded SMS:`, `Analysis:`, `Notes:`, and `Result:` as
@@ -598,13 +599,20 @@ waits past the command-accepted `OK` for `+QPING:` result lines.
 Terminal `OK` without a parsed successful `+QPING:` reply or summary is not
 enough for `Result: OK`.
 `OK` after `QIOPEN` is not enough by itself when the command reports socket
-success or failure through a later `+QIOPEN` URC. `SEND OK` means the module
-accepted the payload for sending; it is not remote application receipt.
+success or failure through a later `+QIOPEN` URC. The buffer-mode TCP examples
+wait up to 150 seconds for `+QIOPEN:<connectID>,0`; transparent mode uses
+`CONNECT` and is not used here. The adopted version 1.6 manual limits
+`UDP LISTENER` to EG91/EG95, so the examples do not present it as an EG25-G
+capability. `SEND OK` means the module accepted the payload for sending; it is
+not remote application receipt.
+For a TCP example step that explicitly declares `require_tcp_ack = true`,
 `AT+QISEND=<connectID>,0` counters are TCP/socket evidence, not application
-processing proof. End-to-end data exchange needs response evidence such as
-non-empty `QIRD` output or remote endpoint evidence. The transcript should
-report sent, acknowledged, and unacknowledged byte counts when counters are
-returned, and report `+QIRD: 0` as no buffered response data. For fixed-length
+processing proof. The same three-field response has sent/unsent semantics for
+UDP, so `atctl` does not infer TCP acknowledgement analysis without that
+explicit step contract. End-to-end data exchange needs response evidence such
+as non-empty `QIRD` output or remote endpoint evidence. The transcript reports
+total, acknowledged, and unacknowledged byte counts for the declared TCP
+counter step. For fixed-length
 `AT+QISEND=<connectID>,<length>` payload entry, example Sequences send the
 declared payload bytes without SMS-style Ctrl-Z. Their acknowledgement query
 steps declare `require_tcp_ack = true`, so `atctl` retries
@@ -613,7 +621,11 @@ payload remains unacknowledged instead of reporting `Result: OK`.
 The Sequence review includes the receive-buffer effect of
 `AT+QIRD=<connectID>,<read_length>` because retrieving data advances Quectel's
 read/unread buffer state. `AT+QIRD=<connectID>,0` only queries receive counters
-and does not consume buffered payload data.
+and does not consume buffered payload data. Its three fields are total received,
+already read, and unread bytes; they are not a returned payload length. A normal
+read returns a single length field before any data, while UDP SERVICE may add
+remote IP and port fields. Derived analysis uses the originating command and
+does not confuse these forms or label an unestablished context as TCP.
 
 Quectel and SORACOM TCP examples provide editable defaults or candidate help for
 routine modem values. PDP context ID uses `candidate = "pdp-context"` with
@@ -642,26 +654,32 @@ assuming one TCP write equals one cloud message.
 
 ## References
 
-- 3GPP TS 27.007, AT command set for User Equipment:
-  https://www.3gpp.org/dynareport/27007.htm
-- 3GPP TS 27.005, SMS and CBS AT command interface:
-  https://www.3gpp.org/DynaReport/27005.htm
+- 3GPP TS 27.007 Release 19, version 19.6.0, uploaded 2026-03-16:
+  https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1515
+- 3GPP TS 27.005 Release 19, version 19.0.0, uploaded 2025-10-14:
+  https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1514
 - 3GPP TS 23.038, SMS alphabets and language-specific information:
   https://www.3gpp.org/DynaReport/23038.htm
 - 3GPP TS 23.040, technical realization of SMS:
   https://www.3gpp.org/DynaReport/23040.htm
 - ITU-T V.250, serial asynchronous automatic dialling and control:
   https://www.itu.int/rec/T-REC-V.250/en
+- Quectel EG25-G official product page, including Release 11 applicability and
+  current document listings (checked 2026-07-31):
+  https://www.quectel.com/product/lte-eg25-g/
 - Quectel EG25-G hardware design:
   https://quectel.com/content/uploads/2024/04/Quectel_EG25-G_Hardware_Design_V1.5.pdf
-- Quectel EC2x/EG2x/EG9x/EM05 AT commands manual landing page:
-  https://www.quectel.com/download/quectel_ec2xeg2xeg9xem05_series_at_commands_manual_v2-2/
+- Quectel EC2x&EG2x&EG9x&EM05 Series AT Commands Manual, version 2.2,
+  dated 2026-02-11, fixed reviewed edition:
+  https://forumschinese.quectel.com/uploads/short-url/oZLNP2tqnqtU88yJwrsiSqymYff.pdf
 - Quectel EC2x/EG2x/EG9x/EM05 QCFG AT commands manual:
   https://quectel.com/content/uploads/2024/02/Quectel_EC2xEG2xEG9xEM05_Series_QCFG_AT_Commands_Manual_V1.0.pdf
-- Quectel EC2x/EG9x/EM05 TCP/IP AT commands manual:
-  https://sixfab.com/wp-content/uploads/2018/09/Quectel_EC2xEG9xEM05_TCPIP_AT_Commands_Manual_V1.0.pdf
-- Quectel current online AT command manual with `AT+QIRD` buffer semantics:
-  https://developer.quectel.com/doc/shortrange/FGM842D/en/Resources/AT-Firmware/AT-Commands-Manual.html
+- Quectel EC2x&EG2x&EG9x&EM05 Series TCP(IP) Application Note, version 1.6,
+  dated 2026-05-11, fixed reviewed edition applicable to EG25-G:
+  https://forumschinese.quectel.com/uploads/short-url/2IJl5QD3BXtuTD55axw0HYYEfkL.pdf
+- Quectel EG25-G product page currently lists TCP(IP) Application Note version
+  1.7; its unauthenticated listing does not expose the document body or date, so
+  version 1.6 above is the content-reviewed baseline (checked 2026-07-31).
 - SORACOM service endpoints:
   https://developers.soracom.io/en/docs/reference/endpoints/
 - SORACOM modem testing and Ping Response Service:
