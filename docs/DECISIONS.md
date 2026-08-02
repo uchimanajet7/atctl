@@ -657,3 +657,33 @@ alone, while the existing long-identifier fallback remains available.
 
 Normative owner: [SPEC.md](SPEC.md) masking requirements and
 [SAFETY.md](SAFETY.md).
+
+## OQ-029: TUI Text Reflow and Stable-Row Layout
+
+Status: accepted
+
+Decision: Ratatui `Paragraph` is the single canonical TUI engine for reflowed
+text, rendered-line measurement, and visual-row scrolling. atctl does not keep
+a separate character-based wrapper. Complete prose and diagnostic content uses
+word-boundary wrapping with explicit newlines, styles, indentation, and Unicode
+extended grapheme clusters preserved. Commands, Sequences, candidates,
+candidate actions, saved-log entries, device/category/control rows, compact
+Status, the footer, and titles retain their one-row structure; atctl uses
+display-width and grapheme-safe ellipsis only where the owning surface permits
+shortening. Opened logs scroll by rendered visual row while their title and
+line-number gutter continue to identify original source-log lines.
+
+Rationale and consequences: The TUI previously combined Ratatui wrapping with
+a second `chars()`-based pre-layout function. The two implementations disagreed
+about word boundaries, zero-width characters, and grapheme clusters, and the
+same disagreement affected modal geometry, Help, Details, Sequence phases, and
+scroll calculations. Reusing the renderer for both measurement and display
+removes that duplicated maintenance burden. The experimental Ratatui
+rendered-line API remains isolated behind one internal adapter. A user-facing
+wrap setting and a separate complete Unicode line-breaking engine would add
+configuration and maintenance without improving the fixed reading and
+navigation roles defined for atctl.
+
+Normative owner: [SPEC.md](SPEC.md) `REQ-TUI-TEXT-001` through
+`REQ-TUI-TEXT-003`, modal/Details/Response requirements, and saved-log viewing
+requirements; [DEVELOPMENT.md](DEVELOPMENT.md) for maintainer verification.

@@ -12,7 +12,7 @@ use crate::log::session::now_timestamp;
 use crate::{AtctlError, Result};
 
 pub const RAW_LOG_ACK: &str = "raw-log";
-pub const RAW_LOG_WARNING: &str = "This raw diagnostic export may contain sensitive modem, subscriber, network, APN, or PDP authentication values.";
+pub const RAW_LOG_WARNING: &str = "This raw diagnostic export records transmitted and received modem bytes without masking. It may contain sensitive modem and subscriber identifiers; network data; APN or PDP authentication data; phone numbers and SMS messages; arbitrary transmitted or received payloads; credentials and tokens; and vendor-specific identifiers.";
 
 #[derive(Debug, Clone)]
 pub struct RawLogConfig {
@@ -317,6 +317,7 @@ mod tests {
 
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("\"event\":\"header\""));
+        assert!(contents.contains(RAW_LOG_WARNING));
         assert!(contents.contains("\"event\":\"exchange\""));
         assert!(contents.contains("\"tx_base64\":\"QVQrQ0lNSQ0=\""));
         assert!(contents.contains("898110001234567"));
@@ -376,6 +377,26 @@ mod tests {
             require_raw_log_ack(Some("yes")),
             Err(AtctlError::RawLogAckMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn raw_log_warning_is_canonical_across_schema_and_user_documentation() {
+        const EXPECTED_WARNING: &str = "This raw diagnostic export records transmitted and received modem bytes without masking. It may contain sensitive modem and subscriber identifiers; network data; APN or PDP authentication data; phone numbers and SMS messages; arbitrary transmitted or received payloads; credentials and tokens; and vendor-specific identifiers.";
+
+        assert_eq!(RAW_LOG_WARNING, EXPECTED_WARNING);
+        for (name, document) in [
+            ("SPEC.md", include_str!("../../docs/SPEC.md")),
+            ("SAFETY.md", include_str!("../../docs/SAFETY.md")),
+            (
+                "TROUBLESHOOTING.md",
+                include_str!("../../docs/TROUBLESHOOTING.md"),
+            ),
+        ] {
+            assert!(
+                document.contains(EXPECTED_WARNING),
+                "{name} does not contain the canonical raw diagnostic warning"
+            );
+        }
     }
 
     fn unique_temp_dir(name: &str) -> PathBuf {

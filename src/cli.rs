@@ -18,7 +18,7 @@ use crate::at::review::{
 };
 use crate::log::history::{LogListingKind, append_command_history, list_logs};
 use crate::log::raw::{
-    RAW_LOG_ACK, RawLogConfig, RawLogExchange, RawLogSink, RawLogTransportError,
+    RAW_LOG_ACK, RAW_LOG_WARNING, RawLogConfig, RawLogExchange, RawLogSink, RawLogTransportError,
     require_raw_log_ack, validate_raw_log_target,
 };
 use crate::log::session::{
@@ -1777,9 +1777,7 @@ impl ConfirmationPrompt for StdioConfirmationPrompt {
             return Err(AtctlError::RawLogAckRequired);
         }
 
-        eprintln!(
-            "Raw diagnostic export may contain sensitive modem, subscriber, network, APN, or PDP authentication values."
-        );
+        notice_raw_log_warning();
         eprintln!("Raw log file: {}", path.display());
         eprint!("Type `{RAW_LOG_ACK}` to create this raw export: ");
         io::stderr()
@@ -1867,14 +1865,18 @@ where
         return Ok(None);
     };
 
-    match args.raw_log_ack.as_deref() {
-        Some(_) => require_raw_log_ack(args.raw_log_ack.as_deref())?,
-        None if args.yes || !io::stdin().is_terminal() => {
-            return Err(AtctlError::RawLogAckRequired);
-        }
-        None => prompt.confirm_raw_log(path)?,
+    if args.raw_log_ack.is_some() {
+        return Ok(Some(prepare_acknowledged_raw_log_config(
+            path,
+            args.raw_log_ack.as_deref(),
+            surface,
+        )?));
+    }
+    if args.yes || !io::stdin().is_terminal() {
+        return Err(AtctlError::RawLogAckRequired);
     }
 
+    prompt.confirm_raw_log(path)?;
     validate_raw_log_target(path)?;
     Ok(Some(RawLogConfig::new(path.clone(), surface)))
 }
@@ -1890,9 +1892,11 @@ fn prepare_sequence_raw_log_config(args: &SequenceRunArgs) -> Result<Option<RawL
         return Ok(None);
     };
 
-    require_raw_log_ack(args.raw_log_ack.as_deref())?;
-    validate_raw_log_target(path)?;
-    Ok(Some(RawLogConfig::new(path.clone(), ExecutionSurface::Cli)))
+    Ok(Some(prepare_acknowledged_raw_log_config(
+        path,
+        args.raw_log_ack.as_deref(),
+        ExecutionSurface::Cli,
+    )?))
 }
 
 fn bridge_raw_log_config(args: &BridgeArgs) -> Result<Option<RawLogConfig>> {
@@ -1906,9 +1910,26 @@ fn bridge_raw_log_config(args: &BridgeArgs) -> Result<Option<RawLogConfig>> {
         return Ok(None);
     };
 
-    require_raw_log_ack(args.raw_log_ack.as_deref())?;
+    Ok(Some(prepare_acknowledged_raw_log_config(
+        path,
+        args.raw_log_ack.as_deref(),
+        ExecutionSurface::Pty,
+    )?))
+}
+
+fn prepare_acknowledged_raw_log_config(
+    path: &Path,
+    acknowledgement: Option<&str>,
+    surface: ExecutionSurface,
+) -> Result<RawLogConfig> {
+    require_raw_log_ack(acknowledgement)?;
     validate_raw_log_target(path)?;
-    Ok(Some(RawLogConfig::new(path.clone(), ExecutionSurface::Pty)))
+    notice_raw_log_warning();
+    Ok(RawLogConfig::new(path.to_owned(), surface))
+}
+
+fn notice_raw_log_warning() {
+    eprintln!("{RAW_LOG_WARNING}");
 }
 
 pub(crate) fn load_presets(locations: &PresetFileLocationOptions) -> Result<Vec<Preset>> {

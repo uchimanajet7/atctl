@@ -1322,6 +1322,7 @@ mod tests {
         assert!(raw.contains("\"surface\":\"pty\""));
         assert!(raw.contains("\"operation\":{\"kind\":\"command\""));
         assert!(!raw.contains("\"source\""));
+        assert!(raw.contains(crate::log::raw::RAW_LOG_WARNING));
         assert!(raw.contains("295050912389644"));
         let _ = std::fs::remove_file(path);
     }

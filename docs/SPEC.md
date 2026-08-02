@@ -1078,7 +1078,10 @@ REQ-CLI-SEND-017: Raw diagnostic export acknowledgement MUST be separate from
 execution authorization. Non-interactive direct send, and direct send with
 `--yes`, MUST require `--raw-log-ack raw-log` before USB access when
 `--raw-log-file <PATH>` is used. Interactive direct send MAY prompt the user to
-type `raw-log`.
+type `raw-log`. Whenever raw diagnostic export is accepted, direct send MUST
+write the canonical warning from REQ-MASK-006 to standard error before USB
+access, whether acknowledgement was supplied by option or entered
+interactively.
 
 REQ-CLI-SEND-018: One-shot `send` and `preset run` MUST reject a known
 prompt/payload operation before USB access because the complete operation is
@@ -1201,7 +1204,8 @@ confirmation under the same authorization contract as direct `send`.
 REQ-CLI-PRESET-RUN-006: `atctl preset run <NAME>` MUST support the same raw
 diagnostic export behavior as direct `atctl send`: explicit
 `--raw-log-file <PATH>`, separate `--raw-log-ack raw-log`, no default raw-log
-destination, overwrite refusal, and unchanged masked terminal/session/history
+destination, overwrite refusal, the canonical warning from REQ-MASK-006 on
+standard error before USB access, and unchanged masked terminal/session/history
 logging behavior.
 
 REQ-CLI-PRESET-RUN-006A: `atctl preset run <NAME> --no-log` MUST prevent
@@ -1297,7 +1301,8 @@ behavior.
 REQ-CLI-SEQ-008: `atctl sequence run <SEQUENCE>` MUST support raw diagnostic
 export with the same sensitive-export policy as direct `send` and
 `preset run`: explicit `--raw-log-file <PATH>`, separate
-`--raw-log-ack raw-log`, no default raw-log destination, overwrite refusal, and
+`--raw-log-ack raw-log`, no default raw-log destination, overwrite refusal, the
+canonical warning from REQ-MASK-006 on standard error before USB access, and
 unchanged masked terminal/session/history logging behavior.
 
 REQ-CLI-SEQ-008A: `atctl sequence run <SEQUENCE> --json` MUST include
@@ -1462,7 +1467,9 @@ masked text output.
 
 REQ-CLI-BRIDGE-016A: PTY bridge raw diagnostic export MUST NOT create a default
 raw-log path, MUST refuse to overwrite an existing file, and MUST fail before
-USB access if the raw-log acknowledgement is missing or wrong.
+USB access if the raw-log acknowledgement is missing or wrong. When the path
+and acknowledgement are accepted, the bridge MUST write the canonical warning
+from REQ-MASK-006 to standard error before USB access.
 
 REQ-CLI-BRIDGE-016B: PTY bridge MUST NOT expose the bounded
 `--export-response` operation because one bridge connection is a continuous
@@ -1638,6 +1645,50 @@ active TUI theme background, including separators and unused cells inside a
 bounded viewport. If phase-critical content cannot fit within the safe maximum,
 REQ-TUI-005B applies.
 
+REQ-TUI-TEXT-001: TUI text that is intended to remain completely readable MUST
+use one canonical reflow contract for both measurement and rendering. Warning
+and confirmation prose, Help, Details, Sequence context and review text,
+surface feedback, Response text, and opened-log bodies MUST preserve explicit
+newlines, span styles, and meaningful indentation; prefer whitespace word
+boundaries; and use `trim: false`. If an unbroken token is wider than the
+viewport, it MAY be broken only between Unicode extended grapheme clusters.
+The initial implementation MUST use Ratatui `Paragraph` wrapping and
+`Paragraph::line_count()` through one internal TUI layout adapter. It MUST NOT
+maintain a second character-based wrapping algorithm.
+
+REQ-TUI-TEXT-002: TUI rows whose physical position carries navigation or
+structural meaning MUST remain one physical row and MUST NOT wrap. This applies
+to command and Sequence rows, candidate and candidate-action rows, saved-log
+list rows, device/category/control rows, compact Status, the footer, and border
+titles. When such a row cannot retain all optional content, it MUST preserve
+the row's required identity/action lane first and then omit or ellipsize
+lower-priority content according to the owning surface requirement. Any
+ellipsis or clipping performed by atctl MUST use terminal display width and
+MUST NOT split an extended grapheme cluster. The footer MUST omit
+lower-priority hints rather than wrap or emit a partial hint.
+
+REQ-TUI-TEXT-003: Every scrollable reflowed surface MUST derive its total
+rendered rows, maximum scroll, page size, visible range, and displayed text from
+the same canonical layout result at the current inner width. `Up` and `Down`
+MUST move by one rendered visual row, and page movement MUST use the rendered
+viewport height. Details and Help ranges count rendered visual rows. Response
+scrolling also counts rendered visual rows. For an opened saved log, the
+Response title and line-number gutter MUST continue to identify original source
+log lines even when one source line occupies several rendered rows; scrolling
+MUST NOT alter the copied log text.
+
+Reference basis for the TUI text-layout contract:
+
+- Ratatui 0.30.2 `Paragraph` wrapping, post-wrap scrolling, and rendered-line
+  measurement:
+  <https://docs.rs/ratatui/0.30.2/ratatui/widgets/struct.Paragraph.html>
+- Unicode extended grapheme-cluster boundaries:
+  <https://www.unicode.org/reports/tr29/>
+- Unicode line-breaking opportunities and non-break boundaries:
+  <https://www.unicode.org/reports/tr14/>
+- Viewport reflow without information loss:
+  <https://www.w3.org/WAI/WCAG22/Understanding/reflow.html>
+
 REQ-TUI-001: TUI command and Sequence execution MUST use the same transport,
 masking, logging, and execution-review policy as CLI execution.
 
@@ -1660,7 +1711,9 @@ masking is disabled.
 REQ-TUI-RAWLOG-001: TUI raw diagnostic export capture MUST ask the user for an
 output path and exact `raw-log` acknowledgement before starting. It MUST refuse
 to overwrite an existing file, MUST use user-only file permissions when
-supported, and MUST show visible capture state while active.
+supported, and MUST show visible capture state while active. The
+acknowledgement modal MUST show the canonical warning from REQ-MASK-006 before
+capture starts.
 
 REQ-TUI-RAWLOG-002: TUI raw diagnostic export capture MUST apply only to AT
 commands executed after capture starts. Stopping capture MUST leave existing
@@ -4270,9 +4323,18 @@ setting remains limited to foreground Response display, copy, and explicit
 Response export behavior.
 
 REQ-MASK-006: Raw log diagnostic export MUST require explicit user action, a
-user-selected output destination, a sensitive-data warning, and the
-acknowledgement defined by the OQ-021 decision. A later specification revision
-MAY replace these requirements.
+user-selected output destination, the exact canonical sensitive-data warning
+below, and the acknowledgement defined by the OQ-021 decision:
+
+```text
+This raw diagnostic export records transmitted and received modem bytes without masking. It may contain sensitive modem and subscriber identifiers; network data; APN or PDP authentication data; phone numbers and SMS messages; arbitrary transmitted or received payloads; credentials and tokens; and vendor-specific identifiers.
+```
+
+CLI direct-send, preset, and Sequence raw preflight, PTY bridge raw preflight,
+the TUI raw-capture acknowledgement modal, and the raw JSONL header MUST use
+this warning. [SAFETY.md](SAFETY.md) and
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md) MUST reproduce the same warning. A
+later specification revision MAY replace these requirements.
 
 Example:
 
@@ -4453,15 +4515,19 @@ a general-purpose log viewer or weaken its AT response role.
 
 REQ-LOG-012: While the Response pane is temporarily showing masked log content,
 the pane itself MUST show the visible line range and total line count. The
-range indicator MUST describe the visible range, not only the first visible
-line. It SHOULD also indicate when the view is at the top, at the bottom, or
-has more content above/below.
+range indicator MUST describe the original source-log lines intersecting the
+visible rendered rows, not only the first visible line or the number of wrapped
+visual rows. It SHOULD also indicate when the view is at the top, at the bottom,
+or has more content above/below.
 
 REQ-LOG-013: While the Response pane is temporarily showing masked log content,
 the displayed log content MUST include line numbers so the user can identify
 the current location from the same pane as the content. These line numbers are
 for read-only orientation and MUST NOT imply an editable cursor or selectable
-text position.
+text position. Line numbers MUST identify original source-log lines rather than
+wrapped visual rows. When the viewport begins within a wrapped source line, the
+line-number gutter MUST still identify that source line in the first visible
+row.
 
 REQ-LOG-014: Opening a selected saved log from Logs SHOULD move focus to the
 Response pane because the next likely task is reading or scrolling the opened
@@ -4521,12 +4587,12 @@ MUST fall back to a parent directory or another log file.
 REQ-LOG-018: Raw diagnostic export files MUST be written as JSON Lines. The
 format MUST include a schema/version event, structured surface/operation metadata, command
 metadata, transmitted bytes, received bytes, status, duration, and a warning
-that the file may contain sensitive modem, subscriber, network, APN, or PDP
-authentication values. When command transmission has started but no parsed AT
-response is available, the file MUST include a `transport_error` event with the
-command, stage, error text, duration, and any transmitted bytes known to the
-application. USB target selection failures before command transmission MUST NOT
-create a misleading raw exchange file.
+field containing the exact canonical text from REQ-MASK-006. When command
+transmission has started but no parsed AT response is available, the file MUST
+include a `transport_error` event with the command, stage, error text, duration,
+and any transmitted bytes known to the application. USB target selection
+failures before command transmission MUST NOT create a misleading raw exchange
+file.
 
 REQ-LOG-019: Raw diagnostic export byte payloads MUST be lossless. Base64
 fields are required for transmitted and received bytes in the first

@@ -1745,6 +1745,66 @@ fn send_raw_log_file_writes_raw_exchange_without_changing_masked_display() {
 }
 
 #[test]
+fn raw_log_preflight_accepts_canonical_ack_for_cli_sequence_and_pty() {
+    let dir = unique_temp_dir("raw-log-preflight-surfaces");
+
+    let mut send = send_args("AT");
+    send.raw_log_file = Some(dir.join("send.rawlog"));
+    send.raw_log_ack = Some(RAW_LOG_ACK.to_owned());
+    let mut prompt = NonInteractiveConfirmationPrompt;
+    assert!(
+        prepare_raw_log_config(&send, &mut prompt, ExecutionSurface::Cli)
+            .unwrap()
+            .is_some()
+    );
+
+    let sequence_path = dir.join("sequence.rawlog");
+    let sequence_path = sequence_path.to_string_lossy().into_owned();
+    let cli = Cli::try_parse_from([
+        "atctl",
+        "sequence",
+        "run",
+        "sms-receive-check",
+        "--raw-log-file",
+        sequence_path.as_str(),
+        "--raw-log-ack",
+        RAW_LOG_ACK,
+    ])
+    .unwrap();
+    let Command::Sequence(SequenceArgs {
+        command: SequenceCommand::Run(sequence),
+    }) = cli.command
+    else {
+        panic!("expected sequence run command");
+    };
+    assert!(
+        prepare_sequence_raw_log_config(&sequence)
+            .unwrap()
+            .is_some()
+    );
+
+    let bridge_path = dir.join("bridge.rawlog");
+    let bridge_path = bridge_path.to_string_lossy().into_owned();
+    let symlink_path = dir.join("bridge-pty");
+    let symlink_path = symlink_path.to_string_lossy().into_owned();
+    let cli = Cli::try_parse_from([
+        "atctl",
+        "bridge",
+        "--symlink",
+        symlink_path.as_str(),
+        "--raw-log-file",
+        bridge_path.as_str(),
+        "--raw-log-ack",
+        RAW_LOG_ACK,
+    ])
+    .unwrap();
+    let Command::Bridge(bridge) = cli.command else {
+        panic!("expected bridge command");
+    };
+    assert!(bridge_raw_log_config(&bridge).unwrap().is_some());
+}
+
+#[test]
 fn send_raw_log_file_requires_acknowledgement() {
     let dir = unique_temp_dir("raw-log-ack");
     let mut args = send_args("AT");

@@ -114,6 +114,9 @@ scope:
 - TUI structure, grouping, and adjacent-state coverage:
   `REQ-TUI-GRAMMAR-001` through `REQ-TUI-GRAMMAR-005` and
   `REQ-TEST-009`.
+- TUI reflow, stable one-row surfaces, Unicode boundaries, and visual-row
+  scrolling: `REQ-TUI-TEXT-001` through `REQ-TUI-TEXT-003`, together with the
+  owning modal, Details, Response, and saved-log requirements.
 - Compact Status and failed-before-response behavior: `REQ-TUI-013A`,
   `REQ-TUI-014`, and the related `REQ-TUI-014*` requirements.
 - Sequence transcript and JSON output origins: `REQ-SEQ-ENGINE-004A`,
@@ -203,6 +206,18 @@ Tests should cover at least:
   wrapped identity, non-default source/file disclosure, hidden-field search
   matches, line/page scrolling, `q` no-op, `Esc` close, and exact discovery
   state restoration.
+- Canonical TUI reflow across Help, Details, every Sequence phase, confirmation
+  and acknowledgement modals, Response, and opened logs at normal and narrow
+  widths. Measurement and rendered rows must agree; ordinary words and Unicode
+  extended grapheme clusters must remain intact; long unbroken AT/payload text
+  must remain reachable; and no independent character-based wrapper may be
+  used for layout.
+- Stable one-row rendering for command/Sequence rows, candidates and candidate
+  actions, saved-log rows, compact Status, and the footer. Check combining
+  marks, CJK, emoji ZWJ sequences, flags, zero-width characters, and long
+  identifiers. Opened-log tests must also prove visual-row scrolling reaches
+  the bottom while the title range and line-number gutter retain source-line
+  identity.
 - Empty category and search-result recovery text plus the safe resize fallback
   when the complete confirmation tag, Details, or pinned confirmation content
   cannot fit.

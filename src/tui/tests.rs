@@ -1068,6 +1068,7 @@ fn response_scrolls_when_response_pane_is_focused() {
             .join("\n"),
     );
     state.response_visible_height = 10;
+    state.response_visible_width = 80;
 
     handle_key_code(&mut state, KeyCode::Down);
     assert_eq!(state.response_scroll, 1);
@@ -4514,7 +4515,13 @@ fn history_focus_selects_and_opens_masked_log_content() {
     let log_line_count = response_lines(&state).len();
     assert!(log_line_count >= 3);
     assert_eq!(
-        response_range_title(log_line_count, 10, 0),
+        response_range_title(
+            log_line_count,
+            0,
+            log_line_count.saturating_sub(1),
+            true,
+            true,
+        ),
         format!("Response 1-{log_line_count}/{log_line_count} all")
     );
 
@@ -5459,7 +5466,10 @@ fn export_response_uses_selected_folder_and_retains_exact_file_context() {
 
     state.focus = Pane::Response;
     let buffer = rendered_buffer(&mut state, 80, 24);
-    assert!(buffer.contains("Response: Command: signal-quality"));
+    assert!(
+        buffer.contains("Response: Command: signal-quality"),
+        "{buffer}"
+    );
     assert!(buffer.contains("Completed: 2026-07-12T09:00:00Z"));
     assert!(buffer.contains("Export content: masked"));
     assert!(buffer.contains("File name:"), "{buffer}");
@@ -6391,6 +6401,144 @@ fn modal_geometry_uses_wrapped_content_height_and_existing_maximum() {
 }
 
 #[test]
+fn canonical_wrapped_layout_uses_word_boundaries_for_measurement_and_rendering() {
+    let layout = WrappedTextLayout::new(vec![Line::from("records transmitted and received")]);
+    let line_count = layout.line_count(12);
+    assert_eq!(line_count, 3);
+
+    let backend = TestBackend::new(12, line_count as u16);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| frame.render_widget(layout.into_paragraph(), frame.area()))
+        .unwrap();
+    let rows = buffer_rows(terminal.backend().buffer());
+    assert_eq!(rows, vec!["records", "transmitted", "and received"]);
+}
+
+#[test]
+fn wrapped_layout_and_ellipsis_preserve_extended_grapheme_clusters() {
+    let combined = "e\u{301}e\u{301}";
+    let layout = WrappedTextLayout::new(vec![Line::from(combined)]);
+    assert_eq!(layout.line_count(1), 2);
+
+    let backend = TestBackend::new(1, 2);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| frame.render_widget(layout.into_paragraph(), frame.area()))
+        .unwrap();
+    assert_eq!(
+        buffer_rows(terminal.backend().buffer()),
+        vec!["e\u{301}", "e\u{301}"]
+    );
+
+    assert_eq!(truncate_with_ellipsis("e\u{301}cho", 2), "e\u{301}…");
+    assert_eq!(truncate_with_ellipsis("👨‍👩‍👧‍👦 family", 3), "👨‍👩‍👧‍👦…");
+    assert_eq!(truncate_with_ellipsis("🇯🇵abc", 3), "🇯🇵…");
+    assert_eq!(truncate_with_ellipsis("a\u{200b}b", 2), "a\u{200b}b");
+
+    let cjk = WrappedTextLayout::new(vec![Line::from("通信")]);
+    assert_eq!(cjk.line_count(2), 2);
+}
+
+#[test]
+fn long_unbroken_text_remains_reachable_through_visual_row_scroll() {
+    let layout = WrappedTextLayout::new(vec![Line::from("AT+PAYLOAD=ABCDEFGHIJKLMNOPQRSTUVWXYZ")]);
+    let index = layout.line_index(10);
+    assert!(index.total_rows > 2);
+    let scroll = index.max_scroll(2);
+
+    let backend = TestBackend::new(10, 2);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| frame.render_widget(layout.paragraph_at(&index, scroll), frame.area()))
+        .unwrap();
+    let rendered = buffer_rows(terminal.backend().buffer()).join("");
+    assert!(rendered.contains("Z"), "{rendered}");
+}
+
+#[test]
+fn wrapped_line_index_maps_visual_rows_back_to_source_lines() {
+    let layout = WrappedTextLayout::new(vec![
+        Line::from("short"),
+        Line::from("this source line wraps across several visual rows"),
+        Line::from("end"),
+    ]);
+    let index = layout.line_index(10);
+    assert!(index.total_rows > layout.lines.len());
+
+    let inside_second_line = index.line_start(1).saturating_add(1);
+    assert_eq!(
+        index.visible_logical_range(inside_second_line, 1),
+        Some((1, 1))
+    );
+    assert_eq!(
+        response_range_title(3, 1, 1, false, false),
+        "Response 2-2/3 more above/below"
+    );
+}
+
+#[test]
+fn wrapped_log_scroll_reaches_bottom_and_retains_source_line_identity() {
+    let mut state = test_state();
+    state.focus = Pane::Response;
+    state.viewed_log = Some(ViewedLog {
+        kind: LogListingKind::Session,
+        path: PathBuf::from("/tmp/wrapped.session.log"),
+        label: "wrapped.session.log".to_owned(),
+    });
+    state.response = ResponseState::masked(format!("{}\ntail", "word ".repeat(18)));
+    let theme = state.theme;
+
+    let backend = TestBackend::new(24, 5);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render_response(frame, frame.area(), &mut state, &theme))
+        .unwrap();
+    assert!(state.response_scroll == 0);
+    assert!(response_max_scroll(&state) > 0);
+
+    handle_key_code(&mut state, KeyCode::End);
+    terminal
+        .draw(|frame| render_response(frame, frame.area(), &mut state, &theme))
+        .unwrap();
+    let rendered = format!("{:?}", terminal.backend().buffer());
+    assert!(rendered.contains("bottom"), "{rendered}");
+    assert!(rendered.contains("2  tail"), "{rendered}");
+}
+
+#[test]
+fn saved_log_rows_remain_one_row_and_use_unicode_safe_ellipsis() {
+    let mut state = test_state();
+    state.logs = vec![
+        test_log_entry(
+            LogListingKind::Session,
+            "/tmp/👨‍👩‍👧‍👦-a-very-long-session-log-name.session.log",
+        ),
+        test_log_entry(LogListingKind::Session, "/tmp/second.session.log"),
+    ];
+    state.selected_log = 0;
+    state.focus = Pane::History;
+    let theme = state.theme;
+
+    let backend = TestBackend::new(30, 8);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render_history(frame, frame.area(), &mut state, &theme))
+        .unwrap();
+    let rows = buffer_rows(terminal.backend().buffer());
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("> session:") && row.contains('…'))
+    );
+    assert!(rows.iter().any(|row| row.contains("  session:")));
+    assert_eq!(
+        rows.iter().filter(|row| row.contains("session:")).count(),
+        2
+    );
+    assert_eq!(state.logs_visible_height, 5);
+}
+
+#[test]
 fn representative_modal_states_end_after_their_last_visible_control() {
     let mut search = test_state();
     handle_key_code(&mut search, KeyCode::Char('/'));
@@ -6650,6 +6798,13 @@ fn raw_export_path_is_focus_and_acknowledgement_is_warning() {
         .draw(|frame| render_frame(frame, &mut state))
         .unwrap();
     let ack_buffer = terminal.backend().buffer();
+    let ack_bounds =
+        modal_bounds(ack_buffer, "Start raw diagnostic export?").expect("acknowledgement modal");
+    let ack_text = normalized_rect_text(ack_buffer, ack_bounds);
+    assert!(
+        ack_text.contains(RAW_LOG_WARNING),
+        "missing complete canonical raw warning in acknowledgement modal:\n{ack_text}"
+    );
     let ack_title = buffer_line_position(ack_buffer, "Start raw diagnostic export?")
         .expect("acknowledgement title");
     let ack_input = buffer_line_position(ack_buffer, "Input: <empty>").expect("ack input");
@@ -6661,6 +6816,13 @@ fn raw_export_path_is_focus_and_acknowledgement_is_warning() {
         ack_buffer.cell(ack_input).map(|cell| cell.fg),
         Some(Color::Rgb(0x4d, 0xd0, 0xe1))
     );
+
+    let compact = rendered_buffer_cells(&mut state, 80, 24);
+    assert!(buffer_line_position(&compact, "Start raw diagnostic export?").is_some());
+    assert!(buffer_line_position(&compact, "Input: <empty>").is_some());
+    let compact_bounds = modal_bounds(&compact, "Start raw diagnostic export?")
+        .expect("compact acknowledgement modal");
+    assert!(normalized_rect_text(&compact, compact_bounds).contains(RAW_LOG_WARNING));
 }
 
 #[test]
@@ -6822,6 +6984,38 @@ fn rendered_buffer_cells(state: &mut TuiState, width: u16, height: u16) -> Buffe
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|frame| render_frame(frame, state)).unwrap();
     terminal.backend().buffer().clone()
+}
+
+fn normalized_rect_text(buffer: &Buffer, area: Rect) -> String {
+    let mut text = String::new();
+    let left = area.x.saturating_add(1);
+    let right = area.x.saturating_add(area.width).saturating_sub(1);
+    let top = area.y.saturating_add(1);
+    let bottom = area.y.saturating_add(area.height).saturating_sub(1);
+    for y in top..bottom {
+        for x in left..right {
+            if let Some(cell) = buffer.cell((x, y)) {
+                text.push_str(cell.symbol());
+            }
+        }
+        text.push('\n');
+    }
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn buffer_rows(buffer: &Buffer) -> Vec<String> {
+    (0..buffer.area.height)
+        .map(|y| {
+            let mut row = String::new();
+            for x in 0..buffer.area.width {
+                if let Some(cell) = buffer.cell((x, y)) {
+                    row.push_str(cell.symbol());
+                }
+            }
+            row.trim_end().to_owned()
+        })
+        .filter(|row| !row.is_empty())
+        .collect()
 }
 
 fn assert_content_fit_modal_bottom(

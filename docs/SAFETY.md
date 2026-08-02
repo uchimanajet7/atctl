@@ -464,6 +464,14 @@ explicit user-selected destination and acknowledgement, such as
 `--raw-log-file <PATH> --raw-log-ack raw-log`, and must not be enabled by
 default.
 
+CLI direct-send, preset, and Sequence raw preflight, PTY bridge raw preflight,
+the TUI raw-capture acknowledgement modal, and every raw JSONL header use this
+canonical warning:
+
+```text
+This raw diagnostic export records transmitted and received modem bytes without masking. It may contain sensitive modem and subscriber identifiers; network data; APN or PDP authentication data; phone numbers and SMS messages; arbitrary transmitted or received payloads; credentials and tokens; and vendor-specific identifiers.
+```
+
 TUI output is also masked by default. `atctl tui --no-mask` starts the
 foreground TUI session with output masking off, and the TUI Controls pane can
 disable output masking after exact typed `unmask` acknowledgement. Response copy

@@ -30,6 +30,11 @@ All notable project changes should be recorded in this file.
 - Documented the complete masked-log lifecycle, including aggregate history,
   per-execution session logs, manual retention and deletion, and separate raw
   diagnostic exports.
+- Expanded the canonical raw diagnostic warning across CLI, Sequence, TUI, PTY,
+  raw JSONL headers, and safety/troubleshooting guidance to cover identifiers,
+  phone numbers and SMS messages, payloads, credentials and tokens, and
+  vendor-specific identifiers. The general raw-export example now uses signal
+  quality instead of IMSI.
 - Added state-aware TUI file actions: selected history and session logs can be
   opened in Response or revealed directly in Finder, and opened logs keep copy,
   reveal, and close actions.
@@ -73,6 +78,11 @@ All notable project changes should be recorded in this file.
   Details paging to value navigation. One `Enter` on a loaded candidate now
   accepts it and continues to the next value or final review; provider
   completion still returns to value selection without choosing a value.
+- Unified TUI text measurement, word-boundary wrapping, rendering, and
+  visual-row scrolling on Ratatui's layout engine across Help, Details,
+  Sequence phases, modals, Response, and opened logs. One-row navigation
+  surfaces now use display-width and grapheme-safe shortening, while opened-log
+  ranges and line numbers retain their original source-line identity.
 - Added pre-publication release checks for Apple Silicon architecture, archive
   contents and permissions, checksums, dependency notices, and dynamic linkage
   to Homebrew `libusb`.

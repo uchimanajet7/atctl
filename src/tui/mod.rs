@@ -24,6 +24,7 @@ use ratatui::prelude::{Alignment, Frame, Rect};
 use ratatui::symbols;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, LineGauge, List, ListItem, Paragraph, Wrap};
+use unicode_truncate::UnicodeTruncateStr;
 
 use crate::app::operation::{ExecutionSurface, OperationIdentity};
 use crate::at::command::{command_with_terminator, normalize_command};
@@ -39,7 +40,7 @@ use crate::cli::{
 };
 use crate::log::history::{LogListingKind, list_logs};
 use crate::log::raw::{
-    RAW_LOG_ACK, RawLogConfig, RawLogExchange, RawLogSink, RawLogTransportError,
+    RAW_LOG_ACK, RAW_LOG_WARNING, RawLogConfig, RawLogExchange, RawLogSink, RawLogTransportError,
 };
 use crate::log::session::now_timestamp;
 #[cfg(test)]
@@ -71,6 +72,103 @@ const RESPONSE_COPY_ACK: &str = "copy";
 const RESPONSE_EXPORT_ACK: &str = "export";
 const EXTERNAL_DEFINITION_REVIEW_NOTICE: &str = "Review this external definition before running it; atctl validates format, duplicate names, masking, and the execution review, but does not certify that it is appropriate for your device, SIM, network, or endpoint.";
 const EXTERNAL_DEFINITION_CONFIRMATION_NOTICE: &str = "Review external definition before running.";
+const TUI_TEXT_WRAP: Wrap = Wrap { trim: false };
+
+#[derive(Debug, Clone)]
+struct WrappedTextLayout {
+    lines: Vec<Line<'static>>,
+}
+
+impl WrappedTextLayout {
+    fn new(lines: Vec<Line<'static>>) -> Self {
+        Self { lines }
+    }
+
+    fn line_count(&self, width: u16) -> usize {
+        Paragraph::new(self.lines.clone())
+            .wrap(TUI_TEXT_WRAP)
+            .line_count(width.max(1))
+    }
+
+    fn line_index(&self, width: u16) -> WrappedLineIndex {
+        let width = width.max(1);
+        let mut starts = Vec::with_capacity(self.lines.len());
+        let mut rows = Vec::with_capacity(self.lines.len());
+        let mut total_rows = 0usize;
+        for line in &self.lines {
+            starts.push(total_rows);
+            let line_rows = Paragraph::new(vec![line.clone()])
+                .wrap(TUI_TEXT_WRAP)
+                .line_count(width)
+                .max(1);
+            rows.push(line_rows);
+            total_rows = total_rows.saturating_add(line_rows);
+        }
+        WrappedLineIndex {
+            starts,
+            rows,
+            total_rows,
+        }
+    }
+
+    fn into_paragraph(self) -> Paragraph<'static> {
+        Paragraph::new(self.lines).wrap(TUI_TEXT_WRAP)
+    }
+
+    fn paragraph_at(&self, index: &WrappedLineIndex, scroll: usize) -> Paragraph<'static> {
+        let logical_line = index.logical_line_at(scroll);
+        let local_scroll = scroll.saturating_sub(index.line_start(logical_line));
+        Paragraph::new(self.lines[logical_line..].to_vec())
+            .wrap(TUI_TEXT_WRAP)
+            .scroll((local_scroll.min(u16::MAX as usize) as u16, 0))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WrappedLineIndex {
+    starts: Vec<usize>,
+    rows: Vec<usize>,
+    total_rows: usize,
+}
+
+impl WrappedLineIndex {
+    fn line_start(&self, logical_line: usize) -> usize {
+        self.starts.get(logical_line).copied().unwrap_or(0)
+    }
+
+    fn line_rows(&self, logical_line: usize) -> usize {
+        self.rows.get(logical_line).copied().unwrap_or(0)
+    }
+
+    fn logical_line_at(&self, visual_row: usize) -> usize {
+        if self.starts.is_empty() {
+            return 0;
+        }
+        let row = visual_row.min(self.total_rows.saturating_sub(1));
+        self.starts
+            .partition_point(|start| *start <= row)
+            .saturating_sub(1)
+    }
+
+    fn max_scroll(&self, visible_height: usize) -> usize {
+        self.total_rows.saturating_sub(visible_height.max(1))
+    }
+
+    fn visible_logical_range(
+        &self,
+        scroll: usize,
+        visible_height: usize,
+    ) -> Option<(usize, usize)> {
+        if self.total_rows == 0 {
+            return None;
+        }
+        let first = self.logical_line_at(scroll);
+        let last_row = scroll
+            .saturating_add(visible_height.max(1).saturating_sub(1))
+            .min(self.total_rows.saturating_sub(1));
+        Some((first, self.logical_line_at(last_row)))
+    }
+}
 
 #[derive(Debug, Clone)]
 struct TuiState {
@@ -97,6 +195,7 @@ struct TuiState {
     response_cleared_at: Option<String>,
     response_scroll: usize,
     response_visible_height: usize,
+    response_visible_width: usize,
     devices_visible_height: usize,
     categories_visible_height: usize,
     commands_visible_height: usize,
@@ -1168,6 +1267,7 @@ impl TuiState {
             response_cleared_at: None,
             response_scroll: 0,
             response_visible_height: 1,
+            response_visible_width: 1,
             devices_visible_height: 6,
             categories_visible_height: 6,
             commands_visible_height: 6,
@@ -4161,9 +4261,9 @@ fn scroll_response(state: &mut TuiState, delta: isize) {
 }
 
 fn response_max_scroll(state: &TuiState) -> usize {
-    response_lines(state)
-        .len()
-        .saturating_sub(state.response_visible_height.max(1))
+    WrappedTextLayout::new(response_lines(state))
+        .line_index(state.response_visible_width.max(1).min(u16::MAX as usize) as u16)
+        .max_scroll(state.response_visible_height)
 }
 
 fn pane_inner_height(area: Rect) -> usize {
@@ -4218,7 +4318,7 @@ fn device_item_capacity(state: &TuiState) -> usize {
 }
 
 fn log_item_capacity(state: &TuiState) -> usize {
-    state.logs_visible_height.saturating_sub(1).max(1)
+    state.logs_visible_height.max(1)
 }
 
 fn move_index(current: usize, len: usize, delta: isize) -> usize {
@@ -4713,9 +4813,10 @@ fn render_surface_feedback(
         theme.style(feedback.role),
     )));
     frame.render_widget(
-        Paragraph::new(lines)
+        WrappedTextLayout::new(lines)
+            .into_paragraph()
             .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
+            .alignment(Alignment::Left),
         area,
     );
 }
@@ -4946,30 +5047,30 @@ fn render_commands(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &
             ]
         };
         frame.render_widget(
-            Paragraph::new(lines)
+            WrappedTextLayout::new(lines)
+                .into_paragraph()
                 .block(pane_block_with_title(
                     Pane::Commands,
                     state.focus,
                     theme,
                     title,
                 ))
-                .style(theme.style(TuiStyleRole::Text))
-                .wrap(Wrap { trim: false }),
+                .style(theme.style(TuiStyleRole::Text)),
             area,
         );
         return;
     }
     let Some(name_width) = executable_name_column_width(&commands, row_width) else {
         frame.render_widget(
-            Paragraph::new(safe_resize_lines())
+            WrappedTextLayout::new(safe_resize_lines())
+                .into_paragraph()
                 .block(pane_block_with_title(
                     Pane::Commands,
                     state.focus,
                     theme,
                     title,
                 ))
-                .style(theme.style(TuiStyleRole::Warning))
-                .wrap(Wrap { trim: false }),
+                .style(theme.style(TuiStyleRole::Warning)),
             area,
         );
         return;
@@ -5160,8 +5261,14 @@ fn render_executable_details(
         ("Execution", execution),
     ];
     sections.retain(|(_, lines)| !lines.is_empty());
-    let (wrapped, section_starts) = wrap_executable_detail_sections(sections, inner_width, theme);
-    let total = wrapped.len().max(1);
+    let (lines, logical_section_starts) = executable_detail_lines(sections, theme);
+    let layout = WrappedTextLayout::new(lines);
+    let index = layout.line_index(inner_width.max(1).min(u16::MAX as usize) as u16);
+    let section_starts = logical_section_starts
+        .into_iter()
+        .map(|(start, name)| (index.line_start(start), name))
+        .collect::<Vec<_>>();
+    let total = index.total_rows.max(1);
     let geometry = modal_geometry_for_body_height(screen, 76, 70, total);
     let area = geometry.area;
     let inner_height = area.height.saturating_sub(2) as usize;
@@ -5184,7 +5291,8 @@ fn render_executable_details(
 
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(wrapped[scroll..end].to_vec())
+        layout
+            .paragraph_at(&index, scroll)
             .block(
                 Block::default()
                     .title(format!(
@@ -5202,28 +5310,26 @@ fn render_executable_details(
     );
 }
 
-fn wrap_executable_detail_sections(
+fn executable_detail_lines(
     sections: Vec<(&'static str, Vec<Line<'static>>)>,
-    width: usize,
     theme: &TuiTheme,
 ) -> (Vec<Line<'static>>, Vec<(usize, &'static str)>) {
-    let mut wrapped = Vec::new();
+    let mut lines = Vec::new();
     let mut starts = Vec::new();
     for (name, content) in sections {
-        if !wrapped.is_empty() {
-            starts.push((wrapped.len(), name));
-            wrapped.push(Line::from(""));
+        if !lines.is_empty() {
+            starts.push((lines.len(), name));
+            lines.push(Line::from(""));
         } else {
-            starts.push((wrapped.len(), name));
+            starts.push((lines.len(), name));
         }
-        let mut section = vec![Line::from(Span::styled(
+        lines.push(Line::from(Span::styled(
             format!("{name}:"),
             theme.style(TuiStyleRole::Emphasis),
-        ))];
-        section.extend(content);
-        wrapped.extend(wrap_lines_to_width(section, width));
+        )));
+        lines.extend(content);
     }
-    (wrapped, starts)
+    (lines, starts)
 }
 
 fn render_safe_resize_modal(
@@ -5235,7 +5341,8 @@ fn render_safe_resize_modal(
 ) {
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(safe_resize_lines())
+        WrappedTextLayout::new(safe_resize_lines())
+            .into_paragraph()
             .block(
                 Block::default()
                     .title(title.to_owned())
@@ -5243,50 +5350,9 @@ fn render_safe_resize_modal(
                     .style(theme.style(TuiStyleRole::Background))
                     .border_style(theme.style(border_role)),
             )
-            .style(theme.style(TuiStyleRole::Warning))
-            .wrap(Wrap { trim: false }),
+            .style(theme.style(TuiStyleRole::Warning)),
         area,
     );
-}
-
-fn wrap_lines_to_width(lines: Vec<Line<'static>>, width: usize) -> Vec<Line<'static>> {
-    let width = width.max(1);
-    let mut wrapped = Vec::new();
-    for line in lines {
-        if line.spans.is_empty() || line.width() == 0 {
-            wrapped.push(Line::from(""));
-            continue;
-        }
-        let line_style = line.style;
-        let line_alignment = line.alignment;
-        let mut current = Vec::<Span<'static>>::new();
-        let mut current_width = 0usize;
-        for span in line.spans {
-            for character in span.content.chars() {
-                let character_width = Line::from(character.to_string()).width().max(1);
-                if current_width > 0 && current_width + character_width > width {
-                    let mut output = Line::from(std::mem::take(&mut current));
-                    output.style = line_style;
-                    output.alignment = line_alignment;
-                    wrapped.push(output);
-                    current_width = 0;
-                }
-                if let Some(last) = current.last_mut()
-                    && last.style == span.style
-                {
-                    last.content.to_mut().push(character);
-                } else {
-                    current.push(Span::styled(character.to_string(), span.style));
-                }
-                current_width += character_width;
-            }
-        }
-        let mut output = Line::from(current);
-        output.style = line_style;
-        output.alignment = line_alignment;
-        wrapped.push(output);
-    }
-    wrapped
 }
 
 fn command_list_rows<'a>(commands: &[&'a ExecutableItem]) -> Vec<CommandListRow<'a>> {
@@ -5366,33 +5432,114 @@ fn render_response(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, them
         response_inner_areas(inner, state.response_action_feedback.as_ref());
     let visible_height = body_area.height.max(1) as usize;
     state.response_visible_height = visible_height;
-    let max_scroll = lines.len().saturating_sub(visible_height);
+    let gutter_width = if state.viewed_log.is_some() {
+        log_line_number_gutter_width(lines.len(), body_area.width)
+    } else {
+        0
+    };
+    let text_width = body_area.width.saturating_sub(gutter_width).max(1);
+    state.response_visible_width = text_width as usize;
+    let layout = WrappedTextLayout::new(lines);
+    let index = layout.line_index(text_width);
+    let max_scroll = index.max_scroll(visible_height);
     let scroll = state.response_scroll.min(max_scroll);
     state.response_scroll = scroll;
-    let visible_lines = lines
-        .into_iter()
-        .skip(scroll)
-        .take(visible_height)
-        .collect::<Vec<_>>();
 
     frame.render_widget(Clear, area);
     let block = response_block(
         state,
         theme,
-        lines_len_for_title(state),
+        &index,
+        layout.lines.len(),
         visible_height,
         scroll,
     );
     frame.render_widget(block, area);
-    frame.render_widget(
-        Paragraph::new(visible_lines)
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
-        body_area,
-    );
+    if state.viewed_log.is_some() {
+        render_viewed_log_body(
+            frame,
+            body_area,
+            &layout,
+            &index,
+            scroll,
+            gutter_width,
+            theme,
+        );
+    } else {
+        frame.render_widget(
+            layout
+                .paragraph_at(&index, scroll)
+                .style(theme.style(TuiStyleRole::Text)),
+            body_area,
+        );
+    }
 
     if let (Some(feedback), Some(area)) = (&state.response_action_feedback, feedback_area) {
         render_surface_feedback(frame, area, feedback, theme);
+    }
+}
+
+fn log_line_number_gutter_width(total_lines: usize, available_width: u16) -> u16 {
+    let desired = total_lines.max(1).to_string().len().saturating_add(2);
+    desired
+        .min(available_width.saturating_sub(1) as usize)
+        .min(u16::MAX as usize) as u16
+}
+
+fn render_viewed_log_body(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    layout: &WrappedTextLayout,
+    index: &WrappedLineIndex,
+    scroll: usize,
+    gutter_width: u16,
+    theme: &TuiTheme,
+) {
+    if index.total_rows == 0 || area.height == 0 {
+        return;
+    }
+    let viewport_end = scroll
+        .saturating_add(area.height as usize)
+        .min(index.total_rows);
+    let first_line = index.logical_line_at(scroll);
+    let last_line = index.logical_line_at(viewport_end.saturating_sub(1));
+    let number_width = layout.lines.len().max(1).to_string().len();
+    let text_area_x = area.x.saturating_add(gutter_width);
+    let text_area_width = area.width.saturating_sub(gutter_width).max(1);
+
+    for logical_line in first_line..=last_line {
+        let line_start = index.line_start(logical_line);
+        let line_end = line_start.saturating_add(index.line_rows(logical_line));
+        let visible_start = line_start.max(scroll);
+        let visible_end = line_end.min(viewport_end);
+        if visible_start >= visible_end {
+            continue;
+        }
+        let y_offset = visible_start.saturating_sub(scroll) as u16;
+        let height = visible_end.saturating_sub(visible_start) as u16;
+        let line_area = Rect::new(
+            text_area_x,
+            area.y.saturating_add(y_offset),
+            text_area_width,
+            height,
+        );
+        let local_scroll = visible_start.saturating_sub(line_start);
+        let line_layout = WrappedTextLayout::new(vec![layout.lines[logical_line].clone()]);
+        frame.render_widget(
+            line_layout
+                .into_paragraph()
+                .scroll((local_scroll.min(u16::MAX as usize) as u16, 0))
+                .style(theme.style(TuiStyleRole::Text)),
+            line_area,
+        );
+
+        if gutter_width > 0 {
+            let number = format!("{:>number_width$}  ", logical_line + 1);
+            frame.render_widget(
+                Paragraph::new(number).style(theme.style(TuiStyleRole::Muted)),
+                Rect::new(area.x, area.y.saturating_add(y_offset), gutter_width, 1),
+            );
+        }
     }
 }
 
@@ -5431,51 +5578,52 @@ fn response_lines(state: &TuiState) -> Vec<Line<'static>> {
             .visible_text(state.output_masking_enabled || state.viewed_log.is_some())
             .lines()
             .collect::<Vec<_>>();
-        if state.viewed_log.is_some() {
-            let width = text_lines.len().max(1).to_string().len();
-            lines.extend(
-                text_lines
-                    .iter()
-                    .enumerate()
-                    .map(|(index, line)| Line::from(format!("{:>width$}  {line}", index + 1))),
-            );
-        } else {
-            lines.extend(text_lines.iter().map(|line| Line::from((*line).to_owned())));
-        }
+        lines.extend(text_lines.iter().map(|line| Line::from((*line).to_owned())));
     }
 
     lines
 }
 
-fn lines_len_for_title(state: &TuiState) -> usize {
-    response_lines(state).len()
-}
-
 fn response_block(
     state: &TuiState,
     theme: &TuiTheme,
+    index: &WrappedLineIndex,
     total_lines: usize,
     visible_height: usize,
     scroll: usize,
 ) -> Block<'static> {
     let title = if state.viewed_log.is_some() {
-        response_range_title(total_lines, visible_height, scroll)
+        let (first, last) = index
+            .visible_logical_range(scroll, visible_height)
+            .unwrap_or((0, 0));
+        response_range_title(
+            total_lines,
+            first,
+            last,
+            scroll == 0,
+            scroll >= index.max_scroll(visible_height),
+        )
     } else {
         Pane::Response.title().to_owned()
     };
     pane_block_with_title(Pane::Response, state.focus, theme, title)
 }
 
-fn response_range_title(total_lines: usize, visible_height: usize, scroll: usize) -> String {
+fn response_range_title(
+    total_lines: usize,
+    first_line: usize,
+    last_line: usize,
+    at_top: bool,
+    at_bottom: bool,
+) -> String {
     let total = total_lines.max(1);
-    let visible = visible_height.max(1);
-    let first = scroll.saturating_add(1).min(total);
-    let last = scroll.saturating_add(visible).min(total);
-    let position = if total <= visible {
+    let first = first_line.saturating_add(1).min(total);
+    let last = last_line.saturating_add(1).min(total);
+    let position = if at_top && at_bottom {
         "all"
-    } else if scroll == 0 {
+    } else if at_top {
         "top/more below"
-    } else if last == total {
+    } else if at_bottom {
         "bottom"
     } else {
         "more above/below"
@@ -5524,7 +5672,7 @@ fn render_action_menu(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme
         lines,
         ModalRenderSpec {
             percent_x: 76,
-            max_percent_y: 80,
+            max_percent_y: 92,
             title,
             border_role: TuiStyleRole::Focus,
         },
@@ -5825,7 +5973,7 @@ fn push_terminal_event_time_status_lines<'a>(
     width: usize,
 ) {
     let line = format!("{label}: {finished_at}");
-    if line.chars().count() <= width || finished_at.chars().count() > width {
+    if display_cell_width(&line) <= width || display_cell_width(finished_at) > width {
         lines.push(Line::from(line));
     } else {
         lines.push(Line::from(format!("{label}:")));
@@ -6017,12 +6165,14 @@ fn fit_footer_segments(segments: &[&str], width: usize) -> String {
 
     let mut output = String::new();
     for segment in segments {
-        let next_len = if output.is_empty() {
-            segment.len()
+        let next_width = if output.is_empty() {
+            display_cell_width(segment)
         } else {
-            output.len() + 2 + segment.len()
+            display_cell_width(&output)
+                .saturating_add(display_cell_width("  "))
+                .saturating_add(display_cell_width(segment))
         };
-        if next_len > width {
+        if next_width > width {
             continue;
         }
         if !output.is_empty() {
@@ -6030,14 +6180,7 @@ fn fit_footer_segments(segments: &[&str], width: usize) -> String {
         }
         output.push_str(segment);
     }
-    if output.is_empty() {
-        segments
-            .first()
-            .map(|segment| segment.chars().take(width).collect())
-            .unwrap_or_default()
-    } else {
-        output
-    }
+    output
 }
 
 fn render_timeout_budget_block(
@@ -6127,7 +6270,7 @@ fn timeout_budget_label(
 }
 
 fn label_fits(label: &str, width: usize) -> bool {
-    !label.is_empty() && label.chars().count() <= width
+    !label.is_empty() && display_cell_width(label) <= width
 }
 
 fn render_timeout_budget_bar(
@@ -6151,21 +6294,53 @@ fn render_timeout_budget_bar(
     frame.render_widget(gauge, area);
 }
 
-fn render_history(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &TuiTheme) {
-    let mut lines = vec![Line::from("Saved logs:")];
+fn render_history(frame: &mut Frame<'_>, area: Rect, state: &mut TuiState, theme: &TuiTheme) {
+    frame.render_widget(Clear, area);
+    let block = pane_block(Pane::History, state.focus, theme);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut heading_lines = vec![Line::from("Saved logs:")];
     if let Some(error) = &state.logs_error {
-        lines.push(Line::from(Span::styled(
+        heading_lines.push(Line::from(Span::styled(
             error.clone(),
             theme.style(TuiStyleRole::Warning),
         )));
     }
+    let heading = WrappedTextLayout::new(heading_lines);
+    let heading_rows = heading.line_count(inner.width.max(1));
+    let reserve_for_list = usize::from(inner.height > 1);
+    let heading_height = heading_rows
+        .min((inner.height as usize).saturating_sub(reserve_for_list))
+        .max(usize::from(inner.height > 0));
+    let areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(heading_height as u16),
+            Constraint::Min(0),
+        ])
+        .split(inner);
+    frame.render_widget(
+        heading
+            .into_paragraph()
+            .style(theme.style(TuiStyleRole::Text)),
+        areas[0],
+    );
+
+    let list_area = areas[1];
+    let visible_slots = list_area.height.max(1) as usize;
+    state.logs_visible_height = visible_slots;
+    let row_width = list_area.width as usize;
+    let mut items = Vec::new();
 
     if state.logs.is_empty() {
-        lines.push(Line::from("No logs found."));
+        items.push(ListItem::new(truncate_with_ellipsis(
+            "No logs found.",
+            row_width,
+        )));
     } else {
-        let visible_slots = pane_inner_height(area).saturating_sub(lines.len()).max(1);
         let start = viewport_start(state.selected_log, state.logs.len(), visible_slots);
-        lines.extend(
+        items.extend(
             state
                 .logs
                 .iter()
@@ -6183,18 +6358,18 @@ fn render_history(frame: &mut Frame<'_>, area: Rect, state: &TuiState, theme: &T
                     } else {
                         theme.style(TuiStyleRole::Text)
                     };
-                    Line::from(Span::styled(format!("{prefix}{}", log.label), style))
+                    let label = truncate_with_ellipsis(
+                        &log.label,
+                        row_width.saturating_sub(display_cell_width(prefix)),
+                    );
+                    ListItem::new(Line::from(Span::styled(format!("{prefix}{label}"), style)))
                 }),
         );
     }
 
-    frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(lines)
-            .block(pane_block(Pane::History, state.focus, theme))
-            .style(theme.style(TuiStyleRole::Text))
-            .wrap(Wrap { trim: false }),
-        area,
+        List::new(items).style(theme.style(TuiStyleRole::Text)),
+        list_area,
     );
 }
 
@@ -6223,9 +6398,10 @@ fn render_help(frame: &mut Frame<'_>, screen: Rect, state: &mut TuiState, theme:
     ];
 
     let width_area = centered_rect(76, 100, screen);
-    let inner_width = width_area.width.saturating_sub(2).max(1) as usize;
-    let wrapped = wrap_lines_to_width(text, inner_width);
-    let total = wrapped.len().max(1);
+    let inner_width = width_area.width.saturating_sub(2).max(1);
+    let layout = WrappedTextLayout::new(text);
+    let index = layout.line_index(inner_width);
+    let total = index.total_rows.max(1);
     let geometry = modal_geometry_for_body_height(screen, 76, 90, total);
     if geometry.area.width < 3 || geometry.area.height < 3 {
         render_safe_resize_modal(frame, geometry.area, "Help", TuiStyleRole::Focus, theme);
@@ -6245,7 +6421,8 @@ fn render_help(frame: &mut Frame<'_>, screen: Rect, state: &mut TuiState, theme:
 
     frame.render_widget(Clear, geometry.area);
     frame.render_widget(
-        Paragraph::new(wrapped[scroll..end].to_vec())
+        layout
+            .paragraph_at(&index, scroll)
             .block(
                 Block::default()
                     .title(title)
@@ -6516,7 +6693,7 @@ fn render_raw_log_ack_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
     };
     let mut text = vec![
         Line::from(Span::styled(
-            "This file may contain sensitive modem, subscriber, network, APN, or PDP authentication values.",
+            RAW_LOG_WARNING,
             theme.style(TuiStyleRole::Warning),
         )),
         Line::from(
@@ -6551,7 +6728,7 @@ fn render_raw_log_ack_input(frame: &mut Frame<'_>, area: Rect, state: &TuiState,
         text,
         ModalRenderSpec {
             percent_x: 76,
-            max_percent_y: 48,
+            max_percent_y: 80,
             title: "Start raw diagnostic export?",
             border_role: TuiStyleRole::Warning,
         },
@@ -6697,19 +6874,24 @@ fn render_sequence_input(
         return;
     }
     let content = sequence_phase_lines(input_state, state, inner_width, theme);
-    let mut context = wrap_lines_to_width(content.context, inner_width);
-    if content.context_label.is_some() && context.is_empty() {
-        context.push(Line::from(""));
+    let mut context_lines = content.context;
+    if content.context_label.is_some() && context_lines.is_empty() {
+        context_lines.push(Line::from(""));
     }
-    let critical = wrap_lines_to_width(content.critical, inner_width);
-    let footer = wrap_lines_to_width(content.footer, inner_width);
+    let layout_width = inner_width.max(1).min(u16::MAX as usize) as u16;
+    let context = WrappedTextLayout::new(context_lines);
+    let context_index = context.line_index(layout_width);
+    let critical = WrappedTextLayout::new(content.critical);
+    let critical_height = critical.line_count(layout_width);
+    let footer = WrappedTextLayout::new(content.footer);
+    let footer_height = footer.line_count(layout_width);
     let separator_height =
-        usize::from(!context.is_empty() && (!critical.is_empty() || !footer.is_empty()));
+        usize::from(context_index.total_rows > 0 && (critical_height > 0 || footer_height > 0));
     let body_height = usize::from(content.context_label.is_some())
-        + context.len()
+        + context_index.total_rows
         + separator_height
-        + critical.len()
-        + footer.len();
+        + critical_height
+        + footer_height;
     let geometry = modal_geometry_for_body_height(screen, 76, 86, body_height);
     let area = geometry.area;
     let inner_height = area.height.saturating_sub(2) as usize;
@@ -6737,13 +6919,13 @@ fn render_sequence_input(
         area.height.saturating_sub(2),
     );
     if let Some(context_label) = content.context_label {
-        let fixed_height = 1 + separator_height + critical.len() + footer.len();
+        let fixed_height = 1 + separator_height + critical_height + footer_height;
         if fixed_height + 1 > inner_height {
             render_safe_resize_modal(frame, area, phase_title, border_role, theme);
             return;
         }
         let available_context_height = inner_height - fixed_height;
-        let total = context.len().max(1);
+        let total = context_index.total_rows.max(1);
         let visible_height = total.min(available_context_height.max(1));
         let max_scroll = total.saturating_sub(visible_height);
         let scroll = input_state.detail_scroll.min(max_scroll);
@@ -6758,8 +6940,8 @@ fn render_sequence_input(
                 Constraint::Length(1),
                 Constraint::Length(visible_height as u16),
                 Constraint::Length(separator_height as u16),
-                Constraint::Length(critical.len() as u16),
-                Constraint::Length(footer.len() as u16),
+                Constraint::Length(critical_height as u16),
+                Constraint::Length(footer_height as u16),
             ])
             .split(inner);
         frame.render_widget(
@@ -6768,19 +6950,27 @@ fn render_sequence_input(
             sections[0],
         );
         frame.render_widget(
-            Paragraph::new(context[scroll..end].to_vec()).style(theme.style(TuiStyleRole::Text)),
+            context
+                .paragraph_at(&context_index, scroll)
+                .style(theme.style(TuiStyleRole::Text)),
             sections[1],
         );
         frame.render_widget(
-            Paragraph::new(critical).style(theme.style(TuiStyleRole::Text)),
+            critical
+                .into_paragraph()
+                .style(theme.style(TuiStyleRole::Text)),
             sections[3],
         );
         frame.render_widget(
-            Paragraph::new(footer).style(theme.style(TuiStyleRole::Text)),
+            footer
+                .into_paragraph()
+                .style(theme.style(TuiStyleRole::Text)),
             sections[4],
         );
     } else {
-        if context.len() + separator_height + footer.len() > inner_height {
+        if context_index.total_rows + separator_height + critical_height + footer_height
+            > inner_height
+        {
             render_safe_resize_modal(frame, area, phase_title, border_role, theme);
             return;
         }
@@ -6791,18 +6981,29 @@ fn render_sequence_input(
         let sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(context.len() as u16),
+                Constraint::Length(context_index.total_rows as u16),
                 Constraint::Length(separator_height as u16),
-                Constraint::Length(footer.len() as u16),
+                Constraint::Length(critical_height as u16),
+                Constraint::Length(footer_height as u16),
             ])
             .split(inner);
         frame.render_widget(
-            Paragraph::new(context).style(theme.style(TuiStyleRole::Text)),
+            context
+                .into_paragraph()
+                .style(theme.style(TuiStyleRole::Text)),
             sections[0],
         );
         frame.render_widget(
-            Paragraph::new(footer).style(theme.style(TuiStyleRole::Text)),
+            critical
+                .into_paragraph()
+                .style(theme.style(TuiStyleRole::Text)),
             sections[2],
+        );
+        frame.render_widget(
+            footer
+                .into_paragraph()
+                .style(theme.style(TuiStyleRole::Text)),
+            sections[3],
         );
     }
 }
@@ -7298,10 +7499,13 @@ fn push_sequence_resolution_lines(
         } else {
             "  "
         };
-        text.push(Line::from(format!(
-            "    {marker}{}",
-            sequence_candidate_label(candidate, output_masking_enabled)
-        )));
+        let prefix = format!("    {marker}");
+        let label_width = row_width.saturating_sub(display_cell_width(&prefix));
+        let label = truncate_with_ellipsis(
+            sequence_candidate_label(candidate, output_masking_enabled),
+            label_width,
+        );
+        text.push(Line::from(format!("{prefix}{label}")));
     }
     let actions = candidate_actions(state, candidate);
     if !actions.is_empty() {
@@ -7792,16 +7996,8 @@ fn truncate_with_ellipsis(value: &str, width: usize) -> String {
     } else if width == 1 {
         "…".to_owned()
     } else {
-        let mut truncated = String::new();
-        for character in value.chars() {
-            let candidate = format!("{truncated}{character}");
-            if display_cell_width(&candidate) > width - 1 {
-                break;
-            }
-            truncated.push(character);
-        }
-        truncated.push('…');
-        truncated
+        let (truncated, _) = value.unicode_truncate(width - 1);
+        format!("{truncated}…")
     }
 }
 
@@ -7830,7 +8026,7 @@ fn modal_geometry_for_lines(
 ) -> ModalGeometry {
     let width_area = centered_rect(percent_x, 100, screen);
     let inner_width = width_area.width.saturating_sub(2).max(1);
-    let content_height = wrap_lines_to_width(lines.to_vec(), inner_width as usize).len();
+    let content_height = WrappedTextLayout::new(lines.to_vec()).line_count(inner_width);
     modal_geometry_for_body_height(screen, percent_x, max_percent_y, content_height)
 }
 
@@ -7875,10 +8071,9 @@ fn render_content_fit_modal(
     spec: ModalRenderSpec<'_>,
     theme: &TuiTheme,
 ) {
-    let width_area = centered_rect(spec.percent_x, 100, screen);
-    let inner_width = width_area.width.saturating_sub(2).max(1) as usize;
-    let lines = wrap_lines_to_width(lines, inner_width);
-    let geometry = modal_geometry_for_lines(screen, spec.percent_x, spec.max_percent_y, &lines);
+    let layout = WrappedTextLayout::new(lines);
+    let geometry =
+        modal_geometry_for_lines(screen, spec.percent_x, spec.max_percent_y, &layout.lines);
     if !geometry.content_fits {
         render_safe_resize_modal(frame, geometry.area, spec.title, spec.border_role, theme);
         return;
@@ -7886,7 +8081,8 @@ fn render_content_fit_modal(
 
     frame.render_widget(Clear, geometry.area);
     frame.render_widget(
-        Paragraph::new(lines)
+        layout
+            .into_paragraph()
             .block(
                 Block::default()
                     .title(spec.title)

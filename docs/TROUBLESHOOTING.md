@@ -677,7 +677,8 @@ short-value, saved-output, and unknown-vendor-output contract. The commands
 below are the task-oriented paths for deliberately unmasked display or raw
 diagnostic evidence.
 
-Raw output requires explicit action:
+Unmasked IMSI display requires explicit action and should be used only when the
+diagnostic case specifically requires confirming the IMSI:
 
 ```sh
 atctl send AT+CIMI --no-mask
@@ -698,11 +699,17 @@ command:
 
 ```sh
 atctl devices
-atctl send AT+CIMI --bus <BUS> --address <ADDRESS> --raw-log-file ./case-cimi.rawlog --raw-log-ack raw-log
+atctl send AT+CSQ --bus <BUS> --address <ADDRESS> --raw-log-file ./case-signal.rawlog --raw-log-ack raw-log
 ```
 
-The raw export may contain modem, subscriber, network, APN, or PDP
-authentication values. Use a case-specific path, keep the file protected, and
-share it only with the party that needs the raw diagnostic evidence. Raw JSONL
-exchange events identify the `cli`, `tui`, or `pty` surface separately from the
-structured command, preset, or Sequence operation.
+The same warning is shown before raw export on CLI and PTY, in the TUI
+acknowledgement modal, and in the raw JSONL header:
+
+```text
+This raw diagnostic export records transmitted and received modem bytes without masking. It may contain sensitive modem and subscriber identifiers; network data; APN or PDP authentication data; phone numbers and SMS messages; arbitrary transmitted or received payloads; credentials and tokens; and vendor-specific identifiers.
+```
+
+Use a case-specific path, keep the file protected, and share it only with the
+party that needs the raw diagnostic evidence. Raw JSONL exchange events identify
+the `cli`, `tui`, or `pty` surface separately from the structured command,
+preset, or Sequence operation.
