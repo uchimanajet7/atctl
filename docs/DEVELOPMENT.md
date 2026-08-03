@@ -492,23 +492,34 @@ the Homebrew tap, publish bottles, or create Homebrew Formula pull requests.
 
 For the GitHub Web UI release path:
 
-1. Open `https://github.com/uchimanajet7/atctl/actions`.
-2. Select the **Release** workflow.
-3. Select **Run workflow**.
-4. Select the branch or commit that should be released.
-5. Enter `release_tag`, for example `v0.2.0`.
-6. Run the workflow.
+1. Decide the release version, update `Cargo.toml`, and add the matching dated
+   release section to `CHANGELOG.md`.
+2. Confirm that those release changes are on `main`.
+3. Open `https://github.com/uchimanajet7/atctl/actions`.
+4. Select the **Release** workflow.
+5. Select **Run workflow**.
+6. Select `main` in the branch selector.
+7. Enter `release_tag`, for example `v0.2.0`.
+8. Run the workflow.
+
+The workflow first rejects any dispatch whose ref is not `refs/heads/main` in a
+validation job with no repository permissions. GitHub assigns `GITHUB_SHA` to
+the last commit on the selected `main` ref when the workflow is dispatched; the
+workflow keeps that SHA as the fixed source for checkout, validation, build,
+packaging, tag handling, and publication. `release_tag` names the tag and
+version; it does not choose a branch or commit.
 
 The workflow validates that the requested version matches `Cargo.toml`, checks
-any existing tag against the selected commit, runs the normal Rust verification
-gate, builds the Apple Silicon macOS binary against Homebrew `libusb`, generates
-target-specific third-party notices, verifies binary architecture and dynamic
-linkage, validates the exact archive tree and modes, creates and verifies the
-`.sha256` file, and extracts the matching `CHANGELOG.md` section before starting
-publication. The final GitHub CLI operation creates a missing tag at the
-selected commit, uploads both assets through a draft release, and then publishes
-the GitHub Release. An existing tag is accepted only when it points to the
-selected commit and is not moved, overwritten, or deleted.
+any existing tag against the dispatch-time `main` SHA, runs the normal Rust
+verification gate, builds the Apple Silicon macOS binary against Homebrew
+`libusb`, generates target-specific third-party notices, verifies binary
+architecture and dynamic linkage, validates the exact archive tree and modes,
+creates and verifies the `.sha256` file, and extracts the matching
+`CHANGELOG.md` section before starting publication. The final GitHub CLI
+operation creates a missing tag at the same SHA, uploads both assets through a
+draft release, and then publishes the GitHub Release. An existing tag is
+accepted only when it points to that SHA and is not moved, overwritten, or
+deleted.
 
 To create the same release artifacts locally, install the additional pinned
 license tool and build against Homebrew `libusb` in a new target directory:

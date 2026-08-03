@@ -79,17 +79,23 @@ Normative owner: [SPEC.md](SPEC.md) execution-review requirements and
 Status: accepted
 
 Decision: Source releases build and publish the Apple Silicon macOS archive and
-checksum through one manually dispatched GitHub Web workflow. The workflow
-validates the version and any existing tag, verifies and packages the selected
-commit, and prepares the matching [CHANGELOG.md](../CHANGELOG.md) section before
-the final operation creates a missing tag, uploads both assets through a draft,
-and publishes the GitHub Release. A pushed tag is not an automatic release
-trigger. Homebrew publication remains separate tap-repository work.
+checksum through one manually dispatched GitHub Web workflow. The version and
+dated [CHANGELOG.md](../CHANGELOG.md) section are put on `main` first; the
+operator then selects `main` and enters `release_tag`. The input identifies the
+tag name and version, not a source commit. The workflow requires the dispatched
+ref to be `main` before the write-capable release job starts and uses the
+dispatch-time `GITHUB_SHA` as the fixed source for validation, build, packaging,
+tag handling, and GitHub Release publication. A pushed tag is not an automatic
+release trigger. Homebrew publication remains separate tap-repository work.
 
 Rationale and consequences: A single Web-operated entry point gives new and
-existing tags the same operator workflow and prevents validation, build,
-packaging, or release-note failures from leaving a newly published tag without
-a release. Draft-first asset upload prevents an incomplete public release.
+existing tags the same operator workflow. Requiring `main` before a job receives
+write permission prevents an accidental non-`main` selection from reaching tag
+or Release creation. Keeping the dispatch-time SHA fixed makes every validation
+and publication step refer to the same `main` snapshot without adding a
+separate SHA-selection or approval record. Validation, build, packaging, or
+release-note failures therefore do not leave a newly published tag without a
+release. Draft-first asset upload prevents an incomplete public release.
 Separating source artifacts from Homebrew publication prevents one release
 action from silently changing another repository or distribution channel.
 

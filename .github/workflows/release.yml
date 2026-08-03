@@ -12,7 +12,25 @@ permissions:
   contents: read
 
 jobs:
+  validate-release-source:
+    name: Validate release source
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Require main
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf 'Release ref: %s\n' "${GITHUB_REF}"
+          printf 'Release SHA: %s\n' "${GITHUB_SHA}"
+
+          if [[ "${GITHUB_REF}" != "refs/heads/main" ]]; then
+            echo "Release workflow must be run from main; got ${GITHUB_REF}." >&2
+            exit 1
+          fi
+
   release:
+    needs: validate-release-source
     name: Build and publish Apple Silicon macOS release
     runs-on: macos-26
     permissions:

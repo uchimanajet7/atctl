@@ -1,7 +1,7 @@
 # atctl Product and Technical Specification
 
-- Document version: 0.4.123
-- Date: 2026-07-31
+- Document version: 0.4.124
+- Date: 2026-08-03
 - Implementation language: Rust
 - Product name: `atctl`
 - Repository name: `atctl`
@@ -4734,9 +4734,11 @@ to the source repository `uchimanajet7/atctl`.
 REQ-PKG-015: Source repository releases MUST use GitHub Actions to build and
 publish a prebuilt Apple Silicon macOS binary and checksum to GitHub Releases.
 The source release MUST be started through the manually triggered GitHub Web
-workflow with an explicit release-tag input. Pushing a release tag MUST NOT
-automatically start the source release workflow. This release artifact is
-separate from the Homebrew bottle contract.
+workflow after the matching `Cargo.toml` version and dated `CHANGELOG.md`
+section are present on `main`. The operator MUST select `main` and provide an
+explicit release-tag input. Pushing a release tag MUST NOT automatically start
+the source release workflow. This release artifact is separate from the
+Homebrew bottle contract.
 
 REQ-PKG-016: The Apple Silicon macOS GitHub Release archive asset MUST be named
 `atctl-v{VERSION}-aarch64-apple-darwin.tar.gz`, where `{VERSION}` is the
@@ -4879,31 +4881,40 @@ REQ-PKG-038A: The source repository release workflow MUST expose a manual
 `workflow_dispatch` operation with a required `release_tag` input such as
 `v0.2.0` so an operator can start the source repository release from the GitHub
 Actions Web UI without manually creating a GitHub Release page or copying
-release notes.
+release notes. The operator MUST select `main` in the Web UI. `release_tag`
+identifies the tag name and version; it MUST NOT select the release source
+branch or commit.
 
 REQ-PKG-038B: When the source repository release workflow is manually
-dispatched, it MUST validate the version, verify the source, build and package
-the release artifact and checksum, and prepare the changelog-backed release
-notes before creating a missing tag or GitHub Release. If the requested tag
-already exists, the workflow MUST verify before the build and again immediately
-before publication that the tag points to the selected workflow commit. It MUST
-fail without moving, overwriting, or deleting a mismatched tag.
+dispatched, it MUST first require `GITHUB_REF` to equal `refs/heads/main` before
+any job with `contents: write` can start. The release source MUST be the run's
+dispatch-time `GITHUB_SHA`, which identifies the last commit on the selected
+`main` ref when GitHub creates the workflow run. The same SHA MUST be used for
+checkout, source verification, build, packaging, tag validation, and
+publication; the workflow MUST NOT re-resolve a moving `main` ref during that
+run. The workflow MUST validate the version and prepare the artifact, checksum,
+and changelog-backed release notes before creating a missing tag or GitHub
+Release. If the requested tag already exists, the workflow MUST verify before
+the build and again immediately before publication that the tag points to this
+same SHA. It MUST fail without moving, overwriting, or deleting a mismatched
+tag.
 
 REQ-PKG-038C: The manual source repository release path MUST complete tag
 preparation, release verification, archive creation, checksum creation,
 changelog-backed release-note extraction, and GitHub Release creation in the
 same workflow run. The final publication operation MUST create a missing tag at
-the selected workflow commit or verify an existing tag, upload the archive and
-checksum through a draft release, and publish the GitHub Release. It MUST NOT
-rely on a second tag-push-triggered workflow run.
+the dispatch-time `main` SHA or verify an existing tag at that SHA, upload the
+archive and checksum through a draft release, and publish the GitHub Release.
+It MUST NOT rely on a second tag-push-triggered workflow run.
 
-REQ-PKG-038D: A failure during version validation, source verification, release
-build, packaging, checksum creation, or release-note preparation MUST occur
-before creation of a new remote tag or GitHub Release. A failure after the
-final GitHub publication operation has started MAY leave a recoverable draft
-and associated tag. The workflow MUST NOT automatically move or delete remote
-tags or releases as failure recovery; the operator MUST inspect that remote
-state before retrying.
+REQ-PKG-038D: A release-source validation failure MUST stop the run before the
+write-capable release job starts. A failure during version validation, source
+verification, release build, packaging, checksum creation, or release-note
+preparation MUST occur before creation of a new remote tag or GitHub Release. A
+failure after the final GitHub publication operation has started MAY leave a
+recoverable draft and associated tag. The workflow MUST NOT automatically move
+or delete remote tags or releases as failure recovery; the operator MUST inspect
+that remote state before retrying.
 
 REQ-PKG-038E: Before publication, the release workflow MUST verify the binary
 architecture and native linkage, generate and validate third-party notices,

@@ -155,13 +155,23 @@ Release notes:
 
 GitHub Web UI release operation:
 
-1. Open the source repository on GitHub.
-2. Open **Actions**.
-3. Select the **Release** workflow.
-4. Select **Run workflow**.
-5. Select the branch or commit that should be released.
-6. Enter `release_tag`, for example `v0.2.0`.
-7. Run the workflow.
+1. Decide the release version, update `Cargo.toml`, and add the matching dated
+   release section to `CHANGELOG.md`.
+2. Confirm that those release changes are on `main`.
+3. Open the source repository on GitHub.
+4. Open **Actions**.
+5. Select the **Release** workflow.
+6. Select **Run workflow**.
+7. Select `main` in the branch selector.
+8. Enter `release_tag`, for example `v0.2.0`.
+9. Run the workflow.
+
+The workflow first rejects any dispatch whose ref is not `refs/heads/main` in a
+validation job with no repository permissions. GitHub assigns `GITHUB_SHA` to
+the last commit on the selected `main` ref when the workflow is dispatched; the
+workflow keeps that SHA as the fixed source for checkout, validation, build,
+packaging, tag handling, and publication. `release_tag` names the tag and
+version; it does not choose a branch or commit.
 
 The workflow validates the Cargo version and any existing tag, runs the normal
 Rust verification gate, builds the binary against Homebrew `libusb`, generates
@@ -169,15 +179,15 @@ target-specific third-party notices, verifies the architecture and dynamic
 linkage, creates and validates the exact archive tree and modes, verifies the
 checksum, and extracts release notes from `CHANGELOG.md` before starting
 publication. After those steps succeed, the final GitHub CLI operation creates
-a missing tag at the selected workflow commit, uploads the archive and checksum
+a missing tag at the dispatch-time `main` SHA, uploads the archive and checksum
 through a draft release, and publishes the GitHub Release. If the requested tag
-already exists, the workflow verifies it points to the selected workflow commit
-before the build and again immediately before publication; it fails without
-moving, overwriting, or deleting a mismatched tag.
+already exists, the workflow verifies it points to that same SHA before the
+build and again immediately before publication; it fails without moving,
+overwriting, or deleting a mismatched tag.
 
 The GitHub Web workflow is the only automatic source-release entry point.
 Pushing a tag does not start the release workflow. An existing tag at the
-selected commit may still be published by entering that tag in the Web
+dispatch-time `main` SHA may still be published by entering that tag in the Web
 workflow.
 
 A failure before the final GitHub publication operation creates neither a new
