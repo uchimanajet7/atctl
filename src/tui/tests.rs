@@ -3922,56 +3922,150 @@ fn multiple_visible_devices_require_explicit_selection_before_execution() {
 
 #[test]
 fn all_usb_troubleshooting_view_keeps_non_targets_diagnostic_only() {
-    let mut state = TuiState::new_with_all_usb(
-        executable_items(test_commands(), Vec::new()),
-        Vec::new(),
-        vec![test_diagnostic_usb_device(1, 2, "USB Hub")],
-        Vec::new(),
-        TuiTheme::dark(),
-    );
+    for theme in [TuiTheme::dark(), TuiTheme::light(), TuiTheme::no_color()] {
+        let mut state = TuiState::new_with_all_usb(
+            executable_items(test_commands(), Vec::new()),
+            Vec::new(),
+            vec![test_diagnostic_usb_device(1, 2, "USB Hub")],
+            Vec::new(),
+            theme,
+        );
 
-    state.focus = Pane::Devices;
-    state.highlighted_device = state.devices.len();
-    handle_key_code(&mut state, KeyCode::Enter);
+        state.focus = Pane::Devices;
+        state.highlighted_device = state.devices.len();
+        handle_key_code(&mut state, KeyCode::Enter);
 
-    assert_eq!(state.device_view, DeviceView::AllUsbTroubleshooting);
-    let lines = device_lines(&state, &TuiTheme::dark())
-        .into_iter()
-        .map(|line| format!("{line:?}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(lines.contains("All USB: 1"));
-    assert!(lines.contains("[diagnostic-only]"));
+        assert_eq!(state.device_view, DeviceView::AllUsbTroubleshooting);
+        let lines = device_lines(&state, &state.theme)
+            .into_iter()
+            .map(|line| format!("{line:?}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(lines.contains("All USB: 1"));
+        assert!(lines.contains("[diagnostic-only]"));
 
-    handle_key_code(&mut state, KeyCode::Enter);
+        handle_key_code(&mut state, KeyCode::Enter);
 
-    assert_eq!(state.active_device, None);
-    assert!(state.pending_execution.is_none());
-    assert!(state.status.contains("Diagnostic-only USB device"));
-    assert!(state.response.contains("not an atctl operation target"));
+        assert_eq!(state.active_device, None);
+        assert!(state.pending_execution.is_none());
+        assert!(state.status.contains("Diagnostic-only USB device"));
+        assert!(state.response.contains("not an atctl operation target"));
+        assert!(
+            !state
+                .response
+                .contains("Known default-detection limitation")
+        );
+        assert!(!state.response.contains("atctl inspect --bus"));
+
+        let compact = rendered_buffer(&mut state, 120, 32);
+        assert!(compact.contains("Diagnostic-only USB device"));
+        assert!(!compact.contains("Known default-detection limitation"));
+
+        let expanded = rendered_buffer(&mut state, 200, 48);
+        assert!(expanded.contains("not an atctl operation target"));
+        assert!(!expanded.contains("Known default-detection limitation"));
+    }
+}
+
+#[test]
+fn class_zero_diagnostic_only_device_shows_known_limit_in_response() {
+    for theme in [TuiTheme::dark(), TuiTheme::light(), TuiTheme::no_color()] {
+        let mut state = TuiState::new_with_all_usb(
+            executable_items(test_commands(), Vec::new()),
+            Vec::new(),
+            vec![test_class_zero_diagnostic_usb_device(
+                1,
+                2,
+                "Composite USB device",
+            )],
+            Vec::new(),
+            theme,
+        );
+
+        state.focus = Pane::Devices;
+        state.highlighted_device = state.devices.len();
+        handle_key_code(&mut state, KeyCode::Enter);
+
+        let lines = device_lines(&state, &state.theme)
+            .into_iter()
+            .map(|line| format!("{line:?}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(lines.contains("[diagnostic-only]"));
+
+        handle_key_code(&mut state, KeyCode::Enter);
+
+        assert_eq!(state.active_device, None);
+        assert!(state.pending_execution.is_none());
+        assert_eq!(
+            state.status,
+            "Diagnostic-only USB device; AT sending is disabled."
+        );
+        assert!(
+            !state
+                .status
+                .contains("AT support for this device is unconfirmed")
+        );
+        assert!(
+            state
+                .response
+                .contains("Known default-detection limitation")
+        );
+        assert!(
+            state
+                .response
+                .contains("AT support for this device is unconfirmed")
+        );
+        assert!(state.response.contains(
+            "Do not send AT unless vendor documentation or an independently validated device configuration identifies the AT interface and bulk endpoints."
+        ));
+        assert!(state.response.contains("atctl inspect --bus 1 --address 2"));
+        assert!(
+            state
+                .response
+                .contains("https://github.com/uchimanajet7/atctl/issues")
+        );
+        assert!(!state.response.contains("atctl send AT"));
+
+        let compact = rendered_buffer(&mut state, 120, 32);
+        assert!(compact.contains("Known default-detection limitation"));
+
+        let expanded = rendered_buffer(&mut state, 160, 48);
+        assert!(expanded.contains("Known default-detection limitation"));
+        assert!(expanded.contains("atctl inspect --bus 1 --address 2"));
+    }
 }
 
 #[test]
 fn all_usb_troubleshooting_view_can_select_visible_operation_target() {
-    let target = test_usb_device(1, 3, "Onyx A");
-    let mut state = TuiState::new_with_all_usb(
-        executable_items(test_commands(), Vec::new()),
-        vec![target.clone()],
-        vec![test_diagnostic_usb_device(1, 2, "USB Hub"), target],
-        Vec::new(),
-        TuiTheme::dark(),
-    );
-    state.active_device = None;
+    for theme in [TuiTheme::dark(), TuiTheme::light(), TuiTheme::no_color()] {
+        let target = test_usb_device(1, 3, "Onyx A");
+        let mut state = TuiState::new_with_all_usb(
+            executable_items(test_commands(), Vec::new()),
+            vec![target.clone()],
+            vec![test_diagnostic_usb_device(1, 2, "USB Hub"), target],
+            Vec::new(),
+            theme,
+        );
+        state.active_device = None;
 
-    state.focus = Pane::Devices;
-    state.highlighted_device = state.devices.len();
-    handle_key_code(&mut state, KeyCode::Enter);
-    handle_key_code(&mut state, KeyCode::Down);
-    handle_key_code(&mut state, KeyCode::Enter);
+        state.focus = Pane::Devices;
+        state.highlighted_device = state.devices.len();
+        handle_key_code(&mut state, KeyCode::Enter);
+        handle_key_code(&mut state, KeyCode::Down);
+        handle_key_code(&mut state, KeyCode::Enter);
 
-    assert_eq!(state.active_device, Some(0));
-    assert_eq!(state.device_view, DeviceView::OperationTargets);
-    assert_eq!(state.focus, Pane::Commands);
+        assert_eq!(state.active_device, Some(0));
+        assert_eq!(state.device_view, DeviceView::OperationTargets);
+        assert_eq!(state.focus, Pane::Commands);
+        assert!(state.status.contains("Selected USB device"));
+
+        for (width, height) in [(120, 32), (160, 48)] {
+            let buffer = rendered_buffer(&mut state, width, height);
+            assert!(buffer.contains("Onyx A"));
+            assert!(!buffer.contains("Known default-detection limitation"));
+        }
+    }
 }
 
 #[test]
@@ -7250,6 +7344,22 @@ fn test_diagnostic_usb_device(bus: u8, address: u8, product: &str) -> UsbDeviceI
         protocol_code: 0x03,
         num_configurations: 1,
         manufacturer: Some("Generic".to_owned()),
+        product: Some(product.to_owned()),
+        serial_number: None,
+    }
+}
+
+fn test_class_zero_diagnostic_usb_device(bus: u8, address: u8, product: &str) -> UsbDeviceInfo {
+    UsbDeviceInfo {
+        bus,
+        address,
+        vendor_id: 0x1234,
+        product_id: 0x5678,
+        class_code: 0x00,
+        sub_class_code: 0x00,
+        protocol_code: 0x00,
+        num_configurations: 1,
+        manufacturer: Some("Example".to_owned()),
         product: Some(product.to_owned()),
         serial_number: None,
     }

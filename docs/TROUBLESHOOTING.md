@@ -75,9 +75,40 @@ If an expected modem does not appear in the default output:
 1. Run `atctl devices --all-usb` and find the candidate by current USB
    descriptor values such as manufacturer, product, VID, PID, bus, and address.
 2. Run `atctl inspect --bus <BUS> --address <ADDRESS>` for that candidate.
-3. Confirm whether any interface has both bulk IN and bulk OUT endpoints.
-4. Use explicit runtime selectors such as `--bus <BUS> --address <ADDRESS>` for
-   CLI or bridge commands when appropriate.
+3. Check the device-level class shown by `devices --all-usb` or `inspect`. A
+   class triple of `00/00/00` is a known limit of the default operation-target
+   filter: USB-IF defines device class `00h` to use class information from
+   Interface Descriptors. It does not by itself identify a modem or an AT
+   interface.
+4. Treat interface classes and bulk IN / bulk OUT pairs as descriptor evidence,
+   not as proof that sending AT commands is safe. Different interfaces on one
+   composite USB device can serve unrelated functions.
+5. Review the descriptor output before sharing it. Remove or mask serial
+   numbers and any other device-specific or subscriber-identifying values.
+6. Search the existing [GitHub Issues](https://github.com/uchimanajet7/atctl/issues)
+   and open a new issue if needed. Include the `atctl` version, operating system,
+   the reviewed relevant output from `devices --all-usb` and `inspect`, and a
+   link to vendor interface documentation when available. State whether the AT
+   interface and endpoints have been independently identified.
+
+Do not use `--bus <BUS> --address <ADDRESS>` alone as the ordinary recovery
+path for a diagnostic-only item. The USB transport may otherwise try candidate
+bulk endpoint pairs with `AT`. For `send`, `preset run`, `sequence run`, or PTY
+bridge execution, proceed only when vendor documentation or an independently
+validated device configuration identifies the AT interface and both bulk
+endpoints. Then provide all of those values explicitly, for example:
+
+```sh
+atctl send AT \
+  --bus <BUS> \
+  --address <ADDRESS> \
+  --interface <N> \
+  --bulk-in <ENDPOINT> \
+  --bulk-out <ENDPOINT>
+```
+
+This condition applies equally to every AT execution surface. The TUI keeps a
+diagnostic-only item unavailable for AT sending.
 
 The TUI Devices pane initially shows the same operation targets as
 `atctl devices`. Select `Show all USB devices` and press `Enter` to inspect the
@@ -102,13 +133,18 @@ atctl inspect
 ```
 
 The output includes configurations, interfaces, alternate settings, and bulk
-endpoints. Endpoint values observed in one environment are diagnostic
-evidence, not universal defaults. If auto-detection fails, retry with explicit
-values from the current `atctl inspect` output:
+endpoints. Endpoint values observed in one environment are diagnostic evidence,
+not universal defaults. For a device already shown as an operation target, if
+endpoint auto-detection fails, inspect the current descriptors and retry with
+explicit values:
 
 ```sh
 atctl send AT --interface <N> --bulk-in <ENDPOINT> --bulk-out <ENDPOINT>
 ```
+
+For a diagnostic-only device, descriptor shape alone is not enough. Use
+explicit interface and endpoint values only after vendor documentation or an
+independently validated device configuration identifies them as the AT path.
 
 ## Interface Claim Failure
 

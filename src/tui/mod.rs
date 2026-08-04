@@ -1575,16 +1575,33 @@ fn select_highlighted_all_usb_device(state: &mut TuiState) {
         state.status_role = TuiStyleRole::Warning;
         set_response(
             state,
-            ResponseState::masked(format!(
-                "Diagnostic-only USB device\n{}\n{}:{} bus={} address={}\n\nThis item is visible through libusb but is not an atctl operation target.",
-                device_display_label(device),
-                hex_u16(device.vendor_id),
-                hex_u16(device.product_id),
-                device.bus,
-                device.address
-            )),
+            ResponseState::masked(diagnostic_only_device_response(device)),
         );
     }
+}
+
+fn diagnostic_only_device_response(device: &UsbDeviceInfo) -> String {
+    if device.class_code == 0x00 {
+        return format!(
+            "Known default-detection limitation\n\n{}\n{}:{} bus={} address={}\nDevice class: 00h\n\nAT support for this device is unconfirmed.\nDevice class 00h uses class information from Interface Descriptors; it does not by itself identify a modem or AT interface.\n\nDo not send AT unless vendor documentation or an independently validated device configuration identifies the AT interface and bulk endpoints.\n\nInspect descriptors:\natctl inspect --bus {} --address {}\n\nReview and redact the output before reporting it:\nhttps://github.com/uchimanajet7/atctl/issues",
+            device_display_label(device),
+            hex_u16(device.vendor_id),
+            hex_u16(device.product_id),
+            device.bus,
+            device.address,
+            device.bus,
+            device.address
+        );
+    }
+
+    format!(
+        "Diagnostic-only USB device\n{}\n{}:{} bus={} address={}\n\nThis item is visible through libusb but is not an atctl operation target.",
+        device_display_label(device),
+        hex_u16(device.vendor_id),
+        hex_u16(device.product_id),
+        device.bus,
+        device.address
+    )
 }
 
 fn toggle_device_view(state: &mut TuiState) {

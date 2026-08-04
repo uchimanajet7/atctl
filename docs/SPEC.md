@@ -675,6 +675,18 @@ REQ-USB-015: Observed endpoint evidence SHOULD include device identity, VID/PID,
 operating system, observation date, `atctl inspect` output, successful `AT`
 probe result, and selected interface/endpoint pair.
 
+REQ-USB-016: Visibility through a full-USB troubleshooting view, device class
+`00h`, Interface Descriptor class values, or the presence of a bulk IN / bulk
+OUT pair MUST be treated as descriptor evidence and MUST NOT be documented as
+proof of modem identity, AT support, or a safe AT interface. For a device that
+is outside the default operation-target filter, `--bus` and `--address` alone
+MUST NOT be documented as the ordinary AT execution recovery path. Documentation
+for `send`, `preset run`, `sequence run`, and PTY bridge MAY direct the operator
+to explicit `--interface`, `--bulk-in`, and `--bulk-out` overrides only when
+vendor documentation or an independently validated device configuration
+identifies the AT interface and endpoints. The existence of runtime selector
+support MUST NOT itself be used as AT-capability evidence.
+
 ## 14. AT Response Handling
 
 REQ-AT-001: The AT response parser MUST detect these final statuses:
@@ -972,13 +984,16 @@ REQ-CLI-DEV-006: The default operation-target filter MUST be documented with
 its descriptor basis and known limits. Device class filtering alone is not
 sufficient for universal modem discovery because USB-IF defines `00h` in a
 Device Descriptor as "use class code info from Interface Descriptors." If an
-expected target is hidden by the default filter, the supported workaround is to
-inspect all visible USB devices with `atctl devices --all-usb`, inspect the
-candidate's descriptors with
-`atctl inspect --bus <BUS> --address <ADDRESS>`, and then use explicit runtime
-selectors for the CLI or bridge path. Expanding default filtering to evaluate
-Interface Descriptor class codes is allowed only as a descriptor-based
-improvement, not as a product-name or known-device allow-list.
+expected target is hidden by the default filter, the supported diagnostic path
+is to inspect all visible USB devices with `atctl devices --all-usb`, inspect
+the candidate's descriptors with
+`atctl inspect --bus <BUS> --address <ADDRESS>`, review and redact that evidence,
+and report the unconfirmed device when needed. Class `00h`, Interface Descriptor
+class values, and bulk endpoint shape MUST NOT be documented as proof of AT
+support. An AT execution path MAY be documented only under the independently
+identified interface and endpoint condition in REQ-USB-016. Expanding default
+filtering to evaluate Interface Descriptor class codes is allowed only as a
+descriptor-based improvement, not as a product-name or known-device allow-list.
 
 Example:
 
@@ -2062,6 +2077,20 @@ normal selection flow when a suitable target is available. CLI commands such as
 `atctl devices --all-usb` and
 `atctl inspect --bus <BUS> --address <ADDRESS>` remain valid diagnostics outside
 the TUI.
+
+REQ-TUI-014A4: When the operator selects a diagnostic-only item whose
+device-level class is `00h`, the TUI MUST keep AT sending disabled and show the
+known default-detection limitation in Response. Response MUST state that AT
+support is unconfirmed, explain that class `00h` does not by itself identify a
+modem or AT interface, show the matching
+`atctl inspect --bus <BUS> --address <ADDRESS>` command, state the independent
+vendor-documentation or validated-configuration condition for AT interface and
+endpoint use, and direct the operator to review and redact output before using
+the normal GitHub Issues reporting path. Compact Status MUST remain limited to
+the current diagnostic-only and sending-disabled state. Selecting the item MUST
+NOT run an AT probe, enable a device-dependent action, or add a separate
+execution path. Non-`00h` diagnostic-only items and eligible operation targets
+MUST retain their existing list hierarchy and selection behavior.
 
 REQ-TUI-014B: If exactly one matching device is visible at TUI startup, the TUI
 SHOULD automatically select that device, show its selected-device detail
