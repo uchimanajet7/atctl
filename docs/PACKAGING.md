@@ -344,8 +344,14 @@ The repository-managed examples are included because current source and tests
 load them directly. Repository documentation under `docs/**` remains source
 repository documentation and is not included in the Cargo source package only
 because `README.md` links to it. README links to repository documentation should
-use GitHub URLs so the links remain useful when the README is rendered outside
-the source repository, such as on crates.io or docs.rs.
+remain repository-relative so they work on GitHub and in a source checkout.
+The current source release workflow does not publish the Cargo source package
+to a registry, so this contract does not claim that relative documentation
+links have been validated on crates.io or docs.rs crate pages. If Cargo registry
+publication is proposed later, every published README surface and its relative
+link behavior must be researched and approved as part of that separate change;
+do not change repository links or package additional documentation for a
+hypothetical publication target.
 
 Cargo package verification must include at least:
 
@@ -359,6 +365,7 @@ and lets Cargo extract and build it from a pristine package copy.
 
 References:
 
+- https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes
 - https://doc.rust-lang.org/cargo/reference/manifest.html
 - https://doc.rust-lang.org/cargo/commands/cargo-package.html
 - https://doc.rust-lang.org/cargo/reference/publishing.html

@@ -4893,8 +4893,12 @@ and `LICENSE`.
 REQ-PKG-036: Repository documentation under `docs/**` MUST remain source
 repository documentation and MUST NOT be included in the Cargo source package
 only because `README.md` references those documents. `README.md` links to
-repository documentation SHOULD remain usable when rendered outside the GitHub
-repository, such as on crates.io or docs.rs.
+repository documentation SHOULD remain repository-relative and usable on
+GitHub and in a source checkout. The current source release workflow does not
+publish the Cargo source package to a registry, and this contract MUST NOT claim
+crates.io or docs.rs README-link compatibility as validated. Any later
+registry-publication proposal MUST decide and verify its README-link strategy
+as part of that separate product change.
 
 REQ-PKG-037: The Cargo source package contract MUST NOT be used as evidence
 that the Homebrew source-build fallback or GitHub release-source archive
