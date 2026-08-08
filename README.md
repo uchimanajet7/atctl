@@ -108,7 +108,7 @@ input assistance, execution review, and workflow details.
 - [Safety guide](docs/SAFETY.md) — operator precautions and sensitive-data care
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — diagnosis, recovery, logs, and
   Response export
-- [Release history](CHANGELOG.md) — notable changes by released version
+- [Changelog](CHANGELOG.md) — notable changes by version
 
 ## Questions and reports
 

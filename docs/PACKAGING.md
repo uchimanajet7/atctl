@@ -162,8 +162,12 @@ Release notes:
 
 - The source repository release workflow extracts the matching released-version
   section from `CHANGELOG.md`.
+- Curate that section with the user-facing inclusion, exclusion, granularity,
+  migration, and release-review rules in
+  [DEVELOPMENT.md](DEVELOPMENT.md#changelog-entries).
 - The released-version section heading must include the package version and a
-  `YYYY-MM-DD` release date, for example `## 0.2.0 - YYYY-MM-DD`.
+  `YYYY-MM-DD` publication date, for example `## 0.2.0 - YYYY-MM-DD`. Use the
+  actual date on which the release is published.
 - The release workflow fails before tag or GitHub Release publication when the
   tag version does not match `Cargo.toml` or when `CHANGELOG.md` does not
   contain a non-empty section for that version.
@@ -174,8 +178,8 @@ Release notes:
 
 GitHub Web UI release operation:
 
-1. Decide the release version, update `Cargo.toml`, and add the matching dated
-   release section to `CHANGELOG.md`.
+1. Decide the release version, update `Cargo.toml`, and curate the matching
+   `CHANGELOG.md` section with the actual publication date.
 2. Confirm that those release changes are on `main`.
 3. Open the source repository on GitHub.
 4. Open **Actions**.

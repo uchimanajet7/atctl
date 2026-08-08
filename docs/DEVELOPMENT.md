@@ -198,6 +198,62 @@ There is no documentation word-count gate. Remove material when another file
 owns it; retain detail when it is necessary to specify, operate, or verify the
 product.
 
+### Changelog Entries
+
+`CHANGELOG.md` is the curated, user-facing history for released versions. Follow
+[Keep a Changelog 2.0.0](https://keepachangelog.com/en/2.0.0/): summarize
+notable effects for users and source builders instead of copying commits, pull
+requests, or the implementation history.
+
+Add or update an entry when a change has at least one of these effects:
+
+- adds a capability or action available to a user;
+- changes observable commands, defaults, paths, output, or interaction;
+- deprecates or removes behavior, requires migration, or breaks prior use;
+- fixes a user-visible defect or security issue; or
+- changes installation, supported platforms or runtimes, source-build
+  requirements, or release artifacts.
+
+Do not add an entry solely for an internal library or layout engine, parser or
+model contract, refactoring, tests, formatting, CI or workflow maintenance,
+tool pin, documentation synchronization, reference-version maintenance, or a
+dependency update with no user-visible effect. Describe the resulting user
+effect when an internal or dependency change does affect users; do not describe
+the maintenance mechanism.
+
+Use only the non-empty Keep a Changelog headings `Added`, `Changed`,
+`Deprecated`, `Removed`, `Fixed`, and `Security`. Use `Changed` for intentional
+behavior changes and `Fixed` when prior behavior was incorrect. Mark an
+incompatible item with `**Breaking:**` under `Changed` or `Removed`, state what
+stops working, and give the shortest sufficient migration. Link to an existing
+procedure when the migration needs more detail.
+
+Write one bullet for one user-observable result and its migration, not for one
+commit or file. Group changes that produce the same result across applicable
+surfaces; split items when users need different actions or migrations. There is
+no item-count or word-count target. A one- or two-sentence release summary is
+optional when it helps readers understand the release as a whole.
+
+During development, decide whether each completed change is a changelog
+candidate. An internal-only change needs no entry. Before release, compare the
+release tag diff with the draft section and review all applicable user-facing
+areas:
+
+- installation, release artifacts, supported platforms, and source builds;
+- `send`, `preset run`, `sequence run`, TUI, and PTY behavior;
+- options, defaults, configuration, and paths;
+- logging, Response export, raw diagnostic export, and masking;
+- execution review, confirmation, and security behavior;
+- Presets, Sequences, SMS, PDP, and TCP workflows; and
+- removals, migrations, and user-visible fixes.
+
+Use the actual publication date in the released-version heading. Do not
+silently revise an already released entry; follow the documentation change
+rules above when a correction is necessary. The release workflow checks only
+the matching version, date shape, and non-empty content. Relevance, grouping,
+wording, and completeness require this maintainer review and are not delegated
+to an automated commit or pull-request summary.
+
 ## File Preset Development
 
 Repository-managed file preset examples are part of the maintained

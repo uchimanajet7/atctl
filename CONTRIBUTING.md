@@ -55,7 +55,9 @@ The pull request description must include:
 - Tests and other checks that were run
 - Relevant checks that were not run and why
 - Documentation updates for changed behavior or workflows
-- A `CHANGELOG.md` update when the change is user-visible
+- A `CHANGELOG.md` update when the change is user-visible, following the
+  [changelog entry rules](docs/DEVELOPMENT.md#changelog-entries); internal-only
+  changes do not need an entry
 
 Add or update tests when behavior changes. Ensure documentation and
 repository-managed examples remain consistent with the implemented behavior.

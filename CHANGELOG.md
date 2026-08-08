@@ -1,111 +1,72 @@
 # Changelog
 
-All notable project changes should be recorded in this file.
+Notable changes to `atctl` are documented here for users and source builders.
 
-## 0.2.0 - 2026-08-01
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/).
+
+## 0.2.0 - 2026-08-08
+
+This release makes logging, Response export, execution review, and Sequence
+input more explicit, and removes persistent configuration in favor of runtime
+options and XDG state.
 
 ### Added
 
-- Added a repository-pinned Rust toolchain plus Dependabot, scheduled CI, local
-  drift checks, and update commands for Rust and fixed maintenance tools.
-- Added `--no-log` to direct send, preset execution, Sequence execution, and
-  TUI startup to suppress new masked history and session logs for one
-  invocation without disabling explicit raw diagnostic export.
-- Added release archives with a versioned top-level directory containing the
-  executable, the project MIT license, and generated third-party notices for
-  target-specific Rust dependencies and the dynamically linked `libusb`
-  dependency.
+- Added `--no-log` to `send`, `preset run`, `sequence run`, and TUI startup. It
+  suppresses new masked history and session logs for that invocation without
+  deleting existing logs or disabling an explicitly requested raw diagnostic
+  export.
 
 ### Changed
 
-- Updated the minimum supported Rust baseline from 1.96 to 1.97 and selected
-  Rust 1.97.1 for development, CI, and release builds to include the upstream
-  LLVM miscompilation fix.
-- Standardized generated history and session logs on the XDG state directory,
-  including `XDG_STATE_HOME` overrides and the `$HOME/.local/state` fallback.
-- Changed default masking to classify product-known phone/SMS fields and
-  definition-declared sensitive values by meaning and provenance rather than
-  length, while retaining short operational values and one consistent masked
-  artifact across normal output, JSON, TUI, PTY, history, and session logs.
-- Documented the complete masked-log lifecycle, including aggregate history,
-  per-execution session logs, manual retention and deletion, and separate raw
-  diagnostic exports.
-- Expanded the canonical raw diagnostic warning across CLI, Sequence, TUI, PTY,
-  raw JSONL headers, and safety/troubleshooting guidance to cover identifiers,
-  phone numbers and SMS messages, payloads, credentials and tokens, and
-  vendor-specific identifiers. The general raw-export example now uses signal
-  quality instead of IMSI.
-- Added state-aware TUI file actions: selected history and session logs can be
-  opened in Response or revealed directly in Finder, and opened logs keep copy,
-  reveal, and close actions.
+- Source builds now require Rust 1.97 or later.
+- Release archives now use a versioned top-level directory and include the
+  executable, the MIT license, and target-specific third-party notices.
+- Normal history and session logs can now be relocated only with
+  `XDG_STATE_HOME`; otherwise they remain under `~/.local/state/atctl`. The
+  former persistent `log_dir` setting is no longer used.
+- Sensitive-data handling is now more explicit. Default masking recognizes
+  product-known phone and SMS fields and definition-declared sensitive values
+  by meaning while preserving short operational values across normal output,
+  JSON, TUI, PTY, history, and session logs. Raw diagnostic export warnings now
+  identify the wider range of potentially sensitive data they can contain.
+- TUI log actions now open selected history and session logs in Response or
+  reveal them in Finder; an opened log can be copied, revealed, or closed.
 - Replaced fixed-directory Response snapshots with explicit Response export.
   The TUI asks for a destination folder on every export, and `send`,
   `preset run`, and `sequence run` accept `--export-response <PATH>` without
   changing normal stdout. Exports follow foreground masking and never overwrite
   an existing file.
-- Replaced scalar command-risk labels across CLI, TUI, presets, Sequences, PTY,
-  JSON, and logs with product-derived execution reviews that separate
-  assessment, effects, data handling, reversibility, consequences, and
-  confirmation. Unknown operations now require distinct explicit
-  authorization. The review distinguishes SMS read-status changes, Quectel
-  receive-buffer reads, counter queries, and prompt/payload sends; one-shot
-  surfaces reject prompt-required operations before USB access. Unmasked
-  Response copy and export continue to require action-specific confirmation
-  before clipboard or file output.
-- Reworked execution-review presentation around user decisions: human CLI and
-  TUI discovery rows now prioritize item identity and append the same
-  exception-only `[confirm]` action-flow tag, align it in a conditional fixed
-  trailing lane, and reclaim the lane when a result set has no confirmation
-  rows. TUI uses a dedicated accessible confirmation-flow color with a bold
-  no-color fallback, while human CLI output remains plain text;
-  known and unknown confirmations use consequence-oriented sections; Sequence
-  input, review, and warning phases use distinct focus/warning styling; and
-  modal controls now use `Esc` consistently for cancel, close, or back. Lowercase
-  `q` quits only from the idle base screen, remains ordinary text in visible
-  input fields, and has no hidden effect in non-editable modals or while an
-  operation is running.
-- Standardized executable discovery on stable one-row command and Sequence
-  shapes without repeated `AT:` or `Purpose:` delimiters, a read-only scrollable
-  `d Details` view, complete confirmation tags that survive selection and
-  constrained widths, actionable empty states, and safe resize fallback. TUI
-  candidate-acquisition actions use the same tag. Every Sequence
-  modal phase now pins the current value, candidate action, or confirmation
-  decision first, keeps complete name/purpose and supporting context in a lower
-  scrollable Details region, and leaves operation keys at the bottom.
-  Multi-value input keeps a right-aligned `Value <current> of <total>` position
-  through value and candidate-action phases, separates the active label from
-  that counter, and states the exact next `Enter` outcome without coupling
-  Details paging to value navigation. One `Enter` on a loaded candidate now
-  accepts it and continues to the next value or final review; provider
-  completion still returns to value selection without choosing a value.
-- Unified TUI text measurement, word-boundary wrapping, rendering, and
-  visual-row scrolling on Ratatui's layout engine across Help, Details,
-  Sequence phases, modals, Response, and opened logs. One-row navigation
-  surfaces now use display-width and grapheme-safe shortening, while opened-log
-  ranges and line numbers retain their original source-line identity.
-- Added pre-publication release checks for Apple Silicon architecture, archive
-  contents and permissions, checksums, dependency notices, and dynamic linkage
-  to Homebrew `libusb`.
-- Replaced the out-of-scope Quectel short-range manual and third-party
-  historical TCP/IP manual references with the official EG25-G product page,
-  fixed reviewed EC2x/EG2x/EG9x/EM05 AT Manual V2.2 and TCP(IP) Application
-  Note V1.6 editions, and explicit 3GPP TS 27.007 V19.6.0 / TS 27.005 V19.0.0
-  reference versions.
-- Made Sequence `QISEND` and `QIRD` analysis depend on the originating command
-  and step contract. TCP acknowledgement analysis now requires a validated
-  `AT+QISEND=<connectID>,0` step with `require_tcp_ack = true`; QIRD receive
-  counters, normal reads, and UDP SERVICE response headers are no longer
-  inferred from the same context-free field count, and buffered response data
-  remains masked.
+- Execution confirmation now uses a structured review across CLI, TUI, Presets,
+  Sequences, PTY, JSON, and logs. It explains effects, handled data,
+  reversibility, and possible consequences; unknown operations require
+  additional explicit authorization. Copying or exporting unmasked Response
+  content requires confirmation for that action.
+- TUI command and Sequence lists, details, input, and confirmation flows now use
+  clearer confirmation indicators, consistent `Esc` and `q` behavior,
+  scrollable and wrapped content, resize-safe layouts, and actionable empty
+  states.
+- Sequence input now shows each value with its source, default, and hint in the
+  TUI and interactive CLI. Candidate-backed `sms-message` and `pdp-context`
+  values can be obtained and selected without leaving the input flow; opening
+  the flow performs no hidden modem I/O, and non-interactive errors show the
+  exact retry parameters.
 
 ### Removed
 
-- Removed the per-user `config.toml` contract and persistent USB/log defaults;
-  USB overrides are explicit runtime options and log relocation uses
-  `XDG_STATE_HOME`.
+- Removed per-user `config.toml` support and its persistent device, profile, UI,
+  and log settings. Supply device and operation options when invoking `atctl`,
+  and use `XDG_STATE_HOME` to relocate normal logs.
 - Removed the ineffective `preset run --continue-on-error` option. Preset
   execution accepts one preset name and runs one AT command; named multi-step
   workflows use `sequence run`.
+
+### Fixed
+
+- Corrected Quectel TCP and UDP result interpretation. TCP acknowledgement is
+  reported only for an explicit zero-length `QISEND` counter query; `QIRD`
+  counters, normal reads, and UDP response headers are distinguished, and
+  returned buffered data remains masked.
 
 ## 0.1.0 - 2026-07-05
 

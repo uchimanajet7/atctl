@@ -112,7 +112,7 @@ Sequence定義は、実行前に確認してください。
 - [安全ガイド](docs/SAFETY.md) — 利用者向け注意事項と機微データの扱い
 - [トラブルシューティング](docs/TROUBLESHOOTING.md) — 診断、復旧、ログ、
   Response export
-- [リリース履歴](CHANGELOG.md) — リリースごとの主な変更
+- [変更履歴](CHANGELOG.md) — バージョンごとの主な変更
 
 ## 質問・報告
 
