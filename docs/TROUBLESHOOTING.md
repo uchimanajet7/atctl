@@ -1,15 +1,13 @@
 # Troubleshooting
 
-This guide owns symptom-to-diagnosis-to-recovery procedures, operator result
-checks, and normal diagnostic-artifact handling for `atctl`. Required product
-error, timeout, masking, logging, and export behavior remains normative in
-[SPEC.md](SPEC.md).
+Use this guide to diagnose an `atctl` or modem symptom, check the result of each
+step, recover where possible, and review or dispose of diagnostic artifacts.
+Start with the section that matches the observed symptom.
 
 For preset and Sequence inventories, definition formats, and loading, see
 [Presets and Sequences Reference](PRESETS.md). For operator precautions around
 review, confirmation, masking, logging, and raw diagnostics, see the
-[Safety Guide](SAFETY.md); the required cross-surface behavior remains in
-[SPEC.md](SPEC.md).
+[Safety Guide](SAFETY.md).
 
 ## USB Modem Is Not Visible in the USB Tree
 
@@ -691,9 +689,7 @@ identifiers.
 
 See [Default Masking](SAFETY.md#default-masking) for operator guidance about
 classification, short values, saved output, and unknown vendor output. The
-commands below are the task-oriented paths for deliberately unmasked display or
-raw diagnostic evidence; normative masking behavior remains in
-[SPEC.md](SPEC.md).
+commands below deliberately request unmasked display or raw diagnostic evidence.
 
 Unmasked IMSI display requires explicit action and should be used only when the
 diagnostic case specifically requires confirming the IMSI:

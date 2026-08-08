@@ -1,9 +1,8 @@
 # Installation
 
-This guide owns the end-user install, update, removal, and first-run procedure.
-The supported platform and required packaging outcomes are normative in
-[SPEC.md](SPEC.md) sections 7, 8, and 22; maintainer release operations belong
-in [PACKAGING.md](PACKAGING.md).
+Use this guide to install, update, remove, and run `atctl` for the first time in
+the validated environment below. Start with the normal Homebrew flow; use the
+manual archive and `libusb` sections only when those paths are needed.
 
 ## Validated Environment
 
@@ -48,14 +47,12 @@ References:
 - https://docs.brew.sh/Taps
 - https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap
 
-The Homebrew formula must declare `libusb` as a dependency. Homebrew should
-therefore install `libusb` automatically for end users.
+Homebrew installs `libusb` automatically as an `atctl` runtime dependency.
 
 Homebrew may use a bottle or fall back to a source build. `libusb` remains a
 runtime dependency; Rust and `pkgconf` are build dependencies only when a
-source build is needed. Maintainers should use the
-[Homebrew verification runbook](PACKAGING.md#homebrew-formula-and-bottle-verification)
-for the complete Formula and bottle checks.
+source build is needed. If Homebrew reports a `libusb` dependency problem, use
+the [manual libusb fallback](#manual-libusb-fallback).
 
 GitHub Releases archives are release artifacts and manual artifacts. They are
 not the normal end-user install path.

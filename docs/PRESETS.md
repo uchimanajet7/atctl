@@ -1,10 +1,9 @@
 # Presets and Sequences Reference
 
-This is the user reference for preset and Sequence usage, current inventory,
-TOML authoring fields, explicit loading, and repository-managed examples. The
-normative loader, execution, review, masking, logging, and output contracts are
-in [SPEC.md](SPEC.md); this reference projects those contracts into operator
-tasks and examples.
+Use this reference to find, inspect, load, and run presets and Sequences, or to
+write their TOML definitions. Start with [Product Presets](#product-presets) for
+one-command checks and [Sequence Workflows](#sequence-workflows) for multi-step
+SMS and data-send operations.
 
 For operator guidance on cross-surface review, confirmation, masking, and raw
 diagnostics, see the [Safety Guide](SAFETY.md). For task-oriented diagnosis and
@@ -51,10 +50,8 @@ Details before execution.
 
 ## Product Presets
 
-This table is the user-facing projection of the canonical built-in name,
-command, order, and confirmation contract in
-[SPEC.md section 17.4](SPEC.md#174-standard-workflow-core-presets). Update both
-surfaces and the implementation together when that inventory changes.
+This table lists the built-in preset names and commands in their display order
+and shows whether each operation requires confirmation before USB access.
 
 Product presets are displayed in a curated workflow order, not alphabetical
 order. The order follows connection check, modem identity, SIM, radio access
@@ -204,8 +201,7 @@ Human-readable `atctl preset list` identifies each name and AT command, appends
 definitions by title and path. `atctl preset show <NAME>` displays the complete
 definition and review without USB access. Use `--json` with `list` or `show`
 for structured records. `atctl preset run` identifies an external source before
-USB access, including non-interactive authorized runs. Exact list and Details
-presentation remains specified in [SPEC.md](SPEC.md).
+USB access, including non-interactive authorized runs.
 
 Both explicit options are repeatable. Explicit files are loaded in command-line
 order. Explicit directories are loaded in command-line order, and `.toml` files
@@ -278,8 +274,6 @@ the current values, use any explicit candidate action, review the final values
 and consequences, and then confirm execution when required. The modal states
 the active value and next action; `PageUp` and `PageDown` scroll a long review.
 Loading or opening a definition does not run it or perform hidden modem I/O.
-Exact row, Details, modal, footer, reflow, and accessibility behavior remains
-normative in [SPEC.md](SPEC.md).
 
 Sequence add-ons are external executable definitions. To use repository-managed
 examples or project-local definitions, provide their locations for the current
@@ -436,8 +430,8 @@ Interactive `atctl sequence run` offers the same manual-entry and provider
 choices when a candidate-backed value is missing. Non-interactive and JSON
 invocations do not prompt or run providers; they report the provider kind/name
 and the exact `--param` retry. Direct `send`, `preset run`, and PTY bridge do
-not own Sequence parameter resolution, so they run only the command, Preset, or
-PTY traffic explicitly requested by the operator.
+not resolve Sequence parameters; they run only the command, Preset, or PTY
+traffic explicitly requested by the operator.
 
 Repository-managed and project-local Sequences can use a named `candidate`
 when `atctl` supports that candidate type. The currently supported names are

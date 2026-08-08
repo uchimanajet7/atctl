@@ -1,10 +1,11 @@
 # Safety Guide
 
-AT commands can read sensitive identifiers and change modem state. This guide
-owns operator precautions and the warnings needed at the point of action. The
-normative review, confirmation, masking, logging, and raw-export behavior is in
-[SPEC.md](SPEC.md); this guide explains how to use that behavior safely rather
-than defining a second product contract.
+AT commands can read sensitive identifiers and change modem state. Use this
+guide to review an operation before USB access, confirm material or unknown
+effects, protect sensitive output, and manage logs and raw diagnostic exports.
+For an unfamiliar or state-changing operation, complete
+[Execution Review](#execution-review) and [Before USB Access](#before-usb-access)
+before sending it.
 
 For preset and Sequence inventories, definition formats, loading, and execution
 semantics, see [Presets and Sequences Reference](PRESETS.md). For diagnostic,
@@ -58,15 +59,15 @@ consequences before the operator chooses whether to proceed.
   operations rather than the unresolved list-row review. Values produced only
   by an earlier modem response remain identified as runtime-derived and each
   actual command is checked again at the write boundary.
-- The safety model applies across production AT execution surfaces. TUI, CLI
-  `send`, CLI `preset run`, CLI `sequence run`, and PTY bridge may present
-  different prompts or controls, but they must not weaken or silently omit
-  required review, confirmation, masking, or raw diagnostic export
-  behavior.
+- TUI, CLI `send`, CLI `preset run`, CLI `sequence run`, and PTY bridge present
+  review and confirmation through controls suited to each surface. Expect the
+  same required review, confirmation, masking, and raw diagnostic export
+  protections on every surface. If a required protection is missing, stop
+  before execution and report the affected surface and operation.
 
 ## APN Commands
 
-APN-changing commands may exist as presets or templates, but must never run
+Select and confirm APN-changing commands explicitly. `atctl` does not run them
 automatically.
 
 Example:
@@ -84,11 +85,11 @@ command reaches USB.
 
 PDP authentication commands require the same treatment. `AT+CGAUTH?` is a
 read-style diagnostic, but its response can include APN authentication
-usernames and passwords, so it is sensitive and must be masked by default.
+usernames and passwords, so `atctl` masks that sensitive output by default.
 `AT+CGAUTH=...` changes stored PDP authentication settings and requires
 confirmation.
-If the command string itself includes a username or password, saved command
-history and session logs must mask those credential fields.
+If the command string itself includes a username or password, `atctl` masks
+those credential fields in saved command history and session logs.
 
 ## Connectivity Diagnostic Runtime Changes
 
@@ -107,9 +108,9 @@ AT+CEREG=5
 
 These commands have a known runtime-state effect and require confirmation before
 USB access. They may change operator selection mode or registration reporting
-mode. They are acceptable as explicit presets because they help a human inspect
-operator identity, cell location, and registration rejection details, but they
-must not be treated as automatic diagnostics.
+mode. Run them only as explicitly selected presets when inspecting operator
+identity, cell location, or registration rejection details; they are not
+automatic diagnostics.
 
 ## SMS Safety
 
@@ -122,15 +123,14 @@ AT+CMGF?
 AT+CPMS?
 ```
 
-SMS sending and other commands that require a prompt, message body, Ctrl-Z, or
-similar multi-step interaction must not be treated as ordinary one-shot
-commands. They must run through Sequence handling or through the PTY bridge's
-prompt-capable manual path.
+For SMS sending and other commands that require a prompt, message body, Ctrl-Z,
+or similar multi-step interaction, use a Sequence or the PTY bridge's
+prompt-capable manual path instead of an ordinary one-shot command.
 One-shot CLI `send`, `preset run`, and TUI AT-command input reject these
 operations before USB access. The PTY bridge supports the reviewed SMS
 command/payload/Ctrl-Z path; prompt framing it does not support, such as
-fixed-length Quectel `AT+QISEND`, is also rejected before USB access and must use
-a Sequence.
+fixed-length Quectel `AT+QISEND`, is also rejected before USB access. Use a
+Sequence for those operations.
 
 Standard SMS workflows are product-provided actions. Operators do not need to
 author workflow definitions before using standard SMS checks. User-authored
@@ -142,42 +142,41 @@ masking, logging, and raw-export protections. See
 details and [Sequence Add-on Files](#sequence-add-on-files) for the external
 definition safety checklist.
 
-SMS send Sequences must treat the recipient and message body as sensitive. SMS
-reply Sequences must treat the extracted sender and reply body as sensitive.
-The TUI and CLI confirmation path must show active input/review values before
-USB access so the operator can confirm what will be sent. This active input and
-pre-send review display is the intentional exception to normal masking;
-Response output, saved output, session logs, history, and JSON output remain
-masked by default. `+CMGS` followed by `OK` is evidence that the SMS submit
-operation was accepted by the modem/network path; it must not be documented as
-proof that the destination handset displayed the message.
+Treat SMS recipients, extracted senders, message bodies, and reply bodies as
+sensitive. Before USB access, check the active input and review values shown by
+the TUI or CLI confirmation so you can confirm what will be sent. This active
+input and pre-send review display is the intentional exception to normal
+masking; Response output, saved output, session logs, history, and JSON output
+remain masked by default. `+CMGS` followed by `OK` is evidence that the SMS submit
+operation was accepted by the modem/network path. Do not treat it as proof that
+the destination handset displayed the message.
 
-SMS receive Sequences must treat sender numbers and message bodies as
-sensitive. If a receive/list/read operation changes message status, notification
-routing, storage selection, or unread/read flags, the Sequence must be
-confirmation-required and must not silently delete messages. `REC READ` and
+Treat sender numbers and received message bodies as sensitive. If a
+receive/list/read operation changes message status, notification routing,
+storage selection, or unread/read flags, `atctl` requires confirmation and does
+not silently delete messages. `REC READ` and
 `REC UNREAD` values from commands such as `AT+CMGL` are modem message status
 values, not product actions. A Sequence that reads a specific SMS with
 `AT+CMGR=<index>` requires confirmation because the modem may mark an unread
 message as read. `AT+CMGL` also changes listed received-unread messages to
 received-read according to 3GPP TS 27.005 and therefore uses the same
-state-change confirmation. Supported SMS bodies must be decoded before masking; normal
-output must hide decoded body values by default. Unmasked foreground display
+state-change confirmation. `atctl` decodes supported SMS bodies before masking
+and hides decoded body values in normal output by default. Unmasked foreground display
 may show decoded SMS body values when the user explicitly requests it. Raw
 diagnostic export remains a separate acknowledged raw modem exchange and may
 contain modem-returned encoded body bytes.
-The SMS storage index used by read and reply Sequences must be presented as a
-value obtained from modem SMS listing output, such as `+CMGL`, rather than as an
-unexplained integer. The value must be used exactly as returned by the modem;
-atctl must not assume or adjust whether a modem starts SMS storage numbering
-from 0 or 1. TUI candidate rows should label this as `storage=<index>` so it is
-not confused with candidate-row pagination.
+For read and reply Sequences, choose the SMS storage index from modem SMS
+listing output such as `+CMGL` instead of guessing an integer. `atctl` uses the
+value exactly as returned by the modem without assuming or adjusting whether
+storage numbering starts from 0 or 1. TUI candidate rows display the value as
+`storage=<index>` so it is not confused with candidate-row pagination.
 
 SMS reply-by-index is not a fresh recipient-supplied send. It reads the
 original SMS storage index, derives the reply destination from the returned
 sender, and then performs a standard `AT+CMGS` submit to that sender. Full
-3GPP reply-path behavior must not be claimed unless the product explicitly
-implements the required reply-path fields and routing behavior.
+3GPP reply-path behavior is not established unless the required reply-path
+fields and routing behavior are explicitly available. Do not interpret this
+workflow as proof of full 3GPP reply-path handling.
 
 ## Data-Send Sequences
 
@@ -186,8 +185,8 @@ connection details. External TCP socket checks use vendor-specific Sequence
 definitions because the product's standard one-shot commands do not provide a
 portable TCP send operation.
 
-Vendor-specific socket Sequences, such as Quectel TCP/IP checks, must be
-explicit about what was verified:
+When reviewing vendor-specific socket Sequences such as Quectel TCP/IP checks,
+distinguish the following result levels:
 
 - socket open evidence such as `+QIOPEN: <id>,0`;
 - module accepted payload evidence such as `SEND OK`;
@@ -196,43 +195,40 @@ explicit about what was verified:
 - end-to-end application evidence such as non-empty `QIRD` response data or
   remote endpoint logs.
 
-The Sequence must not treat `OK` after a vendor socket-open command as complete
-network success when the vendor command reports final socket status through a
-later URC. `SEND OK` must not be described as remote application receipt.
-For fixed-length TCP payload entry, repository-managed TCP examples must send
-only the declared payload bytes and must not append SMS-style Ctrl-Z. They also
-must not treat `+QISEND:` counters with remaining unacknowledged payload bytes
-as a successful send condition. Repository-managed ping examples use
-`AT+QPING`, must wait for `+QPING:` result lines, and must not treat terminal
-`OK` alone as successful reachability when no successful `+QPING:` reply or
-summary is parsed.
-TCP Sequence inputs must distinguish user-entered payload/destination values
+Do not treat `OK` after a vendor socket-open command as complete network success
+when the vendor command reports final socket status through a later URC.
+`SEND OK` is not remote application receipt. For fixed-length TCP payload entry,
+repository-managed TCP examples send only the declared payload bytes without
+SMS-style Ctrl-Z and reject success while `+QISEND:` reports unacknowledged
+payload bytes. Repository-managed ping examples use `AT+QPING`, wait for
+`+QPING:` result lines, and do not treat terminal `OK` alone as successful
+reachability when no successful `+QPING:` reply or summary is parsed.
+In TCP Sequence inputs, distinguish user-entered payload/destination values
 from modem-dependent values such as PDP context ID and socket connect ID. When
-defaults are provided for modem-dependent values, add-on Sequence definitions
-should use product-known candidate assistance only for standard values the
-product can parse generically, such as PDP contexts from `AT+CGACT?` and
-`AT+CGDCONT?`. Vendor-specific checks such as Quectel socket state must remain
-explicit add-on commands or Sequences. Candidate acquisition must reference the
-existing Preset or Sequence that owns the operation; it must not copy an AT
-command into a second candidate-only definition. Selecting a provider must use
-that item's normal execution path and must not bypass execution review,
-confirmation, masking, timeout, Response transcript, logging, or raw diagnostic
-export behavior. Candidate actions remain explicit refresh/load actions even
-after same-session candidates are visible; opening a modal or encountering a
-missing non-interactive CLI value must not perform hidden modem I/O to make
-candidates look current.
-During confirmed Quectel TCP/IP Sequence execution, PDP context activation must
-be state-aware: check `AT+QIACT?`, reuse the selected context when it is already
-active, and send `AT+QIACT=<contextID>` only when activation is needed. If a
-Sequence opens a product-managed socket and later fails, configured cleanup such
-as `AT+QICLOSE=<connectID>` must be visible in the Response transcript and must
-not hide the original failed step reason.
-Only an `AT+QISEND=<id>,0` step with `require_tcp_ack = true` may present its
-three fields as TCP total/acknowledged/unacknowledged byte evidence. The same
-response shape has UDP total/sent/unsent semantics, so an undeclared context
-must remain modem response output rather than guessed TCP analysis. These
-counters are not application processing proof. For a normal QIRD read,
-`+QIRD: 0` means no buffered receive data and must not be presented as response
+defaults are provided for modem-dependent values, use product-known candidate
+assistance only for standard values that `atctl` can parse generically, such as
+PDP contexts from `AT+CGACT?` and `AT+CGDCONT?`. Keep vendor-specific checks
+such as Quectel socket state as explicit add-on commands or Sequences. When
+authoring candidate assistance,
+reference the existing Preset or Sequence for the operation instead of copying
+an AT command into a second candidate-only definition. Selecting a provider
+uses that item's normal execution review, confirmation, timeout, masking,
+Response transcript, logging, and raw diagnostic export behavior. Candidate
+actions remain explicit refresh/load actions even after same-session candidates
+are visible; opening a modal or encountering a missing non-interactive CLI value
+does not perform hidden modem I/O to make candidates look current.
+During confirmed Quectel TCP/IP Sequence execution, `atctl` checks `AT+QIACT?`,
+reuses the selected PDP context when it is already active, and sends
+`AT+QIACT=<contextID>` only when activation is needed. If a Sequence opens a
+product-managed socket and later fails, the Response transcript shows configured
+cleanup such as `AT+QICLOSE=<connectID>` without hiding the original failed step
+reason.
+Treat the three fields from `AT+QISEND=<id>,0` as TCP
+total/acknowledged/unacknowledged byte evidence only when the step declares
+`require_tcp_ack = true`. The same response shape has UDP total/sent/unsent
+semantics, so without that explicit context it remains modem response output
+rather than TCP analysis. These counters are not application processing proof.
+For a normal QIRD read, `+QIRD: 0` means no buffered receive data, not response
 evidence. For `AT+QIRD=<connectID>,0`, three numeric fields are receive
 counters and do not mean that payload data was returned.
 Direct `AT+QIRD=<connectID>,<read_length>` data retrieval requires confirmation
@@ -243,9 +239,9 @@ retrieve buffered payload data and remain known observations.
 send length starts a prompt/payload send and belongs in a Sequence so the
 payload and its framing are reviewed before the first USB write.
 
-Provider-specific Sequences must remain distinct from generic vendor examples
-and must not overstate reachability, forwarding, message-boundary, or remote
-application evidence. See
+Keep provider-specific Sequences distinct from generic vendor examples, and do
+not overstate reachability, forwarding, message-boundary, or remote application
+evidence. See
 [Repository Example Sequences](PRESETS.md#repository-example-sequences) for the
 endpoint-specific reference and
 [SMS and Data-Send Sequence Checks](TROUBLESHOOTING.md#sms-and-data-send-sequence-checks)
@@ -302,8 +298,8 @@ for the recovery procedure.
 
 ## User Preset Files
 
-File presets and repository-managed file preset examples must follow the same
-safety model:
+Apply the same safety checks to file presets and repository-managed file preset
+examples:
 
 - File preset locations are provided for each invocation through
   `--preset-file` or `--preset-dir`.
@@ -353,7 +349,7 @@ Direct arbitrary commands such as:
 atctl send 'AT+CGDCONT=1,"IP","soracom.io"'
 ```
 
-must be reviewed before execution.
+Review the command before execution.
 
 Read/test commands:
 
@@ -395,7 +391,8 @@ specific effect that atctl cannot establish.
 ## PTY Bridge Policy
 
 `atctl bridge --symlink <PATH>` is a compatibility interface for terminal tools
-such as `screen` and `cu`. It must not become a safety bypass.
+such as `screen` and `cu`. It applies the same execution review, confirmation,
+masking, and raw diagnostic export protections; do not use it to bypass them.
 
 - Known observations may run from the PTY without confirmation; sensitive output
   remains masked by default.
@@ -414,7 +411,7 @@ The PTY bridge is interactive and does not use `send`'s `--yes` or
 
 ## Default Masking
 
-The following must be masked by default:
+By default, `atctl` masks:
 
 - IMSI
 - ICCID
@@ -453,12 +450,11 @@ reclassify the text without its original execution context.
 
 Raw display output requires `--no-mask`. Raw diagnostic export requires an
 explicit user-selected destination and acknowledgement, such as
-`--raw-log-file <PATH> --raw-log-ack raw-log`, and must not be enabled by
-default.
+`--raw-log-file <PATH> --raw-log-ack raw-log`, and is off by default.
 
 CLI direct-send, preset, and Sequence raw preflight, PTY bridge raw preflight,
 the TUI raw-capture acknowledgement modal, and every raw JSONL header use this
-canonical warning:
+same warning:
 
 ```text
 This raw diagnostic export records transmitted and received modem bytes without masking. It may contain sensitive modem and subscriber identifiers; network data; APN or PDP authentication data; phone numbers and SMS messages; arbitrary transmitted or received payloads; credentials and tokens; and vendor-specific identifiers.
@@ -477,8 +473,8 @@ starts.
 
 ## Logging
 
-Normal history and session logs must use masked output. If a command contains a
-credential or another known sensitive field, that field must also be masked in
+Normal history and session logs use masked output. If a command contains a
+credential or another known sensitive field, `atctl` also masks that field in
 the saved command material. Generated history and session logs remain masked
 even when the foreground Response and an explicitly requested Response export
 are unmasked.

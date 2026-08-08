@@ -139,10 +139,6 @@ before opening a pull request.
 - [Product and technical specification](docs/SPEC.md)
 - [Accepted product and architecture decisions](docs/DECISIONS.md)
 
-The specification is the normative product contract. The other documents own
-their procedures or decision rationale and link back to it instead of defining
-parallel requirements.
-
 ## License
 
 MIT. See [LICENSE](LICENSE).
