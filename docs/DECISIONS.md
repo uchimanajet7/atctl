@@ -2,14 +2,18 @@
 
 This document records accepted decisions that explain why `atctl`'s current
 product, safety, UI, transport, and distribution contracts take their present
-form. Normative requirements remain in [SPEC.md](SPEC.md) and the topic-specific
-user and maintainer documents. This file is not an open-question list,
-implementation plan, approval log, or progress tracker.
+form. [SPEC.md](SPEC.md) is the sole normative owner for product and system
+requirements. User and maintainer guides own procedures and reference material;
+they do not create a parallel product contract. This file is not a
+specification, open-question list, implementation plan, approval log, or
+progress tracker.
 
 Existing `OQ-*` identifiers are retained as stable decision identifiers. Each
 record has status `accepted`. A later decision that changes an accepted choice
 must identify the record it supersedes; accepted rationale must not be silently
-rewritten or removed.
+rewritten or removed. Exact behavior belongs in the specification, so a record
+should retain only the context, alternatives, decision, rationale,
+consequences, status, and supersession needed to understand the choice.
 
 ## OQ-001: GitHub Owner
 
@@ -21,7 +25,7 @@ repository URL is `https://github.com/uchimanajet7/atctl`.
 Rationale and consequences: One repository identity is used by package
 metadata, documentation, release URLs, and Homebrew metadata.
 
-Normative owner: [Cargo.toml](../Cargo.toml) and [SPEC.md](SPEC.md) project
+Contract and guidance: [Cargo.toml](../Cargo.toml) and [SPEC.md](SPEC.md) project
 metadata.
 
 ## OQ-002: License
@@ -35,7 +39,7 @@ sublicensing, sale, and closed-source reuse when the notice is preserved; it
 does not require downstream source disclosure. A future need for reciprocity or
 explicit patent terms requires a new license decision.
 
-Normative owner: [LICENSE](../LICENSE), [Cargo.toml](../Cargo.toml), and the
+Contract and guidance: [LICENSE](../LICENSE), [Cargo.toml](../Cargo.toml), and the
 [SPEC.md](SPEC.md) license contract.
 
 ## OQ-003: Homebrew Tap
@@ -50,7 +54,7 @@ Rationale and consequences: Homebrew maps `<user>/<tap>` to the
 `homebrew-<tap>` repository. Source code and tap metadata remain separate
 repository responsibilities.
 
-Normative owner: [INSTALL.md](INSTALL.md), [PACKAGING.md](PACKAGING.md), and the
+Contract and guidance: [INSTALL.md](INSTALL.md), [PACKAGING.md](PACKAGING.md), and the
 [SPEC.md](SPEC.md) packaging contract.
 
 ## OQ-004: AT Execution Review and Confirmation Policy
@@ -71,7 +75,7 @@ and consequence are different dimensions and must not be compressed into one
 ordered label. Unknown means the product cannot establish complete semantics;
 it is not a promise that every harmful unknown command can be identified.
 
-Normative owner: [SPEC.md](SPEC.md) execution-review requirements and
+Contract and guidance: [SPEC.md](SPEC.md) execution-review requirements and
 [SAFETY.md](SAFETY.md).
 
 ## OQ-005: Source Repository Release Artifacts
@@ -99,7 +103,7 @@ release. Draft-first asset upload prevents an incomplete public release.
 Separating source artifacts from Homebrew publication prevents one release
 action from silently changing another repository or distribution channel.
 
-Normative owner: the source release workflow, [CHANGELOG.md](../CHANGELOG.md),
+Contract and guidance: the source release workflow, [CHANGELOG.md](../CHANGELOG.md),
 [PACKAGING.md](PACKAGING.md), and the [SPEC.md](SPEC.md) packaging contract.
 
 ## OQ-006: Source Repository Release Asset Naming
@@ -113,7 +117,7 @@ Rationale and consequences: The target triple makes the platform explicit.
 This is a project naming decision consistent with common Rust CLI practice, not
 a formal GitHub or Rust filename standard.
 
-Normative owner: [SPEC.md](SPEC.md) `REQ-PKG-016` and `REQ-PKG-017`, and
+Contract and guidance: [SPEC.md](SPEC.md) `REQ-PKG-016` and `REQ-PKG-017`, and
 [PACKAGING.md](PACKAGING.md).
 
 ## OQ-007: Source Repository Checksum Content and Provenance
@@ -128,7 +132,7 @@ Rationale and consequences: The initial release contract stays explicit and
 verifiable without promising additional supply-chain artifacts whose generation
 and verification lifecycle has not been defined.
 
-Normative owner: the source release workflow, [SPEC.md](SPEC.md)
+Contract and guidance: the source release workflow, [SPEC.md](SPEC.md)
 `REQ-PKG-018` through `REQ-PKG-020`, and [PACKAGING.md](PACKAGING.md).
 
 ## OQ-008: Homebrew Distribution Strategy
@@ -144,7 +148,7 @@ Rationale and consequences: This preserves one install command while avoiding
 an unnecessary Rust build when a matching bottle exists and retaining a
 maintainable source verification path.
 
-Normative owner: [INSTALL.md](INSTALL.md), [PACKAGING.md](PACKAGING.md), and the
+Contract and guidance: [INSTALL.md](INSTALL.md), [PACKAGING.md](PACKAGING.md), and the
 [SPEC.md](SPEC.md) Homebrew requirements.
 
 ## OQ-009: Signing and Notarization
@@ -158,7 +162,7 @@ before direct downloads become a normal installation path.
 Rationale and consequences: Promoting direct downloads changes Gatekeeper,
 quarantine, credential, secret-management, and user-experience requirements.
 
-Normative owner: [INSTALL.md](INSTALL.md), [PACKAGING.md](PACKAGING.md), and
+Contract and guidance: [INSTALL.md](INSTALL.md), [PACKAGING.md](PACKAGING.md), and
 [SPEC.md](SPEC.md) `REQ-PKG-029` through `REQ-PKG-031`.
 
 ## OQ-010: PTY Bridge Implementation Approach
@@ -173,7 +177,7 @@ Rationale and consequences: The abstraction avoids coupling unrelated
 transport, masking, logging, and safety behavior to one OS implementation
 without promising Linux support.
 
-Normative owner: [Cargo.toml](../Cargo.toml) and the [SPEC.md](SPEC.md) bridge
+Contract and guidance: [Cargo.toml](../Cargo.toml) and the [SPEC.md](SPEC.md) bridge
 requirements.
 
 ## OQ-011: Exact Onyx / EG25-G Endpoint Mapping
@@ -188,180 +192,73 @@ Rationale and consequences: Endpoint values can vary by configuration,
 alternate setting, firmware, host, and environment. Observed values are
 evidence, not universal requirements.
 
-Normative owner: [SPEC.md](SPEC.md) USB requirements and
+Contract and guidance: [SPEC.md](SPEC.md) USB requirements and
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## OQ-012: Cross-Surface Execution Review Presentation
 
 Status: accepted
 
-Decision: Human executable discovery uses one confirmation grammar across
-`atctl preset list`, `atctl sequence list`, TUI `Commands / Sequences`, and TUI
-candidate-acquisition actions. A command row uses `name command`; a Sequence row
-uses `name purpose-preview`. A row appends the ASCII action-flow tag `[confirm]`
-only when execution requires explicit confirmation. The tag is not a warning,
-risk score, or effects classification, and normal rows omit it. The complete
-tag is preserved before a name or preview is shortened. When a result set has
-at least one tagged row, human CLI lists, TUI `Commands / Sequences`, and TUI
-candidate-action sets reserve one separator cell plus the complete tag as a
-fixed trailing lane for every row. Untagged rows leave the lane blank; a result
-set with no tagged row reclaims the lane. Command or purpose detail is shortened
-before the name, and the tag is never split. TUI selection keeps the same row
-height. CLI `show` and TUI `d Details` are read-only full-review
-surfaces and perform no device I/O. They present the structured execution review
-once instead of adding separate confirmation or risk summary rows. Human
-`show` and TUI Details use the same semantic section order: Overview,
-Definition, Before running, Inputs, and Execution; empty sections are omitted.
-The TUI Details title identifies the current section and visible range. A
-required confirmation surface leads with consequence-oriented groups and the
-exact confirmation word. Known and unknown reviews use different headings so
-unknown effects cannot look complete.
-Unknown reviews state `Effects are not fully known.` without an ambiguous
-standalone icon. Compact Status remains limited to current state and execution
-context and does not duplicate selection-time review content.
-Sequence value input is focused on the selected Sequence's active value,
-directly relevant assistance, candidates, errors, and exact next action; it does
-not embed a second complete-definition view. Candidate-action and final
-Sequence reviews use an explicit scrollable Review region with a visually
-separated, pinned execution instruction and current confirmation input.
-Final Sequence review includes all resolved values, applicable before-running
-notes, operation summary, and execution consequences.
-For a Sequence with multiple parameters, value input and candidate-action
-confirmation keep `Value <current> of <total>` in a fixed right-aligned
-modal-border title opposite the current phase. The body leads with the active
-parameter label and value, without a second counter or generic `Current value:`
-heading. The operation footer states whether `Enter` advances to the next
-numbered value, reviews the Sequence, accepts a candidate and continues to the
-next value or review in the same keystroke, or reviews a candidate action before
-confirmation; a confirmation-free candidate action says that it runs.
-Accepting a candidate never runs the selected Sequence, and candidate-action
-completion never selects a returned value automatically. Review paging never
-changes that position. Single-value Sequences and the final
-review/confirmation phase omit the counter. Areas too small to show complete
-decision-critical content stop at a resize message instead of presenting
-partial executable or confirmation text.
-At action time, direct `send`, `preset run`, `sequence run`, TUI command and
-Sequence execution, TUI candidate actions, edited TUI commands, and PTY bridge
-execution derive the review from the final operation. Known material operations
-require `run`; unknown operations require `unknown`. Non-interactive CLI
-execution requires `--yes` for known operations and
-`--yes --allow-unknown` for unknown operations. Structured JSON retains the
-execution review and does not add the human presentation tag.
-Confirmation uses structure, text markers, and emphasis that remain usable in
-dark, light, and no-color modes; color is not the only signal. TUI rows use a
-dedicated bold ConfirmationFlow color, `#BE95FF` on the dark background and
-`#6929C4` on the light background, while no-color mode keeps bold
-`[confirm]`. The selected name and marker retain selection styling without
-overwriting the tag role. Human CLI lists use the same text and trailing-lane
-grammar without adding TUI theme color. Help and
-all other atctl-owned modal surfaces use `Esc` as the single close, cancel, or
-back key. Help also accepts `?` because that key opens the overlay. Lowercase
-`q` quits only from the idle base screen, remains ordinary text while a visible
-input field is active, and has no effect in a non-editable modal or while an
-operation is running. The idle base screen does not use `Esc` as a second quit
-key and does not add a routine quit confirmation.
+Decision: Human executable discovery uses one compact confirmation grammar
+across CLI preset/Sequence lists, TUI `Commands / Sequences`, and TUI
+candidate actions. A one-row item identifies the command or Sequence and
+appends the literal ASCII tag `[confirm]` only when selection leads to an
+explicit confirmation step. The tag describes action flow, not severity or a
+scalar risk class.
 
-Rationale and consequences: a stable one-row list supports scanning many mixed
-commands and Sequences without selection changing the surrounding layout.
-Removing repeated `AT:` and `Purpose:` labels and the CLI-only `ATTENTION`
-column leaves more of the command or purpose visible on constrained human list
-surfaces. The ASCII `[confirm]` tag states the next interaction exactly and
-remains legible across terminal fonts, dark/light themes, and no-color mode
-without implying warning severity. Details and `show` provide complete
-information without forcing long prose into every row. Pinning phase-critical
-controls prevents long context from hiding the next action. The confirmation
-surface owns detailed effects and uncertainty; compact Status does not repeat
-them. Re-deriving the action-time review prevents an unresolved Sequence row or
-edited command from authorizing a different final operation. One visible root
-quit key and one modal cancellation key avoid competing meanings. Keeping `q`
-as text only when an input field is visible also prevents hidden state changes
-in review-only modals and preserves commands, paths, parameters, and
-acknowledgements that contain `q`.
+Complete definition and execution-review information belongs in read-only CLI
+`show` and TUI `d Details`. The action-time confirmation is derived again
+from the final resolved operation and owns consequences, uncertainty, and the
+exact acknowledgement. Compact Status remains current state and execution
+context rather than a duplicate review surface.
+
+TUI Sequence input is phase-based: it keeps the active value and next action
+visible, keeps long supporting review content scrollable, and distinguishes
+value progress from paging. Accepting a candidate does not run the selected
+Sequence. All modal surfaces use `Esc` for close, cancel, or back; lowercase
+`q` quits only from the idle base screen and remains ordinary text in a
+visible input field. Text and structure carry meaning in dark, light, and
+no-color modes; color is reinforcement only.
+
+Rationale and consequences: A stable one-row grammar supports scanning mixed
+commands and Sequences without repeating full review prose. The explicit word
+`[confirm]` states the next interaction without implying warning severity and
+remains usable without color. Separating discovery, Details, current Status,
+and action-time confirmation gives each surface one job. Re-deriving the final
+review prevents an unresolved Sequence or edited command from authorizing a
+different operation. Phase-critical input and confirmation controls remain
+available even when supporting content is long.
+
+Exact lane widths, shortening, semantic section order, modal titles, pinned
+regions, colors, contrast values, narrow-state behavior, and verification
+matrices are product requirements in [SPEC.md](SPEC.md), not a second decision
+record. Any change must still evaluate the affected CLI/TUI surfaces and
+adjacent rendered states together.
 
 Current-source basis:
 
-- [IBM Carbon notification guidance](https://carbondesignsystem.com/components/notification/usage/)
-  reserves warning treatment for potentially undesirable or unexpected
-  consequences, so the ordinary confirmation-flow tag does not use warning
-  styling.
-- [USWDS icon guidance](https://designsystem.digital.gov/components/icon/)
-  requires symbols to be conventional and understandable; the explicit ASCII
-  word avoids an ambiguous standalone icon.
-- [Apple button guidance](https://developer.apple.com/design/human-interface-guidelines/buttons),
-  [GNOME writing guidance](https://developer.gnome.org/hig/guidelines/writing-style.html),
-  and the [WAI-ARIA menu pattern](https://www.w3.org/WAI/ARIA/apg/patterns/menubar/)
-  associate an ellipsis with further input or a dialog, while atctl already
-  uses ellipsis for truncation; `[confirm]` avoids overloading it.
-- [Unicode Standard Annex #11](https://www.unicode.org/reports/tr11/)
-  documents context-dependent terminal widths for some symbols; ASCII gives
-  the list a deterministic width budget.
-- [Command Line Interface Guidelines](https://clig.dev/) recommends displaying
-  only as much information as users need, keeping behavior consistent across
-  subcommands, and confirming dangerous operations; this supports a compact
-  common discovery token with complete action-time review.
-- [Ratatui Table documentation](https://docs.rs/ratatui/latest/ratatui/widgets/struct.Table.html)
-  supports explicit fixed-width columns and spacing, and
-  [K9s custom views](https://github.com/derailed/k9s#resource-custom-columns)
-  expose stable left/right column alignment; these support treating the
-  repeated confirmation suffix as one trailing lane instead of appending it
-  after variable preview text.
-- [IBM Carbon tag guidance](https://carbondesignsystem.com/components/tag/usage/)
-  recommends concise text labels and distinct component colors for scanning;
-  atctl keeps the literal label as the meaning and uses color only as a
-  secondary TUI differentiator.
-- [Docker `system prune`](https://docs.docker.com/reference/cli/docker/system/prune/)
-  and [Terraform `apply`](https://developer.hashicorp.com/terraform/cli/commands/apply)
-  place consequences and approval at the action boundary rather than repeating
-  full warning prose in discovery lists.
-- [GitHub CLI `gh repo delete`](https://cli.github.com/manual/gh_repo_delete)
-  uses an explicit non-interactive acknowledgement option, supporting atctl's
-  separate interactive acknowledgement and non-interactive authorization
-  contracts.
+- [Command Line Interface Guidelines](https://clig.dev/) supports concise,
+  consistent subcommand output and action-boundary confirmation.
 - [WCAG 2.2 Use of Color](https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html)
-  requires information conveyed by color to remain available through another
-  visual means; `[confirm]` and the full unknown-effects sentence remain
-  meaningful in no-color mode. WCAG 2.2 Contrast Minimum requires 4.5:1 for
-  normal text; the specified ConfirmationFlow colors provide approximately
-  5.60:1 in dark mode and 7.41:1 in light mode.
-- [W3C Forms Tutorial](https://www.w3.org/WAI/tutorials/forms/) recommends short,
-  logically staged forms that expose the information required for the current
-  transaction, and
-  [W3C Labels or Instructions](https://www.w3.org/WAI/WCAG22/Understanding/labels-or-instructions.html)
-  requires enough adjacent guidance to complete an input without cluttering the
-  surface with unnecessary instruction.
-- [GOV.UK question pages](https://design-system.service.gov.uk/patterns/question-pages/)
-  starts with one current question, while
-  [IBM Carbon form guidance](https://carbondesignsystem.com/patterns/forms-pattern/)
-  places the input label above the input and essential helper text immediately
-  with that field. These support leading the Sequence value phase with the
-  current parameter instead of preceding it with the complete context record.
+  requires meaning to remain available without color.
+- [W3C Forms Tutorial](https://www.w3.org/WAI/tutorials/forms/) and
+  [labels or instructions guidance](https://www.w3.org/WAI/WCAG22/Understanding/labels-or-instructions.html)
+  support staged input with adjacent instructions.
 - [Fluent 2 dialog guidance](https://fluent2.microsoft.design/components/web/react/core/dialog/usage)
-  keeps dialogs focused, leads body content with the most important information,
-  and keeps supporting body content scrollable while persistent regions remain
-  available. The
-  [Charmbracelet Huh](https://github.com/charmbracelet/huh) terminal form model
-  likewise organizes interactive terminal forms around current fields and
-  logical groups rather than placing the active field after the complete form
-  context.
+  keeps important dialog content prominent while supporting content scrolls.
 - [USWDS step indicator guidance](https://designsystem.digital.gov/components/step-indicator/)
-  places the current step and total near the task heading and makes the current
-  step visually prominent. Its
-  [pagination guidance](https://designsystem.digital.gov/components/pagination/)
-  explicitly directs sequential-process progress to a step indicator instead of
-  page navigation, matching atctl's separation of value position from Details
-  paging.
-- [IBM Carbon progress indicator guidance](https://carbondesignsystem.com/components/progress-indicator/usage/)
-  distinguishes linear multistep progress from
-  [progress bars](https://carbondesignsystem.com/components/progress-bar/usage/)
-  for loading or processing. atctl therefore uses a compact textual field
-  position, not a loading bar or a full visual stepper.
-- [Ratatui Block title guidance](https://ratatui.rs/recipes/widgets/block/)
-  supports multiple left-, center-, and right-aligned titles on one border, so
-  the fixed position can remain separate from both the active field body and
-  the scrollable Details label without a new pane or dependency.
+  distinguishes current-step progress from page navigation.
+- [Ratatui Table](https://docs.rs/ratatui/latest/ratatui/widgets/struct.Table.html)
+  and [Block title](https://ratatui.rs/recipes/widgets/block/) documentation
+  provide the layout primitives used by the specified terminal grammar.
 
-Normative owner: [SPEC.md](SPEC.md) CLI/TUI discovery, execution review,
-confirmation, Status, and theme requirements.
+Record maintenance: On 2026-08-07 this record was condensed to remove duplicated
+normative layout details and repeated comparison prose. The accepted decision
+did not change; the exact behavior and verification requirements remain in
+[SPEC.md](SPEC.md).
+
+Contract and guidance: [SPEC.md](SPEC.md) CLI/TUI discovery, execution review,
+confirmation, Status, theme, modal, and verification requirements.
 
 ## OQ-013: TUI Output Masking
 
@@ -375,7 +272,7 @@ session logs, or raw diagnostic export.
 Rationale and consequences: Operators can inspect and explicitly export
 sensitive diagnostic output without silently persisting it to generated logs.
 
-Normative owner: [SPEC.md](SPEC.md) masking requirements and
+Contract and guidance: [SPEC.md](SPEC.md) masking requirements and
 [SAFETY.md](SAFETY.md).
 
 ## OQ-014: TUI History / Logs Pane Completion Scope
@@ -390,7 +287,7 @@ Rationale and consequences: A filename list alone does not complete the
 log-review task; the review path must remain masked and must not create new data
 as a side effect.
 
-Normative owner: [SPEC.md](SPEC.md) log requirements and
+Contract and guidance: [SPEC.md](SPEC.md) log requirements and
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## OQ-015: TUI Preset / Ad-Hoc Input
@@ -407,7 +304,7 @@ Rationale and consequences: This keeps ordinary modem workflows usable while
 preserving origin, review responsibility, and safety for external executable
 definitions.
 
-Normative owner: [SPEC.md](SPEC.md) preset and TUI requirements,
+Contract and guidance: [SPEC.md](SPEC.md) preset and TUI requirements,
 [PRESETS.md](PRESETS.md), and [SAFETY.md](SAFETY.md).
 
 ## OQ-016: TUI Device Pane and Long-Running Command Timeout Control
@@ -427,7 +324,7 @@ actionable and visible without making the normal interface explain internal
 precedence. Sequence execution uses one total deadline, and PTY prompt/payload
 execution shares one command budget so the selected duration is not doubled.
 
-Normative owner: [SPEC.md](SPEC.md) TUI device, Status, Controls, and timeout
+Contract and guidance: [SPEC.md](SPEC.md) TUI device, Status, Controls, and timeout
 requirements.
 
 ## OQ-017: TUI Explicit Device Selection Gate
@@ -442,7 +339,7 @@ Rationale and consequences: Silent selection is acceptable only when
 unambiguous. Runtime USB identity and explicit selection avoid misdirected
 commands and false compatibility claims.
 
-Normative owner: [SPEC.md](SPEC.md) TUI device-selection requirements.
+Contract and guidance: [SPEC.md](SPEC.md) TUI device-selection requirements.
 
 ## OQ-018: Running-Command Interruption
 
@@ -456,7 +353,7 @@ Rationale and consequences: Host-side waiting can stop while the modem
 continues and later emits output; calling that successful cancellation would be
 misleading.
 
-Normative owner: [SPEC.md](SPEC.md) `REQ-TUI-008D` through `REQ-TUI-008F`, and
+Contract and guidance: [SPEC.md](SPEC.md) `REQ-TUI-008D` through `REQ-TUI-008F`, and
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## OQ-019: PTY Bridge Runtime Behavior
@@ -472,7 +369,7 @@ Rationale and consequences: The bridge must preserve normal target-selection
 and safety behavior while remaining predictable for `screen`/`cu`-style
 clients.
 
-Normative owner: [SPEC.md](SPEC.md) bridge requirements and
+Contract and guidance: [SPEC.md](SPEC.md) bridge requirements and
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## OQ-020: Device Listing Default Scope
@@ -487,7 +384,7 @@ Rationale and consequences: Descriptor filtering reduces irrelevant USB noise
 but is not an AT probe or compatibility guarantee. Full visibility remains
 available when the conservative filter omits a device.
 
-Normative owner: [SPEC.md](SPEC.md) device and TUI discovery requirements, and
+Contract and guidance: [SPEC.md](SPEC.md) device and TUI discovery requirements, and
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## OQ-021: Raw Log Diagnostic Export
@@ -503,7 +400,7 @@ Rationale and consequences: Raw output can be necessary for final diagnosis
 but can persist sensitive identifiers, credentials, messages, payloads, and
 network data; it is separate from normal masked logs and foreground unmasking.
 
-Normative owner: [SPEC.md](SPEC.md) raw-export requirements and
+Contract and guidance: [SPEC.md](SPEC.md) raw-export requirements and
 [SAFETY.md](SAFETY.md).
 
 ## OQ-022: TUI Shortcut Reduction and Controls Pane
@@ -518,7 +415,7 @@ Rationale and consequences: Workflow-first navigation, local action feedback,
 and stable hierarchy reduce shortcut burden and preserve accessibility without
 turning Controls or Help into dense inventories.
 
-Normative owner: [SPEC.md](SPEC.md) TUI Controls, help, layout, and navigation
+Contract and guidance: [SPEC.md](SPEC.md) TUI Controls, help, layout, and navigation
 requirements.
 
 ## OQ-023: Sequences for Multi-Step AT Operations
@@ -536,7 +433,7 @@ output must distinguish submit/socket evidence from end-to-end receipt, and
 multi-step support must not fragment production surfaces or add a permanent TUI
 pane.
 
-Normative owner: [SPEC.md](SPEC.md) Sequence requirements,
+Contract and guidance: [SPEC.md](SPEC.md) Sequence requirements,
 [PRESETS.md](PRESETS.md), [SAFETY.md](SAFETY.md), and
 [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
@@ -557,7 +454,7 @@ single per-invocation logging exception does not justify a separate TOML
 configuration contract. Raw diagnostic export remains a separately selected and
 acknowledged operation.
 
-Normative owner: [SPEC.md](SPEC.md) state-path, CLI, TUI, and logging
+Contract and guidance: [SPEC.md](SPEC.md) state-path, CLI, TUI, and logging
 requirements; [SAFETY.md](SAFETY.md) for logging and raw-export boundaries.
 
 ## OQ-025: Normal Response Export
@@ -585,7 +482,7 @@ share one Response contract, while continuous bridge recording retains its
 terminal-session semantics. Existing files in the former XDG Response directory
 are retained but no longer define the normal export destination.
 
-Normative owner: [SPEC.md](SPEC.md) Response-export requirements,
+Contract and guidance: [SPEC.md](SPEC.md) Response-export requirements,
 [SAFETY.md](SAFETY.md), and [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## OQ-026: Source Change CI Quality Gate
@@ -607,7 +504,7 @@ reports a result for every pull request. Maintainers review failed runs and
 correct the change before release. The release workflow retains an independent
 pre-publication run of the gate and stops publication when it fails.
 
-Normative owner: [SPEC.md](SPEC.md) verification requirements,
+Contract and guidance: [SPEC.md](SPEC.md) verification requirements,
 [DEVELOPMENT.md](DEVELOPMENT.md) maintainer procedure, and
 [CONTRIBUTING.md](../CONTRIBUTING.md) contributor verification guidance.
 
@@ -635,7 +532,7 @@ link verification preserves the documented Homebrew runtime dependency and
 prevents an unnoticed vendored `libusb` fallback from changing distribution
 obligations.
 
-Normative owner: [SPEC.md](SPEC.md) release packaging requirements and
+Contract and guidance: [SPEC.md](SPEC.md) release packaging requirements and
 [PACKAGING.md](PACKAGING.md) maintainer procedure.
 
 ## OQ-028: Semantic and Provenance-Based Masking
@@ -661,7 +558,7 @@ phone-number dependency, remote service, or per-surface behavior fork. Unknown
 vendor fields retain an explicit limit: short values are not guessed from text
 alone, while the existing long-identifier fallback remains available.
 
-Normative owner: [SPEC.md](SPEC.md) masking requirements and
+Contract and guidance: [SPEC.md](SPEC.md) masking requirements and
 [SAFETY.md](SAFETY.md).
 
 ## OQ-029: TUI Text Reflow and Stable-Row Layout
@@ -690,6 +587,105 @@ wrap setting and a separate complete Unicode line-breaking engine would add
 configuration and maintenance without improving the fixed reading and
 navigation roles defined for atctl.
 
-Normative owner: [SPEC.md](SPEC.md) `REQ-TUI-TEXT-001` through
+Contract and guidance: [SPEC.md](SPEC.md) `REQ-TUI-TEXT-001` through
 `REQ-TUI-TEXT-003`, modal/Details/Response requirements, and saved-log viewing
 requirements; [DEVELOPMENT.md](DEVELOPMENT.md) for maintainer verification.
+
+## OQ-030: Documentation Semantic Ownership
+
+Status: accepted
+
+Supersedes: none
+
+Context: The public documentation had grown around individual changes. Product
+requirements, research background, decision rationale, user procedures,
+maintainer commands, and release steps were repeated across documents. That
+made a correct local edit insufficient to prevent stale command names or
+options elsewhere. The project is maintained and distributed at no charge by
+an individual, so every additional document, synchronization rule, and review
+surface has a continuing maintenance cost.
+
+Alternatives considered:
+
+- Keep every document self-contained. Rejected because volatile facts acquire
+  multiple owners and must be rediscovered on every change.
+- Split the material into a new documentation site or management system.
+  Rejected because it adds publication and synchronization work without
+  reducing the product's existing source-of-truth problem.
+- Impose a fixed word or file-size limit on the specification. Rejected because
+  required behavior remains required even when it is detailed; size alone does
+  not identify incorrect ownership.
+
+Decision: Use one semantic owner for each kind of information and allow only
+controlled projections needed by a reader at the point of use.
+
+- [SPEC.md](SPEC.md) owns required product and system behavior, interfaces,
+  safety controls, packaging outcomes, acceptance criteria, and traceability.
+- [INSTALL.md](INSTALL.md), [SAFETY.md](SAFETY.md), and
+  [TROUBLESHOOTING.md](TROUBLESHOOTING.md) own operator procedures and
+  guidance for their named tasks. [PRESETS.md](PRESETS.md) additionally owns
+  the authoring guide and user-facing inventory/schema projections. Required
+  product-provided definitions, definition fields, and loader/execution
+  behavior remain owned by [SPEC.md](SPEC.md).
+- [DEVELOPMENT.md](DEVELOPMENT.md) owns maintainer development and verification
+  procedure. [PACKAGING.md](PACKAGING.md) owns packaging and release procedure.
+- This file owns significant decision context, alternatives, rationale,
+  consequences, status, and supersession.
+- [README.md](../README.md) and [README-ja.md](../README-ja.md) remain concise
+  landing pages with overview, quick start, minimum point-of-use safety, and
+  navigation. [CHANGELOG.md](../CHANGELOG.md) remains curated released-version
+  history. [CONTRIBUTING.md](../CONTRIBUTING.md) remains a contribution entry
+  point.
+- Short quick-start commands, safety warnings, examples, and translated landing
+  content may be repeated when that repetition is necessary at the point of
+  action. Such text is a projection of its owner, not an independent contract,
+  and must be checked with the owner and current user-facing implementation.
+- Existing `REQ-*`, `OQ-*`, and release-history identities remain stable when
+  material is reorganized. A documentation move must not silently change
+  product behavior or an accepted decision.
+
+Rationale and consequences: The structure separates reference, task,
+explanation, and normative contract without multiplying public artifacts. It
+keeps detailed requirements where implementers and verifiers need them, while
+removing repository maps, release runbooks, authoring examples, and UI
+explanations from documents that do not own them. Review must therefore check a
+changed semantic owner and every intentional projection together. There is no
+target word count: the success criteria are unambiguous ownership, current
+links and terminology, preserved traceability, and no contradictory duplicate.
+
+Current-source basis, checked 2026-08-07:
+
+- [ISO/IEC/IEEE 29148](https://www.iso.org/standard/72089.html) and
+  [NASA requirements guidance](https://www.nasa.gov/reference/appendix-c-how-to-write-a-good-requirement/)
+  support clear, concise, traceable requirements with rationale and assumptions
+  distinguishable from the requirement itself.
+- [Diátaxis](https://diataxis.fr/start-here/) separates tutorials, how-to
+  guides, reference, and explanation by reader need.
+- [GitHub's content model](https://docs.github.com/en/contributing/style-guide-and-content-model/about-the-content-model)
+  and its guidance on
+  [combining content types](https://docs.github.com/en/contributing/style-guide-and-content-model/about-combining-multiple-content-types)
+  support distinct content purposes while allowing deliberate combinations
+  when one complex task needs them.
+- [GitHub's README guidance](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-readmes)
+  treats the README as the project overview, getting-started, help, and
+  contribution entry point rather than the complete long-form documentation.
+- [Open Source Guides for maintainers](https://opensource.guide/best-practices/)
+  emphasizes documenting processes and keeping that documentation current,
+  including for part-time or volunteer maintenance.
+- [Microsoft's architecture decision record guidance](https://learn.microsoft.com/en-us/azure/well-architected/architect-role/architecture-decision-record)
+  treats decision records as concise, append-only context and consequences,
+  not a replacement design guide.
+- [Keep a Changelog](https://keepachangelog.com/en/2.0.0/) treats a changelog as
+  curated notable release history rather than a dump of commits or current
+  product documentation.
+- Current widely used Rust CLI repositories such as
+  [ripgrep](https://github.com/BurntSushi/ripgrep),
+  [just](https://github.com/casey/just), and
+  [fd](https://github.com/sharkdp/fd) keep README landing content, release
+  history, contribution guidance, and longer user/reference material in
+  distinct artifacts. These are comparable maintenance patterns, not a source
+  of atctl product requirements.
+
+Contract and guidance: [SPEC.md](SPEC.md) sections 1 and 2 define the current
+normative boundary; the role-specific documents named above own their
+procedures and controlled projections.

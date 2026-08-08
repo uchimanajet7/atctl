@@ -1,6 +1,21 @@
 # Packaging
 
-This document defines the packaging contract for `atctl`.
+This is the maintainer runbook for source releases, local artifact checks,
+Cargo source-package checks, and the separate Homebrew tap operation. The
+normative packaging outcomes and invariants are `REQ-PKG-*` in
+[SPEC.md](SPEC.md); accepted distribution rationale is recorded in
+[DECISIONS.md](DECISIONS.md). If this procedure and the specification conflict,
+the specification is authoritative and the procedure must be corrected.
+
+Requirement groups used by this runbook:
+
+| Procedure | Owning requirements |
+|---|---|
+| Platform, distribution, repositories, and install identity | `REQ-PKG-001` through `REQ-PKG-014` |
+| Source archive, checksum, notices, and linkage | `REQ-PKG-015` through `REQ-PKG-020E` |
+| Homebrew Formula and bottles | `REQ-PKG-021` through `REQ-PKG-032` |
+| Cargo source package | `REQ-PKG-033` through `REQ-PKG-037` |
+| Release workflow, notes, and tap handoff | `REQ-PKG-038` through `REQ-PKG-046` |
 
 ## Packaged Platform Target
 
@@ -23,7 +38,7 @@ validated:
 
 `atctl` is a CLI/TUI executable. It is not a macOS GUI application, app
 bundle, or Homebrew Cask distribution target. A GUI distribution would require
-a separate product specification and packaging contract.
+a separate product specification and packaging requirements.
 
 End users install the command through Homebrew. GitHub Releases
 artifacts are release outputs and manual artifacts; they are not the normal
@@ -86,6 +101,10 @@ References:
 
 ## Source Repository Release Artifacts
 
+This section combines the operator procedure with the expected artifacts from
+`REQ-PKG-015` through `REQ-PKG-020E` and `REQ-PKG-038` through
+`REQ-PKG-042`. The requirements remain canonical in [SPEC.md](SPEC.md).
+
 The source repository must use GitHub Actions to build release artifacts and
 upload them to GitHub Releases for source repository releases. That release
 workflow is independent from the Homebrew tap decision.
@@ -126,8 +145,8 @@ checksum asset.
 
 `{VERSION}` is the semantic version without the leading `v`. The
 `aarch64-apple-darwin` suffix identifies the Rust/macOS Apple Silicon target.
-This naming is a common Rust CLI release-asset convention, not a formal GitHub
-or Rust standard.
+This naming is a project decision consistent with common Rust CLI release
+practice, not a formal GitHub or Rust standard.
 
 Checksum content:
 
@@ -136,8 +155,8 @@ Checksum content:
 ```
 
 Source repository releases publish one checksum file per archive. The current
-artifact contract does not include an aggregate checksum manifest, provenance,
-attestation, or SBOM metadata.
+required artifact set in [SPEC.md](SPEC.md) does not include an aggregate
+checksum manifest, provenance, attestation, or SBOM metadata.
 
 Release notes:
 
@@ -242,7 +261,7 @@ scripts/release/package-release.sh \
 ```
 
 The packaging command refuses to overwrite an existing archive or checksum and
-fails if any of these checks does not match the release contract:
+fails if any of these checks does not match the SPEC release requirements:
 
 - arm64 Mach-O executable identity
 - dynamic linkage to Homebrew `libusb`
@@ -267,7 +286,11 @@ References:
 - https://github.com/libusb/libusb
 - https://formulae.brew.sh/formula/libusb
 
-## Homebrew Formula and Bottle Contract
+## Homebrew Formula and Bottle Verification
+
+Use this section to review the separate tap-repository result against
+`REQ-PKG-021` through `REQ-PKG-032`; it does not define a second Formula or
+bottle requirement set.
 
 The normal Homebrew distribution uses the tap formula. The preferred normal
 state is a bottle-backed formula for each packaged platform target. This keeps
@@ -281,7 +304,7 @@ used when no matching bottle is available, when the user disables bottle use,
 or when maintainers verify the formula from source.
 
 The source-build fallback must build from the `uchimanajet7/atctl` source
-repository release archive. The formula should follow this contract:
+repository release archive. Use this review baseline:
 
 ```ruby
 class Atctl < Formula
@@ -322,7 +345,10 @@ The Homebrew tap must not install the GitHub Releases `.tar.gz` artifact as the
 normal Homebrew path. GitHub Releases artifacts and Homebrew bottles are
 separate release outputs with separate ownership and verification.
 
-## Cargo Source Package Contract
+## Cargo Source Package Verification
+
+Use this section to inspect the current package file set and build result
+against `REQ-PKG-033` through `REQ-PKG-037`.
 
 The Cargo source package is Rust package metadata and `.crate` source-package
 output. It is not the normal end-user install path. End users install
@@ -346,8 +372,9 @@ repository documentation and is not included in the Cargo source package only
 because `README.md` links to it. README links to repository documentation should
 remain repository-relative so they work on GitHub and in a source checkout.
 The current source release workflow does not publish the Cargo source package
-to a registry, so this contract does not claim that relative documentation
-links have been validated on crates.io or docs.rs crate pages. If Cargo registry
+to a registry, so this verification scope does not claim that relative
+documentation links have been validated on crates.io or docs.rs crate pages.
+If Cargo registry
 publication is proposed later, every published README surface and its relative
 link behavior must be researched and approved as part of that separate change;
 do not change repository links or package additional documentation for a
@@ -370,41 +397,23 @@ References:
 - https://doc.rust-lang.org/cargo/commands/cargo-package.html
 - https://doc.rust-lang.org/cargo/reference/publishing.html
 
-## Direct Download, Signing, and Notarization
+## Direct Download Boundary
 
-Direct GitHub Releases download is not the normal end-user install path.
+Manual GitHub Release archives remain release/manual artifacts, not the normal
+installation path. Follow [INSTALL.md](INSTALL.md#manual-github-release-archive)
+for the operator procedure and [DECISIONS.md OQ-009](DECISIONS.md#oq-009-signing-and-notarization)
+for the accepted signing/notarization rationale.
 
-Developer ID signing and Apple notarization are not required for the normal
-Homebrew install path.
-
-GitHub Releases prebuilt `.tar.gz` artifacts may be published without Developer
-ID signing and Apple notarization while they remain release/manual artifacts.
-Documentation must not present direct GitHub Releases download as the normal
-end-user install path.
-
-If direct GitHub Releases download is promoted to a normal end-user install path,
-Developer ID signing, Apple notarization, Gatekeeper behavior, quarantine
-warnings, Apple Developer credentials, certificate handling, CI secret
-management, and Apple notary service availability must be decided before that
-promotion.
-
-Unsigned or unnotarized direct-download macOS binaries may trigger Gatekeeper or
-quarantine warnings depending on how the user downloads and runs them.
+The current archive may be unsigned and unnotarized, so Gatekeeper or quarantine
+warnings can appear. Promoting direct download to the normal installation path
+requires a new accepted decision and corresponding changes to
+`REQ-PKG-029` through `REQ-PKG-032` before this runbook changes.
 
 References:
 
-- https://docs.brew.sh/Formula-Cookbook
-- https://docs.brew.sh/Bottles
-- https://docs.brew.sh/Cask-Cookbook
 - https://developer.apple.com/developer-id/
 - https://developer.apple.com/documentation/security/customizing-the-notarization-workflow
 - https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution
-
-## Dependency Notes
-
-- `libusb` is the native runtime library.
-- `pkgconf` provides the `pkg-config` command used during source builds.
-- Rust is needed for source builds only.
 
 ## Release Operator Workflow
 
@@ -436,9 +445,10 @@ After the source release is available, continue in
 4. Merge only the reviewed Formula and bottle metadata produced by the tap
    workflow.
 
-The Formula update must keep the contract defined above: macOS on Apple
-Silicon, `libusb` as a runtime dependency, Rust and `pkgconf` as source-build
-dependencies, and a source-build fallback using the tagged source archive.
+The Formula update must satisfy the applicable [SPEC.md](SPEC.md) requirements:
+macOS on Apple Silicon, `libusb` as a runtime dependency, Rust and `pkgconf` as
+source-build dependencies, and a source-build fallback using the tagged source
+archive.
 Bottle publication remains an explicit tap-repository action and is not a side
 effect of the Rust source release.
 
@@ -450,12 +460,9 @@ References:
 - https://docs.brew.sh/Formula-Cookbook
 - https://docs.brew.sh/Bottles
 
-## Release Decisions
+## Decision References
 
-Packaging readiness requires the source repository release artifact contract
-and the Homebrew tap Formula/bottle contract to be reviewed as separate release
-surfaces. Direct-download promotion is outside the current distribution
-contract and would require signing, notarization, Gatekeeper, quarantine, and
-credential-handling decisions.
-
-See [DECISIONS.md](DECISIONS.md) for the accepted distribution decisions.
+The rationale is maintained only in [DECISIONS.md](DECISIONS.md): OQ-005
+through OQ-009 cover source releases, asset naming, checksums, Homebrew, and
+signing; OQ-027 covers archive notices and native linkage. This runbook applies
+those decisions but does not restate or supersede them.

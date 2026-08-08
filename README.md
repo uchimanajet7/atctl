@@ -102,10 +102,13 @@ input assistance, execution review, and workflow details.
 
 ## User Documentation
 
-- [Installation](docs/INSTALL.md)
-- [Presets and Sequences reference](docs/PRESETS.md)
-- [Safety guide](docs/SAFETY.md)
-- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Installation](docs/INSTALL.md) — install, update, remove, and first-run checks
+- [Presets and Sequences reference](docs/PRESETS.md) — usage, inventory, TOML,
+  and repository examples
+- [Safety guide](docs/SAFETY.md) — operator precautions and sensitive-data care
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — diagnosis, recovery, logs, and
+  Response export
+- [Release history](CHANGELOG.md) — notable changes by released version
 
 ## Questions and reports
 
@@ -135,6 +138,10 @@ before opening a pull request.
 - [Packaging and release guide](docs/PACKAGING.md)
 - [Product and technical specification](docs/SPEC.md)
 - [Accepted product and architecture decisions](docs/DECISIONS.md)
+
+The specification is the normative product contract. The other documents own
+their procedures or decision rationale and link back to it instead of defining
+parallel requirements.
 
 ## License
 

@@ -1,7 +1,7 @@
 # atctl Product and Technical Specification
 
-- Document version: 0.4.124
-- Date: 2026-08-03
+- Document version: 0.4.125
+- Date: 2026-08-07
 - Implementation language: Rust
 - Product name: `atctl`
 - Repository name: `atctl`
@@ -14,9 +14,9 @@
 
 ## 1. Purpose
 
-This document defines the normative product behavior and technical requirements
-for `atctl`. It is the authoritative source for product scope, interfaces,
-safety, packaging contracts, and verification requirements.
+This document is the normative product and system contract for `atctl`. It is
+the authoritative source for required product scope, behavior, interfaces,
+safety controls, packaging outcomes, and verification criteria.
 
 The specification covers:
 
@@ -26,76 +26,50 @@ The specification covers:
 - USB/libusb transport behavior
 - AT command parsing and completion behavior
 - CLI and TUI behavior
-- Presets, configuration, masking, safety, logging, and packaging
+- Presets, Sequences, masking, safety, logging, and packaging
 - Verification expectations
-- Accepted product and architecture decisions
 
-Supporting operational documents live outside this specification:
+The other existing public documents have distinct roles. They may repeat a
+short command, warning, or example at the point of use, but they do not create
+another product contract:
 
-- `README.md`
-- `CHANGELOG.md`
-- `docs/INSTALL.md`
-- `docs/PRESETS.md`
-- `docs/DEVELOPMENT.md`
-- `docs/PACKAGING.md`
-- `docs/TROUBLESHOOTING.md`
-- `docs/SAFETY.md`
-- `docs/DECISIONS.md`
+| Information | Canonical owner |
+|---|---|
+| Product behavior, interfaces, safety controls, packaging outcomes, acceptance criteria | This specification |
+| Installation, update, and removal procedure | [INSTALL.md](INSTALL.md) |
+| Operator safety guidance | [SAFETY.md](SAFETY.md) |
+| Preset and Sequence operation and authoring guidance, user-facing inventory/schema projections, and examples | [PRESETS.md](PRESETS.md) |
+| Symptom diagnosis, recovery, and diagnostic-artifact handling | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
+| Development and verification procedure | [DEVELOPMENT.md](DEVELOPMENT.md) |
+| Packaging and release procedure | [PACKAGING.md](PACKAGING.md) |
+| Decision context, alternatives, rationale, and consequences | [DECISIONS.md](DECISIONS.md) |
+| Project overview, quick start, and navigation | [README.md](../README.md) and [README-ja.md](../README-ja.md) |
+| Curated released-version history | [CHANGELOG.md](../CHANGELOG.md) |
 
-## 2. Requirements Basis
+See [DECISIONS.md OQ-030](DECISIONS.md#oq-030-documentation-semantic-ownership)
+for the decision and consequences behind this ownership model.
 
-This specification states required product behavior, prohibited behavior,
-technical constraints, and verification criteria.
+## 2. Requirement Structure and Traceability
 
-The structure follows these current requirements-engineering principles:
+Every existing `REQ-*` identifier is stable traceability for implementation,
+review, and verification. Uppercase RFC 2119 terms outside an identifier remain
+normative when they state a product constraint. Explanatory prose and examples
+clarify those constraints; role-specific guides provide procedures and must
+refer back to this contract instead of defining a conflicting one.
 
-- Requirements must be understandable by implementers and verifiers.
-- Requirements must be clear, unambiguous, complete for the specified scope,
-  internally consistent, and testable.
-- Assumptions and unresolved values must be explicit.
-- Requirements must not hide product decisions as implementation details.
-- Supporting documents should separate user installation, development,
-  packaging, troubleshooting, and safety guidance from the normative product
-  specification.
+Decision rationale and rejected alternatives belong in
+[DECISIONS.md](DECISIONS.md). Repository layout, commands, and operational
+runbooks belong in their role-specific guides. External standards and product
+sources used by requirements are listed in section 25 or directly beside the
+applicable requirement.
 
-Normative source categories:
-
-- Requirements engineering and normative terminology: ISO/IEC/IEEE 29148,
-  NASA requirements guidance, RFC 2119, and RFC 3339.
-- AT command and modem behavior: 3GPP TS 27.005, 3GPP TS 27.007,
-  3GPP TS 23.038, 3GPP TS 23.040, ITU-T V.250, and vendor command manuals.
-- USB transport and discovery: USB-IF class codes, USB descriptor references,
-  libusb documentation, and CDC ACM implementation guidance.
-- Executable definitions and generated state: TOML, XDG Base Directory, and
-  the explicit file and directory loading requirements in this specification.
-- TUI behavior and accessibility: WCAG 2.2, WAI guidance, terminal and Ratatui
-  documentation, and current interaction-design references.
-- Packaging, release, and dependency maintenance: Cargo, Homebrew, GitHub
-  Actions, Dependabot, RustSec, actionlint, and Keep a Changelog.
-- Sensitive-data and evidence handling: OWASP logging guidance and the
-  applicable modem, TCP, Quectel, and SORACOM technical references.
-
-Supporting references appear in section 25, in role-specific operational
-documents, and beside the requirements they support.
-
-The AT-command reference editions checked for this specification on
-2026-07-31 are:
-
-- 3GPP TS 27.007 Release 19, version 19.6.0, uploaded 2026-03-16;
-- 3GPP TS 27.005 Release 19, version 19.0.0, uploaded 2025-10-14;
-- Quectel EC2x&EG2x&EG9x&EM05 Series AT Commands Manual, version 2.2,
-  dated 2026-02-11; and
-- Quectel EC2x&EG2x&EG9x&EM05 Series TCP(IP) Application Note, version 1.6,
-  dated 2026-05-11.
-
-The Quectel EG25-G product page is the applicability source for the validation
-module and states that EG25-G meets 3GPP Release 11. That module-conformance
-release is distinct from the current 3GPP specification editions used as
-standards references above. The same product page currently lists TCP(IP)
-Application Note version 1.7, but the unauthenticated listing does not expose
-that document body or its date. Version 1.6 is therefore the fixed, content-
-reviewed TCP/IP baseline for the requirements below; version 1.7 is recorded as
-the current official listing, not as a reviewed or adopted content baseline.
+The fixed, content-reviewed modem baselines are 3GPP TS 27.007 Release 19
+version 19.6.0, 3GPP TS 27.005 Release 19 version 19.0.0, Quectel AT Commands
+Manual version 2.2, and Quectel TCP(IP) Application Note version 1.6. The
+official EG25-G page lists a newer TCP(IP) Application Note version 1.7, but its
+body and date were not available from the unauthenticated listing when checked
+on 2026-07-31; it is not the reviewed requirement baseline. Exact references
+and dates are in section 25.
 
 ## 3. Normative Terms
 
@@ -368,59 +342,17 @@ to be discoverable through `pkg-config`.
 
 ## 9. External Technical Basis
 
-The following external facts are part of the current implementation basis:
+External sources supply evidence and interoperability facts; they do not become
+requirements merely by appearing in this document. Section 25 records the
+standards, vendor/provider documentation, library contracts, accessibility
+guidance, and packaging references used by the requirements. Significant
+choices derived from comparisons or rejected alternatives are recorded in
+[DECISIONS.md](DECISIONS.md).
 
-- SORACOM documentation states that Onyx uses Quectel EG25-G internally.
-- SORACOM troubleshooting documents APN check and APN set commands using
-  `AT+CGDCONT?` and `AT+CGDCONT=1,"IP","soracom.io"`.
-- SORACOM's advanced data-send/receive troubleshooting reference, last updated
-  2025-04-23, lists AT command checkpoints for modem/SIM recognition, carrier
-  selection visibility, signal strength, network registration, APN/PDP state,
-  PS attach, and session activation:
-  `ATI`, `AT+CIMI`, `AT+COPS?`, `AT+COPS=?`, `AT+CSQ`, `AT+CREG?`,
-  `AT+CGREG?`, `AT+CEREG?`, `AT+CGDCONT?`, `AT+CGATT?`, and `AT+CGACT?`.
-  Source: https://users.soracom.io/ja-jp/guides/diagnostic/advanced/
-- 3GPP TS 27.007 defines standard AT commands used as adjacent manual
-  troubleshooting checks for the same path, including `AT+WS46?`,
-  `AT+WS46=?`, `AT+CESQ`, `AT+CESQ=?`, `AT+CGAUTH?`, `AT+CGAUTH=?`,
-  `AT+CGPADDR`, and `AT+CGPADDR=?`.
-- SORACOM APN documentation lists APN values for multiple subscription types,
-  including `soracom.io`, `du.soracom.io`, and `m-airsim.jp`, and SORACOM CHAP
-  documentation describes group-level CHAP usernames and passwords.
-- Quectel's EG25-G product page identifies the module as LTE Cat 4 with USB
-  2.0 high-speed interface and references AT command documentation.
-- Quectel QCFG documentation defines `AT+QCFG` commands, including network scan
-  mode query and configuration forms used by Quectel modem troubleshooting.
-- `libusb` provides device enumeration, opening, interface claiming, endpoint
-  I/O, kernel driver active/detach handling, and auto-detach behavior.
-- `rusb` is a Rust safe wrapper around native `libusb`.
-- `ratatui` and `crossterm` are suitable libraries for a Rust terminal UI.
-- `portable-pty` provides a cross-platform Rust PTY abstraction with a native
-  PTY system, master/slave PTY pairs, reader/writer access on the master side,
-  and a slave tty name suitable for compatibility workflows.
-- The `ctrlc` crate with its `termination` feature provides a Rust signal
-  handler path for SIGINT, SIGTERM, and SIGHUP cleanup on Unix-like systems.
-- Nielsen Norman Group's filter and list-order guidance treats filter
-  categories and values as user-facing decision aids that should be
-  appropriate, predictable, jargon-free, and prioritized. It also recommends
-  logical, ordinal, importance, or frequency-based ordering when items have an
-  inherent workflow order instead of defaulting to alphabetical order.
-  Sources:
-  https://www.nngroup.com/articles/filter-categories-values/
-  https://www.nngroup.com/articles/alphabetical-sorting-must-mostly-die/
-- VS Code Marketplace, JetBrains Marketplace, GitHub CLI extension search, and
-  `kubectl get` output sorting all expose explicit user-facing ordering,
-  ranking, or sort controls rather than relying on incidental internal load
-  order for list presentation.
-  Sources:
-  https://code.visualstudio.com/docs/configure/extensions/extension-marketplace
-  https://plugins.jetbrains.com/docs/marketplace/plugins-ranking.html
-  https://cli.github.com/manual/gh_extension_search
-  https://kubernetes.io/docs/reference/kubectl/
-- TOML v1.0.0 arrays of tables are inserted into arrays in the order
-  encountered, which makes `[[presets]]` entry order a suitable author-controlled
-  order within a preset file.
-  Source: https://toml.io/en/v1.0.0
+When an external edition, endpoint, platform behavior, or library contract is
+material to a requirement, the applicable section fixes that value or source.
+Operator procedures based on those sources belong in [PRESETS.md](PRESETS.md),
+[SAFETY.md](SAFETY.md), or [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## 10. Architecture
 
@@ -482,84 +414,10 @@ specification explicitly defines a surface-specific difference.
 
 ## 11. Repository Structure
 
-The implementation uses the following responsibility boundaries:
-
-```text
-atctl/
-  Cargo.toml
-  Cargo.lock
-  LICENSE
-  README.md
-  README-ja.md
-  CHANGELOG.md
-  docs/
-    SPEC.md
-    INSTALL.md
-    DEVELOPMENT.md
-    PACKAGING.md
-    TROUBLESHOOTING.md
-    SAFETY.md
-    PRESETS.md
-    DECISIONS.md
-  src/
-    main.rs
-    lib.rs
-    cli.rs
-    cli/
-      tests.rs
-    paths.rs
-    app/
-      mod.rs
-      errors.rs
-    usb/
-      mod.rs
-      device.rs
-      descriptor.rs
-      endpoint.rs
-      transport.rs
-    transport/
-      mod.rs
-      traits.rs
-      usb.rs
-      pty.rs
-      test_support.rs
-    at/
-      mod.rs
-      command.rs
-      parser.rs
-      response.rs
-      review.rs
-      mask.rs
-    presets/
-      mod.rs
-      builtin.rs
-      definition.rs
-      loader.rs
-      model.rs
-    sequences/
-      mod.rs
-      builtin.rs
-      definition.rs
-      engine.rs
-      engine/
-        tests.rs
-      loader.rs
-      model.rs
-    tui/
-      mod.rs
-      clipboard.rs
-      response_state.rs
-      theme.rs
-      tests.rs
-    log/
-      mod.rs
-      history.rs
-      raw.rs
-      session.rs
-  examples/
-    presets/
-    sequences/
-```
+The normative responsibility boundaries are defined by section 10 and the
+requirements in the affected feature sections. The current repository map and
+maintainer navigation belong in [DEVELOPMENT.md](DEVELOPMENT.md); changing a
+file path alone does not revise this product contract.
 
 The project license is MIT. The repository includes the root `LICENSE` file
 with the recorded copyright holder, and `Cargo.toml` declares
@@ -3432,58 +3290,10 @@ verification.
 
 ### 17.4 Standard Workflow Core Presets
 
-Built-in preset display order for the TUI `All` category MUST follow this
-curated workflow order:
-
-```text
-modem-response
-modem-info
-manufacturer
-model
-firmware-revision
-imei
-sim-pin-status
-imsi
-radio-stack
-radio-stack-capabilities
-current-operator
-available-operators
-operator-format-numeric
-operator-auto-selection
-circuit-registration
-gprs-registration
-eps-registration
-enable-circuit-registration-detail
-enable-gprs-registration-detail
-enable-eps-registration-detail
-enable-eps-registration-cause
-enable-eps-registration-extended
-signal-quality
-extended-signal-quality
-extended-signal-capabilities
-pdp-contexts
-pdp-auth-settings
-pdp-auth-capabilities
-packet-attach
-active-pdp-contexts
-pdp-addresses
-pdp-address-capabilities
-pdp-connection-details
-extended-error-report
-error-reporting-status
-enable-verbose-errors
-modem-activity-status
-sms-service-support
-sms-format
-sms-storage
-modem-functionality
-set-modem-minimum-functionality
-set-modem-full-functionality
-restart-modem
-disable-command-echo
-```
-
-This order intentionally follows connection check, modem identity, SIM, radio
+The name/command blocks below are the canonical built-in preset inventory and
+their order is the required TUI `All` display order. The table in
+[PRESETS.md](PRESETS.md#product-presets) is its user-facing projection. This
+order intentionally follows connection check, modem identity, SIM, radio
 access selection, operator visibility, registration, signal, PDP/APN readiness,
 failure diagnostics, SMS readiness, modem functionality status/control, and
 then confirmation-required runtime control. It MUST NOT be replaced with
@@ -3493,7 +3303,6 @@ Basic:
 
 ```text
 modem-response: AT [confirmation not required]
-disable-command-echo: ATE0 [confirmation required]
 ```
 
 Modem identity:
@@ -3612,6 +3421,12 @@ set-modem-full-functionality: AT+CFUN=1 [confirmation required]
 restart-modem: AT+CFUN=1,1 [confirmation required]
 ```
 
+Session runtime control:
+
+```text
+disable-command-echo: ATE0 [confirmation required]
+```
+
 `AT+CFUN?` is a standard read command for the modem functionality level.
 `AT+CFUN=0`, `AT+CFUN=1`, and `AT+CFUN=1,1` change modem functionality or
 restart the modem. They are standard UE AT commands, but they are not diagnostic
@@ -3698,21 +3513,9 @@ SORACOM file preset requirements:
 ### 17.6 File Preset TOML
 
 File presets are configuration, not source code. The TOML format MUST remain
-human-editable and explicit.
-
-TOML shape:
-
-```toml
-title = "Custom commands"
-description = "Optional description for humans."
-
-[[presets]]
-name = "custom-modem-response"
-command = "AT"
-categories = ["custom"]
-# Optional. Use only for known long-running commands.
-timeout_secs = 180
-```
+human-editable and explicit. The normative field and loader constraints follow;
+the maintained authoring example and field reference live in
+[PRESETS.md](PRESETS.md#file-preset-toml).
 
 REQ-PRESET-FILE-001: Each file preset TOML file MUST include top-level
 `title`. The title is the normal user-facing preset set label in CLI output
@@ -3984,111 +3787,9 @@ scheme. Raw TCP payload acceptance alone MUST NOT be documented as a complete
 single-message delivery guarantee.
 
 Sequence TOML files are configuration, not source code. The TOML format MUST
-remain human-editable and explicit.
-
-TOML shape:
-
-```toml
-title = "Quectel Sequences"
-description = "Optional description for humans."
-
-[[sequences]]
-name = "quectel-tcp-send-check"
-summary = "Open a Quectel TCP socket, send a payload, and read a response."
-categories = ["data", "network"]
-timeout_secs = 180
-before_running = [
-  "Uses Quectel TCP/IP AT commands.",
-  "Confirm the PDP context before sending; this Sequence can load standard AT+CGACT? and AT+CGDCONT? candidates in the TUI.",
-  "During execution, atctl checks AT+QIACT? and sends AT+QIACT=<contextID> only when the selected Quectel PDP context is not active.",
-  "Socket connect ID defaults to 0. If needed, run the Quectel socket-state add-on command and edit this value before sending."
-]
-success_notes = [
-  "SEND OK is module accepted payload evidence, not remote application receipt evidence.",
-  "End-to-end TCP success requires QIRD response data or remote endpoint evidence."
-]
-
-[[sequences.params]]
-name = "context_id"
-label = "PDP context ID"
-required = true
-sensitive = false
-default = "1"
-source = "modem"
-candidate = "pdp-context"
-hint = "Confirm the PDP context with AT+CGACT? or AT+CGDCONT? before sending."
-
-[[sequences.params]]
-name = "connect_id"
-label = "Socket connect ID"
-required = true
-sensitive = false
-default = "0"
-source = "default"
-hint = "Use a free Quectel socket connect ID. Run the Quectel socket-state add-on command when you need to inspect current sockets."
-
-[[sequences.params]]
-name = "host"
-label = "Host"
-required = true
-sensitive = false
-source = "user"
-
-[[sequences.params]]
-name = "port"
-label = "Port"
-required = true
-sensitive = false
-source = "user"
-
-[[sequences.params]]
-name = "payload"
-label = "Payload"
-required = true
-sensitive = true
-source = "user"
-
-[[sequences.review]]
-label = "Destination"
-value = "{{host}}:{{port}}"
-sensitive = false
-
-[[sequences.review]]
-label = "Payload"
-value = "{{payload}}"
-sensitive = true
-
-[[sequences.steps]]
-id = "activate-context"
-label = "Ensure PDP context active"
-ensure_pdp_context_active = "{{context_id}}"
-timeout_secs = 150
-evidence = "AT+QIACT? checks Quectel TCP/IP PDP context state; AT+QIACT=<contextID> is only sent when the selected context is not active."
-
-[[sequences.steps]]
-id = "open-socket"
-send = "AT+QIOPEN={{context_id}},{{connect_id}},\"TCP\",\"{{host}}\",{{port}},0,1"
-expect_urc = "+QIOPEN: {{connect_id}},0"
-timeout_secs = 150
-cleanup_on_failure = "AT+QICLOSE={{connect_id}}"
-
-[[sequences.steps]]
-id = "send-payload"
-send = "AT+QISEND={{connect_id}},{{payload_len}}"
-expect_prompt = ">"
-payload = "{{payload}}"
-terminator = "none"
-expect = "SEND OK"
-timeout_secs = 60
-evidence = "SEND OK means the module accepted the payload for sending."
-
-[[sequences.steps]]
-id = "query-send-ack"
-send = "AT+QISEND={{connect_id}},0"
-expect = "+QISEND:"
-require_tcp_ack = true
-timeout_secs = 30
-```
+remain human-editable and explicit. The normative field and engine constraints
+follow; the maintained complete authoring example and field reference live in
+[PRESETS.md](PRESETS.md#sequence-toml-files).
 
 REQ-SEQ-FILE-001: Each Sequence TOML file MUST include top-level `title`. The
 title is the normal user-facing Sequence set label in CLI output and TUI group
@@ -5094,11 +4795,12 @@ instruction or footer; assert that capped reading/review states retain working
 range and paging behavior; and assert that every cell in the modal rectangle
 uses the active theme background in dark and light themes.
 
-## 24. Accepted Decisions
+## 24. Decision Traceability
 
-Accepted product and architecture decisions are summarized in
-`docs/DECISIONS.md`. That document records decision rationale and consequences;
-the normative product and technical requirements remain in this specification.
+Accepted product and architecture decisions are recorded in
+[DECISIONS.md](DECISIONS.md). That document owns context, alternatives,
+rationale, consequences, status, and supersession; the normative product and
+technical outcomes remain in this specification.
 
 Any new unresolved decision that affects product behavior, safety, UI,
 transport, packaging, or distribution must be raised explicitly and must not be
@@ -5311,10 +5013,6 @@ supersedes.
   https://docs.rs/portable-pty/latest/portable_pty/
 - ctrlc:
   https://docs.rs/ctrlc/latest/ctrlc/
-- 3GPP TS 27.007 Release 19, version 19.6.0, uploaded 2026-03-16:
-  https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1515
-- 3GPP TS 27.005 Release 19, version 19.0.0, uploaded 2025-10-14:
-  https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=1514
 - TOML v1.0.0:
   https://toml.io/en/v1.0.0
 - XDG Base Directory Specification:

@@ -1,7 +1,9 @@
 # Installation
 
-This document defines the end-user installation and runtime prerequisites for
-`atctl`.
+This guide owns the end-user install, update, removal, and first-run procedure.
+The supported platform and required packaging outcomes are normative in
+[SPEC.md](SPEC.md) sections 7, 8, and 22; maintainer release operations belong
+in [PACKAGING.md](PACKAGING.md).
 
 ## Validated Environment
 
@@ -49,11 +51,11 @@ References:
 The Homebrew formula must declare `libusb` as a dependency. Homebrew should
 therefore install `libusb` automatically for end users.
 
-The intended Homebrew path is a formula that can use a bottle when available
-and falls back to a source build when no matching bottle is available or when
-source verification is needed. `libusb` remains a runtime dependency in both
-cases. Rust and `pkgconf` are source-build dependencies, not normal runtime
-dependencies for bottled installs.
+Homebrew may use a bottle or fall back to a source build. `libusb` remains a
+runtime dependency; Rust and `pkgconf` are build dependencies only when a
+source build is needed. Maintainers should use the
+[Homebrew verification runbook](PACKAGING.md#homebrew-formula-and-bottle-verification)
+for the complete Formula and bottle checks.
 
 GitHub Releases archives are release artifacts and manual artifacts. They are
 not the normal end-user install path.
@@ -159,3 +161,4 @@ By default, `atctl devices` shows plausible AT operation targets. If it cannot
 show the expected USB modem, follow
 [USB Modem Is Not Visible in the USB Tree](TROUBLESHOOTING.md#usb-modem-is-not-visible-in-the-usb-tree)
 and [List Devices Through libusb](TROUBLESHOOTING.md#list-devices-through-libusb).
+Read [SAFETY.md](SAFETY.md) before unfamiliar or state-changing AT operations.

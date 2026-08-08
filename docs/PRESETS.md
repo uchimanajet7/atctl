@@ -1,10 +1,13 @@
 # Presets and Sequences Reference
 
-This document explains how `atctl` presents, loads, reviews, and runs one-shot
-presets and multi-step Sequences.
+This is the user reference for preset and Sequence usage, current inventory,
+TOML authoring fields, explicit loading, and repository-managed examples. The
+normative loader, execution, review, masking, logging, and output contracts are
+in [SPEC.md](SPEC.md); this reference projects those contracts into operator
+tasks and examples.
 
-For the cross-surface review, confirmation, masking, and raw-diagnostic
-contract, see the [Safety Guide](SAFETY.md). For task-oriented diagnosis and
+For operator guidance on cross-surface review, confirmation, masking, and raw
+diagnostics, see the [Safety Guide](SAFETY.md). For task-oriented diagnosis and
 Response or log handling, see [Troubleshooting](TROUBLESHOOTING.md).
 
 Presets are not TUI-only. The same loaded preset set is used by:
@@ -42,13 +45,16 @@ After loading, both preset kinds use the same command execution behavior and
 duplicate-name rules. The source distinction remains available for CLI labels,
 TUI source grouping, review responsibility, and troubleshooting context.
 
-In the TUI, product presets are the default command rows. They are not shown
-under a `Product presets` header in the normal command list. When file presets
-are visible, their top-level TOML `title` is shown as a non-selectable source
-group header, such as `SORACOM commands` or `Quectel commands`; the TUI does
-not add an `Add-on:` prefix.
+In the TUI, product presets are the default command rows. Loaded file presets
+are grouped by their top-level TOML `title`, so confirm the title and source in
+Details before execution.
 
 ## Product Presets
+
+This table is the user-facing projection of the canonical built-in name,
+command, order, and confirmation contract in
+[SPEC.md section 17.4](SPEC.md#174-standard-workflow-core-presets). Update both
+surfaces and the implementation together when that inventory changes.
 
 Product presets are displayed in a curated workflow order, not alphabetical
 order. The order follows connection check, modem identity, SIM, radio access
@@ -193,19 +199,13 @@ loaded preset. `atctl` validates the TOML shape, duplicate names, masking, and
 execution review, but it does not certify that an external definition is
 appropriate for the current device, SIM, network, or endpoint.
 
-Human-readable `atctl preset list` output shows `NAME` and `AT COMMAND`.
-Only confirmation-required rows append `[confirm]`; normal rows omit it. The tag
-means that selection leads to a confirmation step and is not a warning or risk
-classification. When tagged and untagged rows are mixed, the tag is aligned in
-a fixed trailing lane; when no row requires confirmation, that lane is
-reclaimed for the command preview. File definitions are grouped once by title and file path.
-`atctl preset show <NAME>` displays the complete command without USB access,
-using `Overview`, `Definition`, and `Execution` sections for the definition
-origin, categories, timeout, and execution review. Use `--json` with `list` or
-`show` for complete structured records.
-`atctl preset run` prints the source label, file path,
-and review notice before USB access when a file preset is executed, including
-non-interactive `--yes` or `--yes --allow-unknown` runs.
+Human-readable `atctl preset list` identifies each name and AT command, appends
+`[confirm]` only when selection leads to confirmation, and groups file
+definitions by title and path. `atctl preset show <NAME>` displays the complete
+definition and review without USB access. Use `--json` with `list` or `show`
+for structured records. `atctl preset run` identifies an external source before
+USB access, including non-interactive authorized runs. Exact list and Details
+presentation remains specified in [SPEC.md](SPEC.md).
 
 Both explicit options are repeatable. Explicit files are loaded in command-line
 order. Explicit directories are loaded in command-line order, and `.toml` files
@@ -271,44 +271,15 @@ Repository-managed example Sequences and user-authored Sequences are loaded
 through the same Sequence definition path, but their origin remains visible and
 does not turn them into product-provided standard Sequences.
 
-In the TUI, product-provided standard Sequences are default Sequence rows. They
-are not shown under a `Product Sequences` header in the normal list. When
-user-authored or repository-managed Sequence definitions are visible, their
-top-level TOML `title` is shown as a non-selectable source group header, such
-as `Quectel Sequences`; the TUI does not add an `Add-on:` prefix.
-
-The TUI keeps every executable item to one list row. Command rows show the name
-and AT command; Sequence rows show the name and a purpose preview. A
-confirmation-required row appends `[confirm]`, while a directly executable row
-does not. Mixed rows align the tag in a fixed trailing lane. The TUI reinforces
-the tag with a dedicated confirmation-flow color while the literal text and
-bold no-color form carry the meaning. Selection does not expand a row. Press
-`d` for the complete name, AT command or Sequence purpose, confirmation state,
-effects that remain unknown, definition origin, categories, timeout,
-parameters, and execution review. The read-only Details overlay organizes that
-information as `Overview`, `Definition`, `Before running`, `Inputs`, and
-`Execution`, omits empty sections, and identifies the current section and
-visible range in its border title. Details also shows the source title and file
-path for a non-default loaded definition and does not access the modem.
-
-`Run Sequence` is an operation surface rather than a second complete-definition
-view. Value input keeps the active value, directly relevant hint, candidates or
-candidate actions, current error, and exact next action visible without
-repeating the complete Details content. Final review shows all resolved values,
-applicable before-running notes, and execution consequences before the run
-instruction. If that review is longer than the available area, its explicit
-Review region scrolls with `PageUp`/`PageDown` while the instruction and current
-input remain visible. When more than one value must be resolved, the modal's
-top-right title shows
-`Value <current> of <total>` during value input and candidate-action
-confirmation. The active label and value stay at the top of the body, and the
-operation footer says whether `Enter` moves to the next numbered value, reviews
-the Sequence, accepts a candidate and continues to the next value or review,
-reviews a confirmation-required candidate action, or runs a confirmation-free
-candidate action. Accepting a candidate does not run the selected Sequence.
-Candidate-action completion returns to the modal without choosing a returned
-value. Review paging does not change the value position. Single-value Sequences
-and final review/confirmation omit the counter.
+In the TUI, product-provided Sequences appear with the default executable
+items, while loaded definitions are grouped by their TOML title. Press `d` to
+review the complete definition without modem access. Press `Enter` to resolve
+the current values, use any explicit candidate action, review the final values
+and consequences, and then confirm execution when required. The modal states
+the active value and next action; `PageUp` and `PageDown` scroll a long review.
+Loading or opening a definition does not run it or perform hidden modem I/O.
+Exact row, Details, modal, footer, reflow, and accessibility behavior remains
+normative in [SPEC.md](SPEC.md).
 
 Sequence add-ons are external executable definitions. To use repository-managed
 examples or project-local definitions, provide their locations for the current
@@ -348,9 +319,9 @@ path, and review notice before USB access when a file Sequence is executed,
 including non-interactive `--yes` or `--yes --allow-unknown` runs.
 
 Preset and Sequence executions participate in the normal masked history and
-session-log lifecycle. See [Logging](SAFETY.md#logging) for the protection
-contract and [Review and Manage Logs](TROUBLESHOOTING.md#review-and-manage-logs)
-for paths, `--no-log`, review, Response export, retention, and deletion.
+session-log lifecycle. See [Logging](SAFETY.md#logging) for protection guidance
+and [Review and Manage Logs](TROUBLESHOOTING.md#review-and-manage-logs) for
+paths, `--no-log`, review, Response export, retention, and deletion.
 
 ## Sequence TOML Files
 
@@ -457,10 +428,9 @@ are not separate copied commands. They use the referenced item's normal
 execution review, confirmation, timeout, masking, Response, logging, and raw
 diagnostic export behavior. An action row appends `[confirm]` only when the
 referenced item's own review requires confirmation; it does not inherit the
-selected Sequence's tag. Mixed candidate actions align the tag in the same
-fixed trailing lane as other executable lists. A failed provider run is
-reported separately from the selected Sequence. Manual entry remains available
-when the candidate list is empty or does not contain the required value.
+selected Sequence's tag. A failed provider run is reported separately from the
+selected Sequence. Manual entry remains available when the candidate list is
+empty or does not contain the required value.
 
 Interactive `atctl sequence run` offers the same manual-entry and provider
 choices when a candidate-backed value is missing. Non-interactive and JSON

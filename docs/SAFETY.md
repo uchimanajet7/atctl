@@ -1,8 +1,10 @@
 # Safety Guide
 
 AT commands can read sensitive identifiers and change modem state. This guide
-explains what operators must review before USB access and what `atctl` must
-confirm, mask, log, or block by default.
+owns operator precautions and the warnings needed at the point of action. The
+normative review, confirmation, masking, logging, and raw-export behavior is in
+[SPEC.md](SPEC.md); this guide explains how to use that behavior safely rather
+than defining a second product contract.
 
 For preset and Sequence inventories, definition formats, loading, and execution
 semantics, see [Presets and Sequences Reference](PRESETS.md). For diagnostic,
@@ -33,18 +35,10 @@ consequences before the operator chooses whether to proceed.
 
 ## Before USB Access
 
-- Human CLI lists and TUI rows show the name and AT command or purpose preview.
-  A row appends the complete ASCII tag `[confirm]` only when execution requires
-  explicit confirmation. Mixed result sets reserve a fixed trailing lane for
-  every row, align each displayed tag there, and leave it blank on
-  confirmation-free rows; a result set with no confirmation-required item
-  reclaims the space. The preview is shortened before the name and the tag is
-  never split. TUI candidate-acquisition actions use the same derived tag and
-  alignment rule. The TUI uses color only as reinforcement and retains the full
-  bold text in no-color mode. The tag describes the next interaction, not risk
-  severity. CLI `show` and TUI
-  `d Details` expose the complete review without contacting the modem.
-  Compact Status does not repeat selection-time review metadata.
+- Human CLI lists and TUI rows append `[confirm]` when selection leads to an
+  explicit confirmation step. The tag describes the next interaction, not
+  risk severity. Use CLI `show` or TUI `d Details` to inspect the complete
+  review without contacting the modem.
 - Known observations without a material effect may execute directly. Sensitive
   output and normal logs remain masked by default.
 - Known material operations require `run` confirmation before USB access.
@@ -316,10 +310,8 @@ safety model:
 - A preset contains command, category, and optional timeout metadata; it does
   not declare risk.
 - The product derives the execution review from the command.
-- The preset set title and source path are shown once for each file group in
-  human-readable CLI listings and remain structured in JSON. In the TUI,
-  the same title is shown as a non-selectable source group header or
-  `Source: <title>` detail when file presets are visible.
+- Confirm the displayed set title and source path before selecting an external
+  preset.
 - Duplicate preset names fail instead of silently overriding.
 - Vendor-specific commands may be loaded, but unknown operations and known
   material operations remain protected by masking and confirmation.
@@ -338,8 +330,8 @@ Review user-authored and repository-managed Sequence files before running them:
 - The combined review preserves every effect and data-handling dimension,
   parameter sensitivity, reversibility, and unknown boundary.
 - Duplicate Sequence names fail instead of silently overriding.
-- The Sequence set title and source path are shown once for each file group in
-  human-readable CLI listings and remain structured in JSON.
+- Confirm the displayed Sequence set title and source path before selecting an
+  external Sequence.
 - Sensitive Sequence parameters such as phone numbers, SMS bodies, payloads,
   APN credentials, usernames, passwords, and tokens are masked by default.
 - For required values such as SMS storage index or PDP context ID, use the

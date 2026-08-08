@@ -1,11 +1,15 @@
 # Troubleshooting
 
-This document covers USB and modem troubleshooting for `atctl`.
+This guide owns symptom-to-diagnosis-to-recovery procedures, operator result
+checks, and normal diagnostic-artifact handling for `atctl`. Required product
+error, timeout, masking, logging, and export behavior remains normative in
+[SPEC.md](SPEC.md).
 
-For preset and Sequence inventories, definition formats, loading, and complete
-execution semantics, see [Presets and Sequences Reference](PRESETS.md). For the
-cross-surface review, confirmation, masking, logging, and raw-diagnostic
-contract, see the [Safety Guide](SAFETY.md).
+For preset and Sequence inventories, definition formats, and loading, see
+[Presets and Sequences Reference](PRESETS.md). For operator precautions around
+review, confirmation, masking, logging, and raw diagnostics, see the
+[Safety Guide](SAFETY.md); the required cross-surface behavior remains in
+[SPEC.md](SPEC.md).
 
 ## USB Modem Is Not Visible in the USB Tree
 
@@ -382,39 +386,16 @@ atctl sequence run sms-reply-check --param index=<INDEX> --param message=<MESSAG
 ```
 
 In the TUI, select the `sms` category and choose a Sequence from
-`Commands / Sequences`. Each row shows the name and purpose preview and appends
-`[confirm]` when execution requires explicit confirmation. Mixed rows align the
-tag in a fixed trailing lane; the TUI uses a dedicated confirmation-flow color
-as reinforcement while retaining the complete bold text in no-color mode.
-Press `d` to read
-the complete purpose, confirmation state, and effects that remain unknown
-without accessing the modem. Details separates the complete definition into
-`Overview`, `Definition`, `Before running`, `Inputs`, and `Execution`, and its
-border title identifies the current section and visible range.
+`Commands / Sequences`. Press `d` to inspect the complete definition without
+accessing the modem, then press `Enter` to resolve values and review the run.
 
-`Run Sequence` keeps the active value, relevant hint, candidates or candidate
-actions, current error, and exact next action visible without repeating the
-complete definition. For a Sequence with multiple input values, read `Value
-<current> of <total>` at the modal's top right to confirm which value is active.
-This position changes only when value navigation selects another parameter.
-Final review shows all resolved values, applicable before-running notes, and
-execution consequences before the run instruction. Use `PageUp` / `PageDown`
-when an explicit Review region is longer than the available area; the run
-instruction and current input remain visible while it scrolls. The operation
-footer states the exact result of `Enter`, such as the next numbered value or
-`Review Sequence`.
-For SMS read or reply, use the candidate action for the existing
-`sms-receive-check` Sequence, then select the required `storage=<index>` value.
-This provider first selects text mode and then lists messages; it is not a
-single copied `AT+CMGL` command. Opening `Run Sequence` alone does not read
-messages. The provider appends `[confirm]` when `sms-receive-check` itself
-requires confirmation; candidate action sets use the same fixed trailing-lane
-alignment, and the selected read/reply Sequence does not supply or override
-this tag. After candidates are loaded, highlight one storage index and press
-`Enter` once. The TUI accepts the value and opens the selected Sequence review
-immediately; it does not run the Sequence until that separate review is
-completed.
-
+For SMS read or reply, use the displayed candidate action for
+`sms-receive-check` when a fresh list is needed, then select the required
+`storage=<index>` value. Opening `Run Sequence` does not read messages. A
+candidate provider uses its own normal review and confirmation, and accepting a
+candidate still does not run the selected read or reply Sequence. See
+[Selecting Candidate Values](PRESETS.md#selecting-candidate-values) for the
+complete input procedure.
 Interactive `atctl sequence run sms-read-message` and
 `atctl sequence run sms-reply-check` offer the same provider and manual-entry
 paths when `index` is omitted. In a non-interactive or JSON invocation, run
@@ -708,10 +689,11 @@ Logs pane and must be retained and removed separately.
 By default, `atctl` masks IMSI, ICCID, IMEI, MSISDN, APN credentials, and similar
 identifiers.
 
-See [Default Masking](SAFETY.md#default-masking) for the complete classification,
-short-value, saved-output, and unknown-vendor-output contract. The commands
-below are the task-oriented paths for deliberately unmasked display or raw
-diagnostic evidence.
+See [Default Masking](SAFETY.md#default-masking) for operator guidance about
+classification, short values, saved output, and unknown vendor output. The
+commands below are the task-oriented paths for deliberately unmasked display or
+raw diagnostic evidence; normative masking behavior remains in
+[SPEC.md](SPEC.md).
 
 Unmasked IMSI display requires explicit action and should be used only when the
 diagnostic case specifically requires confirming the IMSI:

@@ -106,10 +106,13 @@ Sequence定義は、実行前に確認してください。
 以下からリンクする利用者向け・メンテナ向けの詳細文書と
 コントリビューションガイドは現在英語です。
 
-- [インストール](docs/INSTALL.md)
-- [プリセットとSequenceのリファレンス](docs/PRESETS.md)
-- [安全ガイド](docs/SAFETY.md)
-- [トラブルシューティング](docs/TROUBLESHOOTING.md)
+- [インストール](docs/INSTALL.md) — インストール、更新、削除、初回確認
+- [プリセットとSequenceのリファレンス](docs/PRESETS.md) — 利用方法、一覧、
+  TOML、リポジトリ内の例
+- [安全ガイド](docs/SAFETY.md) — 利用者向け注意事項と機微データの扱い
+- [トラブルシューティング](docs/TROUBLESHOOTING.md) — 診断、復旧、ログ、
+  Response export
+- [リリース履歴](CHANGELOG.md) — リリースごとの主な変更
 
 ## 質問・報告
 
@@ -140,6 +143,9 @@ Pull Requestを作成する前に、
 - [パッケージングとリリース](docs/PACKAGING.md)
 - [製品・技術仕様](docs/SPEC.md)
 - [確定済みの製品・アーキテクチャ判断](docs/DECISIONS.md)
+
+製品契約の規範文書は製品・技術仕様です。その他の文書は、それぞれの手順または
+判断理由を所有し、別の要件を定義せず製品・技術仕様を参照します。
 
 ## ライセンス
 
