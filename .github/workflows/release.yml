@@ -102,6 +102,7 @@ jobs:
           brew install libusb pkgconf
           source scripts/maintenance/tool-versions.env
           cargo install --locked cargo-about --version "${CARGO_ABOUT_VERSION}" --features cli
+          cargo fetch --locked
 
       - name: Verify release source
         shell: bash

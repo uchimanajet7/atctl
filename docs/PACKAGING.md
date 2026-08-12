@@ -240,12 +240,14 @@ References:
 
 ## Local Release Artifact Verification
 
-Install the build and notice-generation tools:
+Install the build and notice-generation tools, then prefetch all locked target
+dependencies required by the offline metadata phase:
 
 ```sh
 brew install libusb pkgconf
 source scripts/maintenance/tool-versions.env
 cargo install --locked cargo-about --version "${CARGO_ABOUT_VERSION}" --features cli
+cargo fetch --locked
 ```
 
 Build into a new target directory so Cargo evaluates the installed Homebrew
@@ -284,6 +286,7 @@ scripts/maintenance/generate-third-party-notices.sh \
 
 References:
 
+- https://doc.rust-lang.org/cargo/commands/cargo-fetch.html
 - https://embarkstudios.github.io/cargo-about/
 - https://embarkstudios.github.io/cargo-about/cli/generate/config.html
 - https://www.gnu.org/licenses/old-licenses/lgpl-2.1.en.html
