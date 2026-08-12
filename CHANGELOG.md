@@ -4,7 +4,7 @@ Notable changes to `atctl` are documented here for users and source builders.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/).
 
-## 0.2.0 - 2026-08-08
+## 0.2.0 - 2026-08-12
 
 This release makes logging, Response export, execution review, and Sequence
 input more explicit, and removes persistent configuration in favor of runtime
