@@ -199,12 +199,22 @@ Contract and guidance: [SPEC.md](SPEC.md) USB requirements and
 
 Status: accepted
 
-Decision: Human executable discovery uses one compact confirmation grammar
-across CLI preset/Sequence lists, TUI `Commands / Sequences`, and TUI
-candidate actions. A one-row item identifies the command or Sequence and
-appends the literal ASCII tag `[confirm]` only when selection leads to an
-explicit confirmation step. The tag describes action flow, not severity or a
-scalar risk class.
+Decision: Human executable discovery uses one execution-review contract with
+surface-appropriate presentation. Human CLI preset and Sequence lists emit each
+complete executable name on its own line so that the displayed identifier is
+the exact value accepted by `show` and `run`; they do not append command or
+purpose previews or the `[confirm]` presentation tag. Read-only CLI `show`
+owns the complete definition and execution review.
+
+TUI `Commands / Sequences` rows and TUI candidate actions remain actionable
+one-row items. They identify the command or Sequence, show an AT command or
+concise purpose preview when space permits, and append the literal ASCII tag
+`[confirm]` only when selecting the item leads to an explicit confirmation
+step. `Commands / Sequences` uses one terminal-display-cell-aware name column
+for the current category or search result so every command or purpose preview
+starts at the same column; it shortens previews before names and does not impose
+a fixed name-column cap. The tag describes action flow, not severity or a scalar
+risk class.
 
 Complete definition and execution-review information belongs in read-only CLI
 `show` and TUI `d Details`. The action-time confirmation is derived again
@@ -220,11 +230,16 @@ Sequence. All modal surfaces use `Esc` for close, cancel, or back; lowercase
 visible input field. Text and structure carry meaning in dark, light, and
 no-color modes; color is reinforcement only.
 
-Rationale and consequences: A stable one-row grammar supports scanning mixed
-commands and Sequences without repeating full review prose. The explicit word
-`[confirm]` states the next interaction without implying warning severity and
-remains usable without color. Separating discovery, Details, current Status,
-and action-time confirmation gives each surface one job. Re-deriving the final
+Rationale and consequences: A CLI list row is static output that the operator
+copies into a later command, so its primary datum is the complete accepted
+identifier. A TUI row is an actionable selection, so its preview and
+confirmation-flow tag help the operator decide what to open or run. Sharing the
+review and confirmation contract does not require identical row layouts across
+those different interactions. A stable one-row TUI grammar supports scanning
+mixed commands and Sequences without repeating full review prose. The explicit
+word `[confirm]` states the next interaction without implying warning severity
+and remains usable without color. Separating list, Details, current Status, and
+action-time confirmation gives each surface one job. Re-deriving the final
 review prevents an unresolved Sequence or edited command from authorizing a
 different operation. Phase-critical input and confirmation controls remain
 available even when supporting content is long.
@@ -237,8 +252,14 @@ adjacent rendered states together.
 
 Current-source basis:
 
-- [Command Line Interface Guidelines](https://clig.dev/) supports concise,
-  consistent subcommand output and action-boundary confirmation.
+- [Command Line Interface Guidelines](https://clig.dev/) supports human-first,
+  composable CLI output and conversational exploration across commands; it
+  explicitly excludes full-screen terminal programs from its scope.
+- [Homebrew Querying](https://docs.brew.sh/Querying-Brew) separates name
+  listing from complete formula information.
+- [kubectl get](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_get/)
+  and [kubectl describe](https://kubernetes.io/docs/reference/kubectl/generated/kubectl_describe/)
+  separate resource discovery from detailed inspection.
 - [WCAG 2.2 Use of Color](https://www.w3.org/WAI/WCAG22/Understanding/use-of-color.html)
   requires meaning to remain available without color.
 - [W3C Forms Tutorial](https://www.w3.org/WAI/tutorials/forms/) and

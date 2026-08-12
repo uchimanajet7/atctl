@@ -988,21 +988,15 @@ Required options:
 REQ-CLI-PRESET-001: `atctl preset list` MUST list loaded product presets and
 loaded file presets.
 
-REQ-CLI-PRESET-002: Human-readable list output MUST be a concise scan surface
-with `NAME` and `AT COMMAND` columns. A row MUST append the complete ASCII
-action-flow tag `[confirm]` only when execution requires explicit confirmation.
-The tag has the same meaning as in TUI executable-item rows: selecting the item
-leads to a confirmation step; it is not a warning or effects classification.
-Rows MUST remain one line and use terminal display-cell width. When the current
-result set contains at least one confirmation-required row, the list MUST
-reserve one trailing lane of one separator cell plus the complete `[confirm]`
-width for every row and align every displayed tag to that lane. A
-confirmation-free row leaves that lane blank. When the result set contains no
-confirmation-required row, the lane MUST NOT be reserved. The implementation
-MUST reserve the complete lane before truncating other content, ellipsize the
-AT command preview before the name, and MUST NOT render a partial tag. Rows
-that do not require confirmation MUST omit the tag. Categories remain workflow
-filters in the TUI and complete discovery metadata in `show` and JSON output.
+REQ-CLI-PRESET-002: Human-readable list output MUST emit every loaded Preset's
+complete name as one logical line. The name line MUST contain exactly the name
+accepted by `atctl preset show <NAME>` and `atctl preset run <NAME>` and MUST
+NOT contain a table header, prefix, bullet, AT command preview, execution-review
+tag, padding, or application-generated ellipsis. `atctl` MUST NOT shorten a
+name based on terminal width; a terminal MAY visually wrap the complete emitted
+line. Complete AT command and execution-review information belongs in `show`,
+and categories remain workflow filters in the TUI and complete discovery
+metadata in `show` and JSON output.
 
 REQ-CLI-PRESET-003: `atctl preset list` MUST distinguish file preset sets from
 the unheaded product baseline without requiring color. A file set MUST be
@@ -1105,9 +1099,10 @@ are not a replacement for direct `send` or one-shot `preset run`.
 
 REQ-CLI-SEQ-001: `atctl sequence list` MUST list loaded product-provided
 standard Sequences and loaded user or repository-managed Sequence definitions.
-Human-readable output MUST be a concise one-line scan surface with `NAME` and
-`PURPOSE` columns and the same `[confirm]` reservation, display-cell-width,
-grouping, and truncation rules as preset list output.
+Human-readable output MUST emit every loaded Sequence's complete name as one
+logical line under the same exact-name and no-decoration rules as Preset list
+output. Purpose and execution-review information belong in `show`; they MUST
+NOT be appended to a human-readable list name line.
 `--json` MUST return complete, untruncated Sequence records with structured
 definition origin, categories, timeout, parameters, and execution review.
 
@@ -1595,10 +1590,11 @@ unchanged.
 
 REQ-TUI-005: Every executable command row MUST use one physical row and show
 identity in this order: selection marker, command name, then the AT command
-string. A Sequence row MUST use the same physical height and show the selection
-marker, Sequence name, then a concise purpose preview. Rows MUST NOT repeat
-`AT:` or `Purpose:` before every preview. A row MUST append the complete ASCII
-action-flow tag `[confirm]` only when execution requires explicit confirmation.
+string when space permits. A Sequence row MUST use the same physical height and
+show the selection marker, Sequence name, then a concise purpose preview when
+space permits. Rows MUST NOT repeat `AT:` or `Purpose:` before every preview. A
+row MUST append the complete ASCII action-flow tag `[confirm]` only when
+execution requires explicit confirmation.
 The tag means that execution has a confirmation step; it MUST NOT be presented
 as a warning, risk score, effects classification, or completed confirmation.
 A row that does not require confirmation MUST NOT show a normal-state
@@ -1611,9 +1607,18 @@ complete `[confirm]` width. Displayed tags MUST begin in the same terminal
 column; confirmation-free rows leave that lane blank. When the result contains
 no confirmation-required item, the lane MUST be reclaimed for command or
 purpose content. When available width cannot fit the full row, the
-implementation MUST reserve the complete lane first and at least one visible
-character of the name. It MUST shorten or omit the AT command or purpose
-preview before ellipsizing the name and MUST NOT show a partial tag.
+implementation MUST reserve the complete lane first. All executable rows in the
+current category or search result MUST use one shared name-column width measured
+in terminal display cells, and every AT command or purpose preview MUST begin at
+the same terminal column. The shared name-column width MUST be the longest
+complete displayed name when it fits after the selection marker and reserved
+confirmation lane; otherwise it MUST use the remaining available width. The
+implementation MUST NOT apply a fixed character or display-cell cap to that
+shared column and MUST NOT calculate a different name-column width for each row.
+It MUST shorten or omit every row's AT command or purpose preview before
+ellipsizing a name. It MAY ellipsize names only when the longest complete name
+cannot fit after the selection marker and reserved confirmation lane. It MUST
+preserve at least one visible name character and MUST NOT show a partial tag.
 
 REQ-TUI-005A: With `Commands / Sequences` focused and the TUI idle, `d` MUST
 open a read-only `Details` overlay for the selected executable item without USB,
@@ -2402,7 +2407,7 @@ two-step `sms-receive-check` Sequence and back; it is not a new general
 recursive Sequence-definition feature. Opening the modal MUST NOT execute
 candidate actions.
 Each visible candidate-action row MUST append the same complete `[confirm]`
-action-flow tag used by other human executable discovery surfaces when that
+action-flow tag used by TUI executable-item rows when that
 action's derived review requires confirmation, and MUST omit the tag otherwise.
 The tag MUST be determined from the candidate action itself, not inherited from
 the selected Sequence. Candidate actions in the same action set MUST use the
@@ -2646,13 +2651,13 @@ before submitting a reply body.
 REQ-TUI-SEQ-006G: CLI and PTY bridge surfaces MUST NOT use hidden TUI candidate
 sets. Non-interactive CLI Sequence execution requires explicit parameters or
 documented defaults and must fail with actionable missing-value guidance when a
-required candidate-backed or `source=select` value is absent. CLI list and
-missing-value output MUST expose source/default/hint/candidate metadata
-compactly when present so add-on Sequence authors and automation users can see
-how a value is intended to be obtained. PTY bridge input is an AT execution
-surface and must not consult TUI session candidates automatically. Any
-cross-surface candidate sharing requires an explicit user action defined by
-this specification.
+required candidate-backed or `source=select` value is absent. CLI `sequence
+show`, structured `sequence list --json`, and missing-value output MUST expose
+source/default/hint/candidate metadata when present so add-on Sequence authors
+and automation users can see how a value is intended to be obtained. PTY bridge
+input is an AT execution surface and must not consult TUI session candidates
+automatically. Any cross-surface candidate sharing requires an explicit user
+action defined by this specification.
 
 REQ-TUI-SEQ-006H: During Sequence confirmation, the acknowledgement instruction
 and current confirmation input MUST remain visible at all supported modal
@@ -2938,10 +2943,14 @@ for actual warning content such as effects that are not fully known.
 
 OQ-012 execution-review display contract:
 
-- Human CLI and TUI executable discovery MUST display command name, AT command,
-  then `[confirm]` when confirmation is required. Sequence discovery MUST
-  display name, summary, then `[confirm]` when confirmation is required.
-- `[confirm]` is the only confirmation-required token allowed in normal human
+- Human CLI Preset and Sequence lists MUST display complete executable names as
+  exact reusable identifiers without command/purpose previews or `[confirm]`.
+  Complete definition and review content belongs in CLI `show`.
+- TUI command discovery MUST display command name, AT command when space
+  permits, then `[confirm]` when confirmation is required. TUI Sequence
+  discovery MUST display name, summary when space permits, then `[confirm]`
+  when confirmation is required.
+- `[confirm]` is the only confirmation-required token allowed in normal TUI
   executable-item rows and TUI candidate-action rows.
 - Rows that do not require confirmation MUST omit confirmation status.
 - Scalar labels such as `[safe]`, `[sensitive]`, `[write]`, `[persistent]`,
@@ -2986,9 +2995,10 @@ OQ-012 execution-review display contract:
   selected-row tag preservation, identical `[confirm]` tags for known and
   unknown confirmation cases, omission of `[confirm]` for no-confirmation
   items, absence of repeated `AT:` and `Purpose:` row labels, negative checks
-  for all removed scalar labels, human CLI list coverage, TUI candidate-action
-  coverage, and render-buffer evidence that Details exposes the complete review
-  without duplicating it in compact Status. It MUST compare built-in-only,
+  for all removed scalar labels, exact and untruncated human CLI list names,
+  TUI candidate-action coverage, and render-buffer evidence that Details
+  exposes the complete review without duplicating it in compact Status. It MUST
+  compare built-in-only,
   mixed command/Sequence, loaded-definition, known confirmation, unknown
   confirmation, no-confirmation Sequence review, adjacent acknowledgement, and
   dark/light/no-color states.
@@ -3201,8 +3211,9 @@ REQ-REVIEW-013: `--allow-unknown` without `--yes` MUST fail, and
 confirmation MUST NOT authorize a different operation after substitution,
 payload collection, Sequence branching, or runtime resolution.
 
-REQ-REVIEW-014: A Sequence list row MAY show a definition-boundary review while
-operator values, defaults, or runtime-derived values are unresolved. Before
+REQ-REVIEW-014: A TUI Sequence list row MAY show a definition-boundary
+confirmation-flow tag while operator values, defaults, or runtime-derived
+values are unresolved. Before
 execution confirmation, the product MUST bind every operator value and default,
 re-derive the review from the resulting step commands, conditional internal
 actions, payload boundary, and cleanup actions, and use that resolved review for
@@ -3210,13 +3221,14 @@ authorization, execution output, and logs. A value that can only be derived from
 a prior modem response MUST remain explicit in the pre-execution boundary and
 the resulting command MUST be checked again immediately before its write.
 
-REQ-REVIEW-015: Human executable discovery across `atctl preset list`,
-`atctl sequence list`, TUI `Commands / Sequences`, and TUI candidate-acquisition
-actions MUST use the same exception-only `[confirm]` tag. The tag communicates
-only that selection leads to a confirmation step. Complete effects,
+REQ-REVIEW-015: TUI `Commands / Sequences` and TUI candidate-acquisition actions
+MUST use the same exception-only `[confirm]` tag. The tag communicates only that
+selection leads to a confirmation step. Human CLI Preset and Sequence lists
+MUST omit that presentation tag and expose complete reusable names; read-only
+CLI `show` owns the complete definition-boundary review. Complete effects,
 uncertainty, data handling, reversibility, consequences, and acknowledgement
 instructions belong in read-only `show` or Details and the action-time
-confirmation surface, not in a compact discovery row. Structured JSON MUST
+confirmation surface, not in a compact TUI discovery row. Structured JSON MUST
 continue to expose the execution review as data and MUST NOT add this
 presentation tag as a field.
 
@@ -4763,16 +4775,22 @@ instead of only asserting one local state, such as product-only commands,
 mixed product/file presets, mixed command/Sequence results, and loaded
 repository-managed examples.
 
-REQ-TEST-010: Executable discovery verification MUST cover command and Sequence
-rows in human CLI lists and TUI without repeated `AT:` or `Purpose:` labels,
-equal selected/unselected TUI row height, identical complete `[confirm]` tag
-preservation for known and unknown confirmation in selected and narrow rows,
-omission of the tag when confirmation is not required, fixed trailing tag
-alignment across mixed confirmation and confirmation-free rows, lane
-reclamation when a result set contains no confirmation-required row, the
-dedicated dark/light ConfirmationFlow colors and no-color bold fallback,
-candidate-action rows using the same derived tag and alignment grammar,
-command and Sequence Details without a device,
+REQ-TEST-010: Executable discovery verification MUST cover complete, exact,
+untruncated Preset and Sequence names in human CLI lists, direct reuse of a
+displayed name for exact lookup and read-only `show`, source grouping outside
+name lines, and unchanged complete JSON discovery records. TUI verification
+MUST cover command and Sequence rows without repeated `AT:` or `Purpose:`
+labels, equal selected/unselected row height, one terminal-display-cell-aware
+name column shared by the current result, identical preview start columns for
+short and long names, no fixed cap on a fully fitting long name, and omission of
+all row previews before name ellipsizing at constrained widths,
+identical complete `[confirm]` tag preservation for known and unknown
+confirmation in selected and narrow rows, omission of the tag when confirmation
+is not required, fixed trailing tag alignment across mixed confirmation and
+confirmation-free rows, lane reclamation when a result set contains no
+confirmation-required row, the dedicated dark/light ConfirmationFlow colors
+and no-color bold fallback, candidate-action rows using the same derived tag
+and alignment grammar, command and Sequence Details without a device,
 complete review in Details without confirmation/unknown-effects duplication in
 Status, hidden-field search-match disclosure, empty category/search recovery,
 Details scrolling and exact state restoration, and the safe-resize fallback.

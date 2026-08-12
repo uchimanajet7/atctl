@@ -1,6 +1,7 @@
 use clap::{CommandFactory, Parser};
 
 use crate::presets::model::PresetOrigin;
+use crate::sequences::model::{SequenceOrigin, SequenceStep, StepTerminator};
 use crate::transport::test_support::MockTransport;
 
 use super::*;
@@ -715,22 +716,60 @@ fn parses_sequence_locations_for_list_run_and_tui() {
 }
 
 #[test]
-fn formats_sequence_list_with_sms_product_sequences() {
-    let sequences = sequence_builtins();
+fn human_sequence_list_emits_complete_reusable_names_and_sources() {
+    let long_name = "soracom-unified-endpoint-tcp-send-check";
+    let mut sequences = sequence_builtins();
+    sequences.push(Sequence::new(
+        long_name,
+        "Send a payload to SORACOM Unified Endpoint over a Quectel TCP socket.",
+        vec!["data".to_owned(), "network".to_owned()],
+        SequenceOrigin::file("SORACOM Sequences", "soracom.toml", None),
+        Some(180),
+        Vec::new(),
+        vec![SequenceStep {
+            id: "at".to_owned(),
+            label: None,
+            ensure_pdp_context_active: None,
+            send: Some("AT".to_owned()),
+            expect: Some("OK".to_owned()),
+            expect_prompt: None,
+            expect_urc: None,
+            payload: None,
+            terminator: StepTerminator::None,
+            require_tcp_ack: false,
+            require_ping_success: false,
+            timeout_secs: None,
+            evidence: None,
+            cleanup_on_failure: None,
+        }],
+    ));
     let output = format_sequence_list(&sequences, false).unwrap();
 
-    assert!(output.starts_with("NAME"));
-    assert!(output.contains("PURPOSE"));
+    let listed_name = output
+        .lines()
+        .find(|line| *line == long_name)
+        .expect("complete Sequence name");
+    let sequence = find_sequence(&sequences, listed_name).unwrap();
+    let shown = format_sequence_show(sequence, false).unwrap();
+
+    assert_eq!(listed_name, long_name);
+    assert!(!output.starts_with("NAME"));
+    assert!(!output.contains("PURPOSE"));
     assert!(!output.contains("ATTENTION"));
     assert!(output.contains("sms-send-check"));
-    assert!(output.contains("Send a standard SMS"));
     assert!(output.contains("sms-receive-check"));
     assert!(output.contains("sms-read-message"));
     assert!(output.contains("sms-reply-check"));
-    assert!(output.contains("[confirm]"));
+    assert!(!output.contains("Send a standard SMS"));
+    assert!(!output.contains("Send a payload to SORACOM"));
+    assert!(!output.contains("[confirm]"));
     assert!(!output.contains("! Confirmation required"));
     assert!(!output.contains("Product Sequences"));
     assert!(!output.contains("not required"));
+    assert!(output.contains("Loaded from: SORACOM Sequences"));
+    assert!(output.contains("File: soracom.toml"));
+    assert!(shown.contains(&format!("Name: {long_name}")));
+    assert!(shown.contains("Purpose: Send a payload to SORACOM"));
 
     let json = format_sequence_list(&sequences, true).unwrap();
     assert!(!json.contains("[confirm]"));
@@ -741,6 +780,12 @@ fn formats_sequence_list_with_sms_product_sequences() {
             && row["parameters"][0]["candidate"] == "sms-message"
             && row["parameters"][0]["candidate_providers"][0]["kind"] == "sequence"
             && row["parameters"][0]["candidate_providers"][0]["name"] == "sms-receive-check"
+    }));
+    assert!(value.as_array().unwrap().iter().any(|row| {
+        row["operation"]["name"] == long_name
+            && row["operation"]["purpose"]
+                .as_str()
+                .is_some_and(|purpose| purpose.contains("SORACOM Unified Endpoint"))
     }));
 }
 
@@ -1148,121 +1193,89 @@ fn explicit_missing_preset_location_is_an_error() {
 }
 
 #[test]
-fn formats_preset_list_with_review_categories_and_command() {
+fn human_preset_list_emits_complete_reusable_names_and_sources() {
+    let long_name = "external-command-with-a-long-name";
     let presets = vec![Preset::new(
-        "custom-modem-response",
-        "AT",
+        long_name,
+        "AT+EXTERNAL=1234567890",
         vec!["custom".to_owned()],
         PresetOrigin::file("Custom commands", "presets.toml", None),
     )];
 
     let output = format_preset_list(&presets, false).unwrap();
+    let listed_name = output
+        .lines()
+        .find(|line| *line == long_name)
+        .expect("complete Preset name");
+    let preset = find_preset(&presets, listed_name).unwrap();
+    let shown = format_preset_show(preset, false).unwrap();
 
-    assert!(output.starts_with("NAME"));
-    assert!(output.contains("AT COMMAND"));
+    assert_eq!(listed_name, long_name);
+    assert!(!output.starts_with("NAME"));
+    assert!(!output.contains("AT COMMAND"));
+    assert!(!output.contains("AT+EXTERNAL"));
     assert!(!output.contains("ATTENTION"));
     assert!(output.contains("Loaded from: Custom commands"));
     assert!(output.contains("File: presets.toml"));
-    assert!(output.contains("custom-modem-response"));
     assert!(!output.contains("[confirm]"));
     assert!(!output.contains("not required"));
+    assert!(shown.contains(&format!("Name: {long_name}")));
+    assert!(shown.contains("AT command: AT+EXTERNAL=1234567890"));
 }
 
 #[test]
-fn human_preset_list_uses_one_confirmation_tag_for_known_and_unknown_rows() {
-    let presets = vec![
-        Preset::built_in("known-change", "AT+CMEE=2", ["review"]),
-        Preset::built_in("unknown-change", "AT+VENDOR=1", ["review"]),
-        Preset::built_in("observation", "AT", ["review"]),
-    ];
+fn product_preset_list_long_names_are_exact_and_reusable() {
+    let presets = builtins();
 
     let output = format_preset_list(&presets, false).unwrap();
-    let lines = output.lines().collect::<Vec<_>>();
-
-    for name in ["known-change", "unknown-change"] {
-        let row = lines
-            .iter()
-            .find(|line| line.contains(name))
-            .unwrap_or_else(|| panic!("missing {name} row in {output}"));
-        assert!(row.ends_with("[confirm]"), "{row}");
+    for expected_name in [
+        "enable-circuit-registration-detail",
+        "enable-gprs-registration-detail",
+        "enable-eps-registration-detail",
+        "enable-eps-registration-cause",
+        "enable-eps-registration-extended",
+        "set-modem-minimum-functionality",
+    ] {
+        let listed_name = output
+            .lines()
+            .find(|line| *line == expected_name)
+            .unwrap_or_else(|| panic!("missing complete {expected_name:?} line in {output}"));
+        let preset = find_preset(&presets, listed_name).unwrap();
+        let shown = format_preset_show(preset, false).unwrap();
+        assert_eq!(preset.name, expected_name);
+        assert!(shown.contains(&format!("Name: {expected_name}")));
     }
-    let known_tag_column = lines
-        .iter()
-        .find(|line| line.contains("known-change"))
-        .and_then(|line| line.find("[confirm]"))
-        .expect("known confirmation tag");
-    let unknown_tag_column = lines
-        .iter()
-        .find(|line| line.contains("unknown-change"))
-        .and_then(|line| line.find("[confirm]"))
-        .expect("unknown confirmation tag");
-    assert_eq!(known_tag_column, unknown_tag_column);
-    let observation = lines
-        .iter()
-        .find(|line| line.contains("observation"))
-        .unwrap_or_else(|| panic!("missing observation row in {output}"));
-    assert!(!observation.contains("[confirm]"));
-    assert!(!output.contains("ATTENTION"));
-    assert!(!output.contains("Confirmation required"));
 
     let json = format_preset_list(&presets, true).unwrap();
     assert!(!json.contains("[confirm]"));
 }
 
 #[test]
-fn human_discovery_lists_reclaim_confirmation_lane_when_unused() {
-    let long_preview = "X".repeat(200);
-    let mixed = format_discovery_table(
+fn human_discovery_name_lines_have_no_padding_or_decoration() {
+    let output = format_discovery_names(
         [
-            DiscoveryRow {
-                name: "plain-record",
-                preview: &long_preview,
-                confirmation_tag: None,
+            DiscoveryNameRow {
+                name: "enable-circuit-registration-detail",
                 source_title: None,
                 source_path: None,
             },
-            DiscoveryRow {
-                name: "tagged-row-x",
-                preview: "AT+CMEE=2",
-                confirmation_tag: Some(crate::at::review::CONFIRMATION_FLOW_TAG),
-                source_title: None,
-                source_path: None,
+            DiscoveryNameRow {
+                name: "soracom-unified-endpoint-tcp-send-check",
+                source_title: Some("SORACOM Sequences"),
+                source_path: Some("soracom.toml"),
             },
         ]
         .into_iter(),
-        "AT COMMAND",
-    );
-    let confirmation_free = format_discovery_table(
-        [DiscoveryRow {
-            name: "plain-record",
-            preview: &long_preview,
-            confirmation_tag: None,
-            source_title: None,
-            source_path: None,
-        }]
-        .into_iter(),
-        "AT COMMAND",
     );
 
-    let mixed_plain = mixed
-        .lines()
-        .find(|line| line.contains("plain-record"))
-        .expect("mixed plain row");
-    let mixed_tagged = mixed
-        .lines()
-        .find(|line| line.contains("tagged-row-x"))
-        .expect("mixed tagged row");
-    let reclaimed_plain = confirmation_free
-        .lines()
-        .find(|line| line.contains("plain-record"))
-        .expect("confirmation-free row");
-    let tag_column = mixed_tagged.find("[confirm]").expect("confirmation tag");
-    assert!(display_width(mixed_plain) <= tag_column);
-    assert!(display_width(reclaimed_plain) > display_width(mixed_plain));
+    assert_eq!(
+        output,
+        "enable-circuit-registration-detail\n\nLoaded from: SORACOM Sequences\nFile: soracom.toml\nsoracom-unified-endpoint-tcp-send-check\n"
+    );
 }
 
 #[test]
-fn formats_product_preset_list_label() {
+fn product_preset_list_has_unheaded_exact_name_baseline() {
     let presets = vec![Preset::new(
         "modem-response",
         "AT",
@@ -1272,11 +1285,7 @@ fn formats_product_preset_list_label() {
 
     let output = format_preset_list(&presets, false).unwrap();
 
-    assert!(output.contains("modem-response"));
-    assert!(output.contains("AT"));
-    assert!(!output.contains("Product presets"));
-    assert!(!output.contains("Built-in presets"));
-    assert!(!output.contains("not required"));
+    assert_eq!(output, "modem-response\n");
 }
 
 #[test]

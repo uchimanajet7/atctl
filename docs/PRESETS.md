@@ -196,12 +196,13 @@ loaded preset. `atctl` validates the TOML shape, duplicate names, masking, and
 execution review, but it does not certify that an external definition is
 appropriate for the current device, SIM, network, or endpoint.
 
-Human-readable `atctl preset list` identifies each name and AT command, appends
-`[confirm]` only when selection leads to confirmation, and groups file
-definitions by title and path. `atctl preset show <NAME>` displays the complete
-definition and review without USB access. Use `--json` with `list` or `show`
-for structured records. `atctl preset run` identifies an external source before
-USB access, including non-interactive authorized runs.
+Human-readable `atctl preset list` emits each complete Preset name on its own
+line so the displayed value can be passed unchanged to `show` or `run`. It
+groups file definitions by title and path on separate lines. `atctl preset show
+<NAME>` displays the complete AT command, definition, and review without USB
+access. Use `--json` with `list` or `show` for structured records. `atctl preset
+run` identifies an external source before USB access, including non-interactive
+authorized runs.
 
 Both explicit options are repeatable. Explicit files are loaded in command-line
 order. Explicit directories are loaded in command-line order, and `.toml` files
@@ -293,19 +294,21 @@ running loaded Sequences may change modem state, send SMS, or transmit network
 payloads. Review the file source, steps, parameters, destination values, and
 the product-derived execution review before running a loaded Sequence.
 
-Human-readable `atctl sequence list` output shows `NAME` and `PURPOSE`, with the
-same exception-only `[confirm]` tag and one-time file grouping as preset lists.
-`atctl sequence show <SEQUENCE>` displays the complete definition without USB
-access, using the same `Overview`, `Definition`, `Before running`, `Inputs`, and
-`Execution` semantic sections as TUI Details. It includes purpose, definition
-origin, categories, timeout, before-running notes, parameter
+Human-readable `atctl sequence list` emits each complete Sequence name on its
+own line so the displayed value can be passed unchanged to `show` or `run`,
+with file titles and paths grouped on separate lines. `atctl sequence show
+<SEQUENCE>` displays the complete definition without USB access, using the same
+`Overview`, `Definition`, `Before running`, `Inputs`, and `Execution` semantic
+sections as TUI Details. It includes purpose, definition origin, categories,
+timeout, before-running notes, parameter
 sources/defaults/hints/candidate sources, and the definition-boundary execution
 review. Use `--json` with `list` or `show` for complete structured records.
-List rows review the complete definition boundary while parameter values are
-still unresolved. Before a run, atctl binds operator values and defaults,
-re-derives the execution review from the resulting commands, payload boundary,
-conditional internal actions, and cleanup actions, and uses that resolved review
-for confirmation, output, and logs. Values derived from modem responses remain
+TUI list rows may show the definition-boundary confirmation flow while
+parameter values are still unresolved. Before a run, atctl binds operator
+values and defaults, re-derives the execution review from the resulting
+commands, payload boundary, conditional internal actions, and cleanup actions,
+and uses that resolved review for confirmation, output, and logs. Values derived
+from modem responses remain
 explicitly unresolved until their normal Sequence step produces them and are
 checked again before their command is written.
 `atctl sequence run` prints the source label, file

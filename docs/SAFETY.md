@@ -36,10 +36,11 @@ consequences before the operator chooses whether to proceed.
 
 ## Before USB Access
 
-- Human CLI lists and TUI rows append `[confirm]` when selection leads to an
-  explicit confirmation step. The tag describes the next interaction, not
-  risk severity. Use CLI `show` or TUI `d Details` to inspect the complete
-  review without contacting the modem.
+- Human CLI Preset and Sequence lists emit complete names that can be passed
+  unchanged to `show` or `run`. TUI executable rows append `[confirm]` when
+  selection leads to an explicit confirmation step. The tag describes the next
+  interaction, not risk severity. Use CLI `show` or TUI `d Details` to inspect
+  the complete review without contacting the modem.
 - Known observations without a material effect may execute directly. Sensitive
   output and normal logs remain masked by default.
 - Known material operations require `run` confirmation before USB access.

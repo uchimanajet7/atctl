@@ -457,10 +457,10 @@ explicit Quectel socket-state add-on command when current socket state must be
 checked. Selecting a PDP candidate action runs the referenced existing
 `active-pdp-contexts` or `pdp-contexts` Preset through its normal execution path
 and then presents parsed candidates in the same modal. Candidate actions use
-the same exception-only `[confirm]` tag as other
-human executable lists and the same conditional trailing-lane alignment when
-their own review requires confirmation. Opening the
-modal itself does not perform a hidden PDP, socket, TCP, or network check.
+the same exception-only `[confirm]` tag and conditional trailing-lane alignment
+as TUI executable-item rows when their own review requires confirmation.
+Opening the modal itself does not perform a hidden PDP, socket, TCP, or network
+check.
 
 The ping examples use Quectel `AT+QPING` through the selected PDP context.
 Received replies show IP reachability to the requested host or to SORACOM

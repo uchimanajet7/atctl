@@ -7952,7 +7952,7 @@ fn executable_name_column_width(commands: &[&ExecutableItem], row_width: usize) 
         .map(|command| display_cell_width(command.name()))
         .max()
         .unwrap_or(1);
-    let name_width = max_name_width.min(28).min(available).max(1);
+    let name_width = max_name_width.min(available).max(1);
     commands
         .iter()
         .all(|command| {

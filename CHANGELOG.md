@@ -63,6 +63,10 @@ options and XDG state.
 
 ### Fixed
 
+- CLI Preset and Sequence lists now emit complete, reusable names without
+  terminal-width truncation; TUI executable rows use one terminal-cell-aware
+  name column for the current result so command and purpose previews remain
+  aligned, with previews shortened before names when width is constrained.
 - Corrected Quectel TCP and UDP result interpretation. TCP acknowledgement is
   reported only for an explicit zero-length `QISEND` counter query; `QIRD`
   counters, normal reads, and UDP response headers are distinguished, and

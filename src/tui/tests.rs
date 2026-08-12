@@ -4981,8 +4981,163 @@ fn executable_name_alignment_uses_terminal_display_cells() {
         executable_row_layout(&ascii, 120, name_width, confirmation_lane_width).unwrap();
     let wide_row = executable_row_layout(&wide, 120, name_width, confirmation_lane_width).unwrap();
 
+    assert_eq!(name_width, display_cell_width("通信確認"));
     assert_eq!(display_cell_width(&ascii_row.name), name_width);
     assert_eq!(display_cell_width(&wide_row.name), name_width);
+    assert_eq!(ascii_row.detail.as_deref(), Some("AT"));
+    assert_eq!(wide_row.detail.as_deref(), Some("AT+CSQ"));
+}
+
+#[test]
+fn long_executable_name_sets_one_uncapped_shared_name_column() {
+    let long_name = "soracom-unified-endpoint-tcp-send-check";
+    let long = ExecutableItem::Sequence(Sequence::built_in(
+        long_name,
+        "Send a payload to SORACOM Unified Endpoint.",
+        vec!["data".to_owned()],
+        Some(180),
+        Vec::new(),
+        vec![test_sequence_step("AT+CMEE=2")],
+    ));
+    let short = ExecutableItem::Sequence(Sequence::built_in(
+        "sms-send-check",
+        "Send a standard SMS and check receive state.",
+        vec!["sms".to_owned()],
+        Some(180),
+        Vec::new(),
+        vec![test_sequence_step("AT+CMEE=2")],
+    ));
+    let commands = [&long, &short];
+    let confirmation_lane_width = executable_confirmation_lane_width(&commands);
+    let name_width = executable_name_column_width(&commands, 80).unwrap();
+
+    assert_eq!(name_width, display_cell_width(long_name));
+    assert!(name_width > 28);
+    let normal_long =
+        executable_row_layout(&long, 80, name_width, confirmation_lane_width).unwrap();
+    let normal_short =
+        executable_row_layout(&short, 80, name_width, confirmation_lane_width).unwrap();
+    assert_eq!(normal_long.name, long_name);
+    assert_eq!(normal_short.name.trim_end(), "sms-send-check");
+    assert_eq!(display_cell_width(&normal_long.name), name_width);
+    assert_eq!(display_cell_width(&normal_short.name), name_width);
+    assert!(normal_long.detail.is_some());
+    assert!(normal_short.detail.is_some());
+
+    let long_text = command_row_plain_text(false, &long, &commands, 80);
+    let short_text = command_row_plain_text(false, &short, &commands, 80);
+    assert_eq!(
+        long_text.find("Send a payload"),
+        short_text.find("Send a standard")
+    );
+
+    let constrained_name_width = executable_name_column_width(&commands, 45).unwrap();
+    let constrained_long =
+        executable_row_layout(&long, 45, constrained_name_width, confirmation_lane_width).unwrap();
+    let constrained_short =
+        executable_row_layout(&short, 45, constrained_name_width, confirmation_lane_width).unwrap();
+    assert!(constrained_long.name.trim_end().ends_with('…'));
+    assert!(constrained_long.detail.is_none());
+    assert_eq!(constrained_short.name.trim_end(), "sms-send-check");
+    assert!(constrained_short.detail.is_none());
+    assert_eq!(
+        display_cell_width(&constrained_long.name),
+        constrained_name_width
+    );
+    assert_eq!(
+        display_cell_width(&constrained_short.name),
+        constrained_name_width
+    );
+
+    let constrained_long_text = command_row_plain_text(false, &long, &commands, 45);
+    let constrained_short_text = command_row_plain_text(false, &short, &commands, 45);
+    assert_eq!(
+        display_cell_width(
+            constrained_long_text
+                .split_once("[confirm]")
+                .expect("long confirmation tag")
+                .0,
+        ),
+        display_cell_width(
+            constrained_short_text
+                .split_once("[confirm]")
+                .expect("short confirmation tag")
+                .0,
+        )
+    );
+}
+
+#[test]
+fn commands_pane_keeps_long_and_short_sequence_previews_aligned() {
+    let long_name = "soracom-unified-endpoint-tcp-send-check";
+    let long = Sequence::built_in(
+        long_name,
+        "Send a payload to SORACOM Unified Endpoint.",
+        vec!["data".to_owned()],
+        Some(180),
+        Vec::new(),
+        vec![test_sequence_step("AT+CMEE=2")],
+    );
+    let short = Sequence::built_in(
+        "sms-send-check",
+        "Send a standard SMS and check receive state.",
+        vec!["sms".to_owned()],
+        Some(180),
+        Vec::new(),
+        vec![test_sequence_step("AT+CMEE=2")],
+    );
+    let state = TuiState::new_with_all_usb(
+        executable_items(Vec::new(), vec![long, short]),
+        Vec::new(),
+        Vec::new(),
+        Vec::new(),
+        TuiTheme::dark(),
+    );
+
+    let normal = rendered_commands_buffer(&state, 80, 6);
+    let normal_rows = buffer_rows(&normal);
+    let normal_long = normal_rows
+        .iter()
+        .find(|row| row.contains(long_name))
+        .expect("complete long Sequence row");
+    let normal_short = normal_rows
+        .iter()
+        .find(|row| row.contains("sms-send-check"))
+        .expect("complete short Sequence row");
+    assert!(normal_long.contains("Send a payload"));
+    assert!(normal_short.contains("Send a standard"));
+    assert_eq!(
+        normal_long.find("Send a payload"),
+        normal_short.find("Send a standard")
+    );
+
+    let constrained = rendered_commands_buffer(&state, 45, 6);
+    let constrained_rows = buffer_rows(&constrained);
+    let constrained_long = constrained_rows
+        .iter()
+        .find(|row| row.contains("soracom-unified"))
+        .expect("constrained long Sequence row");
+    let constrained_short = constrained_rows
+        .iter()
+        .find(|row| row.contains("sms-send-check"))
+        .expect("constrained short Sequence row");
+    assert!(constrained_long.contains('…'));
+    assert!(!constrained_long.contains("Send a payload"));
+    assert!(!constrained_short.contains("Send a standard"));
+    assert_eq!(
+        display_cell_width(
+            constrained_long
+                .split_once("[confirm]")
+                .expect("long confirmation tag")
+                .0,
+        ),
+        display_cell_width(
+            constrained_short
+                .split_once("[confirm]")
+                .expect("short confirmation tag")
+                .0,
+        )
+    );
 }
 
 #[test]
@@ -5003,20 +5158,9 @@ fn executable_rows_share_confirmation_lane_and_reclaim_it_when_unused() {
     let lane_width = executable_confirmation_lane_width(&mixed);
     assert_eq!(lane_width, display_cell_width(" [confirm]"));
 
-    let known_row = executable_row_layout(&known, 80, mixed_name_width, lane_width).unwrap();
-    let unknown_row = executable_row_layout(&unknown, 80, mixed_name_width, lane_width).unwrap();
-    assert_eq!(
-        known_row.body_padding
-            + known_row
-                .detail
-                .as_deref()
-                .map_or(0, |value| display_cell_width(value) + 1),
-        unknown_row.body_padding
-            + unknown_row
-                .detail
-                .as_deref()
-                .map_or(0, |value| display_cell_width(value) + 1)
-    );
+    let known_text = command_row_plain_text(false, &known, &mixed, 80);
+    let unknown_text = command_row_plain_text(false, &unknown, &mixed, 80);
+    assert_eq!(known_text.find("[confirm]"), unknown_text.find("[confirm]"));
 
     let mixed_observation =
         executable_row_layout(&observation, 80, mixed_name_width, lane_width).unwrap();
@@ -7077,6 +7221,15 @@ fn rendered_buffer_cells(state: &mut TuiState, width: u16, height: u16) -> Buffe
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal.draw(|frame| render_frame(frame, state)).unwrap();
+    terminal.backend().buffer().clone()
+}
+
+fn rendered_commands_buffer(state: &TuiState, width: u16, height: u16) -> Buffer {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render_commands(frame, frame.area(), state, &state.theme))
+        .unwrap();
     terminal.backend().buffer().clone()
 }
 

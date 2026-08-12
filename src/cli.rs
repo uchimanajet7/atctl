@@ -2048,16 +2048,13 @@ fn format_preset_list(presets: &[Preset], json: bool) -> Result<String> {
         let rows = presets.iter().map(preset_discovery).collect::<Vec<_>>();
         return Ok(format!("{}\n", serde_json::to_string_pretty(&rows)?));
     }
-    Ok(format_discovery_table(
-        presets.iter().map(|preset| DiscoveryRow {
+    Ok(format_discovery_names(presets.iter().map(|preset| {
+        DiscoveryNameRow {
             name: &preset.name,
-            preview: &preset.command,
-            confirmation_tag: preset.review.confirmation_flow_tag(),
             source_title: (!preset.origin.is_built_in()).then(|| preset.origin.label()),
             source_path: preset.origin.file_path(),
-        }),
-        "AT COMMAND",
-    ))
+        }
+    })))
 }
 
 fn format_sequence_list(sequences: &[Sequence], json: bool) -> Result<String> {
@@ -2065,16 +2062,13 @@ fn format_sequence_list(sequences: &[Sequence], json: bool) -> Result<String> {
         let rows = sequences.iter().map(sequence_discovery).collect::<Vec<_>>();
         return Ok(format!("{}\n", serde_json::to_string_pretty(&rows)?));
     }
-    Ok(format_discovery_table(
-        sequences.iter().map(|sequence| DiscoveryRow {
+    Ok(format_discovery_names(sequences.iter().map(|sequence| {
+        DiscoveryNameRow {
             name: &sequence.name,
-            preview: &sequence.summary,
-            confirmation_tag: sequence.review.confirmation_flow_tag(),
             source_title: (!sequence.origin.is_built_in()).then(|| sequence.origin.label()),
             source_path: sequence.origin.file_path(),
-        }),
-        "PURPOSE",
-    ))
+        }
+    })))
 }
 
 fn format_preset_show(preset: &Preset, json: bool) -> Result<String> {
@@ -2193,49 +2187,14 @@ fn push_show_section(lines: &mut Vec<String>, heading: &str, content: Vec<String
     lines.extend(content);
 }
 
-struct DiscoveryRow<'a> {
+struct DiscoveryNameRow<'a> {
     name: &'a str,
-    preview: &'a str,
-    confirmation_tag: Option<&'static str>,
     source_title: Option<&'a str>,
     source_path: Option<&'a str>,
 }
 
-fn format_discovery_table<'a>(
-    rows: impl Iterator<Item = DiscoveryRow<'a>>,
-    preview_heading: &str,
-) -> String {
-    let rows = rows.collect::<Vec<_>>();
-    let width = if io::stdout().is_terminal() {
-        crossterm::terminal::size()
-            .map(|(width, _)| usize::from(width))
-            .unwrap_or(120)
-    } else {
-        120
-    };
-    let confirmation_lane_width = rows
-        .iter()
-        .filter_map(|row| row.confirmation_tag)
-        .map(|tag| display_width(tag) + 1)
-        .max()
-        .unwrap_or(0);
-    let max_name = rows
-        .iter()
-        .map(|row| display_width(row.name))
-        .max()
-        .unwrap_or_else(|| display_width("NAME"));
-    let name_width = max_name
-        .max(display_width("NAME"))
-        .min(28)
-        .min(width.saturating_sub(confirmation_lane_width + 3).max(1));
-    let preview_width = width
-        .saturating_sub(name_width + confirmation_lane_width + 2)
-        .max(1);
-    let mut output = format!(
-        "{}  {}\n",
-        pad_display("NAME", name_width),
-        truncate_display(preview_heading, preview_width)
-    );
+fn format_discovery_names<'a>(rows: impl Iterator<Item = DiscoveryNameRow<'a>>) -> String {
+    let mut output = String::new();
     let mut current_source: Option<(&str, Option<&str>)> = None;
     for row in rows {
         let source = row.source_title.map(|title| (title, row.source_path));
@@ -2249,18 +2208,7 @@ fn format_discovery_table<'a>(
             }
             current_source = source;
         }
-        output.push_str(&pad_display(
-            &truncate_display(row.name, name_width),
-            name_width,
-        ));
-        output.push_str("  ");
-        let preview = truncate_display(row.preview, preview_width);
-        output.push_str(&preview);
-        if let Some(tag) = row.confirmation_tag {
-            output.push_str(&" ".repeat(preview_width.saturating_sub(display_width(&preview))));
-            output.push(' ');
-            output.push_str(tag);
-        }
+        output.push_str(row.name);
         output.push('\n');
     }
     output
@@ -2292,40 +2240,6 @@ fn push_definition_lines(lines: &mut Vec<String>, operation: &OperationIdentity)
     if let Some(path) = &definition.path {
         lines.push(format!("Definition file: {path}"));
     }
-}
-
-fn display_width(value: &str) -> usize {
-    ratatui::text::Line::from(value.to_owned()).width()
-}
-
-fn truncate_display(value: &str, width: usize) -> String {
-    if display_width(value) <= width {
-        return value.to_owned();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    if width == 1 {
-        return "…".to_owned();
-    }
-    let mut output = String::new();
-    let target = width - 1;
-    for character in value.chars() {
-        let candidate = format!("{output}{character}");
-        if display_width(&candidate) > target {
-            break;
-        }
-        output.push(character);
-    }
-    output.push('…');
-    output
-}
-
-fn pad_display(value: &str, width: usize) -> String {
-    format!(
-        "{value}{}",
-        " ".repeat(width.saturating_sub(display_width(value)))
-    )
 }
 
 fn complete_execution_review_output_lines(review: &ExecutionReview) -> Vec<String> {

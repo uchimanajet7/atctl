@@ -268,11 +268,10 @@ When changing file preset loading, listing, execution, or review handling, verif
 
 - Both repository-managed TOML files load through the same path used for other
   file presets.
-- Human CLI list output stays on the compact `NAME` / `AT COMMAND` grammar,
-  appends `[confirm]` only when required, aligns it in the conditional fixed
-  trailing lane, reclaims that lane when no row requires confirmation, groups
-  each file source once, and preserves complete source metadata in `list
-  --json` and `preset show`.
+- Human CLI list output emits each complete Preset name on its own line without
+  an AT command preview, confirmation tag, padding, or application-generated
+  ellipsis; groups each file source once on separate lines; and preserves
+  complete source metadata in `list --json` and `preset show`.
 - CLI run output shows the external file preset notice before USB access,
   including the `--yes` and `--yes --allow-unknown` paths.
 - Duplicate names fail with an actionable error.
