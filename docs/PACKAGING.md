@@ -444,25 +444,79 @@ The source release workflow does not update the Homebrew tap.
 After the source release is available, continue in
 `https://github.com/uchimanajet7/homebrew-atctl`:
 
-1. Open **Actions** and run **Update Formula PR** with the released source tag.
+Before the first automatic publication, configure the tap repository once:
+
+1. Create the GitHub Environment `homebrew-publication` and add
+   `uchimanajet7` as a required reviewer. Keep **Prevent self-review** disabled
+   so the repository owner can approve a manually dispatched publication.
+
+The tap workflow reads the current Environment configuration and refuses to
+request or perform publication if the environment, required reviewer, or
+manual-run self-review setting does not match this contract.
+
+For each release:
+
+1. Open **Actions** and run **Update Formula PR** from `main`. Enter the released
+   source tag and leave **Publish bottles after Formula CI succeeds** checked to
+   request bottle publication. The checkbox is checked by default.
 2. Review the generated `Formula/atctl.rb` change, including the source archive
-   URL, SHA-256, platform restrictions, dependencies, and tap CI result.
-3. When bottle publication is required, run **Publish Bottles** with the
-   reviewed pull-request number and its expected head SHA.
-4. Merge only the reviewed Formula and bottle metadata produced by the tap
-   workflow.
+   URL, SHA-256, platform restrictions, and dependencies at the exact pull
+   request head commit.
+3. If GitHub displays **Approve workflows to run**, approve it and wait for
+   **Formula CI** to succeed. This approval only permits CI to run; it does not
+   publish bottles or merge the pull request.
+4. When the checkbox was enabled, the successful **Formula CI** run's final
+   **Request bottle publication** job sends an explicit publication request and
+   starts **Publish Bottles**. Review the pull request, successful Formula CI
+   run, and exact head SHA shown for the `homebrew-publication` deployment, then
+   select **Approve and deploy**.
+5. Do not manually merge the Formula pull request first. After approval,
+   **Publish Bottles** revalidates the open PR, current head SHA, changed files,
+   and publication request; it then publishes the bottle artifacts and pushes
+   the Formula and bottle metadata to `main`.
+6. If the pull request head changes before publication, review the new commit,
+   rerun **Update Formula PR**, and approve the new **Formula CI** run. An older
+   pending publication is rejected during post-approval revalidation.
+
+If bottle publication is intentionally not required, clear the checkbox when
+running **Update Formula PR**. Formula CI still runs and records that publication
+is disabled, but it does not start **Publish Bottles**. No publication approval,
+bottle publication, or `main` update is requested. Manually merge the reviewed
+Formula pull request after its checks succeed.
+
+To enable publication later without changing the Formula commit, rerun **Update
+Formula PR** with the checkbox enabled. When that exact pull request head already
+has a successful **Formula CI** run and an unexpired bottle artifact, the updater
+reuses that run and starts **Publish Bottles** immediately; Formula CI does not
+need another approval. If no usable successful run exists, run or rerun Formula
+CI for the exact head first.
+
+The separate manual path remains available: open **Publish Bottles**, select
+`main`, and copy the `pull_request` number and full 40-character `head_sha` from
+the generated PR's **Bottle publication** section. Manual publication uses the
+same `homebrew-publication` approval and post-approval validation.
 
 The Formula update must satisfy the applicable [SPEC.md](SPEC.md) requirements:
 macOS on Apple Silicon, `libusb` as a runtime dependency, Rust and `pkgconf` as
 source-build dependencies, and a source-build fallback using the tagged source
 archive.
 Bottle publication remains an explicit tap-repository action and is not a side
-effect of the Rust source release.
+effect of the Rust source release. The explicit head SHA follows Homebrew's
+recommended `brew pr-pull --head-sha` safety check: publication fails instead
+of accepting a pull request head that changed after review. The tap's automatic
+handoff uses GitHub's documented `repository_dispatch` exception for events
+created with `GITHUB_TOKEN`; the receiving workflow revalidates the successful
+Formula CI run, bottle artifact, exact PR head, Formula-only change set, and
+enabled marker before requesting deployment approval.
 
 References:
 
 - https://github.com/uchimanajet7/homebrew-atctl
 - https://docs.github.com/actions/managing-workflow-runs/manually-running-a-workflow
+- https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow
+- https://docs.github.com/en/rest/repos/repos#create-a-repository-dispatch-event
+- https://docs.github.com/en/actions/how-tos/managing-workflow-runs-and-deployments/managing-deployments/reviewing-deployments
+- https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments
 - https://docs.brew.sh/How-to-Create-and-Maintain-a-Tap
 - https://docs.brew.sh/Formula-Cookbook
 - https://docs.brew.sh/Bottles

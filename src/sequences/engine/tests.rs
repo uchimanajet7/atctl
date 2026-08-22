@@ -747,6 +747,11 @@ fn quectel_sequence_surfaces_socket_open_terminal_error_in_transcript() {
 }
 
 #[test]
+fn ucs2_hex_decoder_rejects_incomplete_code_unit() {
+    assert_eq!(decode_ucs2_hex_body("004100"), None);
+}
+
+#[test]
 fn sms_read_sequence_decodes_ucs2_body_and_masks_normal_output() {
     let sequence = builtins()
         .into_iter()

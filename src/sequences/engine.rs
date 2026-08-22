@@ -1429,16 +1429,17 @@ fn decode_ucs2_hex_body(body: &str) -> Option<String> {
         .chars()
         .filter(|ch| !ch.is_ascii_whitespace())
         .collect::<String>();
-    if compact.len() < 4
-        || compact.len() % 4 != 0
-        || !compact.chars().all(|ch| ch.is_ascii_hexdigit())
-    {
+    if compact.len() < 4 || !compact.chars().all(|ch| ch.is_ascii_hexdigit()) {
         return None;
     }
 
+    let (chunks, []) = compact.as_bytes().as_chunks::<4>() else {
+        return None;
+    };
+
     let mut units = Vec::new();
-    for chunk in compact.as_bytes().chunks_exact(4) {
-        let hex = std::str::from_utf8(chunk).ok()?;
+    for chunk in chunks {
+        let hex = std::str::from_utf8(chunk.as_slice()).ok()?;
         units.push(u16::from_str_radix(hex, 16).ok()?);
     }
     let decoded = String::from_utf16(&units).ok()?;
