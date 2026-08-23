@@ -166,7 +166,7 @@ Release notes:
   migration, and release-review rules in
   [DEVELOPMENT.md](DEVELOPMENT.md#changelog-entries).
 - The released-version section heading must include the package version and a
-  `YYYY-MM-DD` publication date, for example `## 0.2.0 - YYYY-MM-DD`. Use the
+  `YYYY-MM-DD` publication date, for example `## 0.2.1 - YYYY-MM-DD`. Use the
   actual date on which the release is published.
 - The release workflow fails before tag or GitHub Release publication when the
   tag version does not match `Cargo.toml` or when `CHANGELOG.md` does not
@@ -186,7 +186,7 @@ GitHub Web UI release operation:
 5. Select the **Release** workflow.
 6. Select **Run workflow**.
 7. Select `main` in the branch selector.
-8. Enter `release_tag`, for example `v0.2.0`.
+8. Enter `release_tag`, for example `v0.2.1`.
 9. Run the workflow.
 
 The workflow first rejects any dispatch whose ref is not `refs/heads/main` in a
@@ -260,7 +260,7 @@ release_output_dir="$(mktemp -d)"
 CARGO_TARGET_DIR="${release_target_dir}" \
   cargo build --release --locked --target aarch64-apple-darwin
 scripts/release/package-release.sh \
-  0.2.0 \
+  0.2.1 \
   aarch64-apple-darwin \
   "${release_target_dir}/aarch64-apple-darwin/release/atctl" \
   "${release_output_dir}"
@@ -317,7 +317,7 @@ repository release archive. Use this review baseline:
 class Atctl < Formula
   desc "CLI/TUI AT command controller for USB cellular modems"
   homepage "https://github.com/uchimanajet7/atctl"
-  url "https://github.com/uchimanajet7/atctl/archive/refs/tags/v0.2.0.tar.gz"
+  url "https://github.com/uchimanajet7/atctl/archive/refs/tags/v0.2.1.tar.gz"
   sha256 "<source archive sha256>"
   license "MIT"
 

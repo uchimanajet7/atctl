@@ -4,6 +4,13 @@ Notable changes to `atctl` are documented here for users and source builders.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/2.0.0/).
 
+## 0.2.1 - 2026-08-23
+
+### Changed
+
+- Repository development, CI, and release builds now use Rust 1.98.0. The
+  minimum supported Rust version remains Rust 1.97.
+
 ## 0.2.0 - 2026-08-12
 
 This release makes logging, Response export, execution review, and Sequence

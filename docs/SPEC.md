@@ -4625,7 +4625,7 @@ release tag version without the leading `v` matches `Cargo.toml`
 
 REQ-PKG-038A: The source repository release workflow MUST expose a manual
 `workflow_dispatch` operation with a required `release_tag` input such as
-`v0.2.0` so an operator can start the source repository release from the GitHub
+`v0.2.1` so an operator can start the source repository release from the GitHub
 Actions Web UI without manually creating a GitHub Release page or copying
 release notes. The operator MUST select `main` in the Web UI. `release_tag`
 identifies the tag name and version; it MUST NOT select the release source
@@ -4969,8 +4969,8 @@ supersedes.
   https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes
 - GitHub CLI `gh release create`:
   https://cli.github.com/manual/gh_release_create
-- Rust 1.97.1 release announcement:
-  https://blog.rust-lang.org/2026/07/16/Rust-1.97.1/
+- Rust 1.98.0 release announcement:
+  https://blog.rust-lang.org/2026/08/20/Rust-1.98.0/
 - Cargo `rust-version` field:
   https://doc.rust-lang.org/stable/cargo/reference/rust-version.html
 - Cargo `cargo update` command:

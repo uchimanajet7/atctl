@@ -67,22 +67,22 @@ From the [atctl Releases page](https://github.com/uchimanajet7/atctl/releases),
 download both files for the same version:
 
 ```text
-atctl-v0.2.0-aarch64-apple-darwin.tar.gz
-atctl-v0.2.0-aarch64-apple-darwin.tar.gz.sha256
+atctl-v0.2.1-aarch64-apple-darwin.tar.gz
+atctl-v0.2.1-aarch64-apple-darwin.tar.gz.sha256
 ```
 
 In the directory containing those downloads, verify the archive before
 extracting it:
 
 ```sh
-shasum -a 256 -c atctl-v0.2.0-aarch64-apple-darwin.tar.gz.sha256
-tar -xzf atctl-v0.2.0-aarch64-apple-darwin.tar.gz
+shasum -a 256 -c atctl-v0.2.1-aarch64-apple-darwin.tar.gz.sha256
+tar -xzf atctl-v0.2.1-aarch64-apple-darwin.tar.gz
 ```
 
 The extracted directory contains:
 
 ```text
-atctl-v0.2.0-aarch64-apple-darwin/
+atctl-v0.2.1-aarch64-apple-darwin/
   atctl
   LICENSE
   THIRD-PARTY-NOTICES.txt
@@ -93,7 +93,7 @@ dependency, then verify the executable:
 
 ```sh
 brew install libusb
-./atctl-v0.2.0-aarch64-apple-darwin/atctl --version
+./atctl-v0.2.1-aarch64-apple-darwin/atctl --version
 ```
 
 `LICENSE` contains the MIT license for `atctl`.
