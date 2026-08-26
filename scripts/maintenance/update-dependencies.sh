@@ -13,8 +13,9 @@ Usage:
   scripts/maintenance/update-dependencies.sh
 
 Updates the selected stable Rust toolchain, repository-pinned maintenance
-tools, and every Cargo.lock dependency allowed by Cargo.toml, then runs the
-complete local dependency and Rust verification gates.
+tools, every direct Cargo.toml dependency requirement, and the complete
+Cargo.lock dependency graph, then runs the complete local dependency, Rust,
+and release-build verification gates.
 
 The command does not commit, push, merge, tag, publish, or create a release.
 EOF
@@ -113,6 +114,30 @@ replace_env_assignment() {
 update_temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/atctl-dependency-update.XXXXXX")"
 trap 'rm -rf "${update_temp_dir}"' EXIT
 
+latest_registry_crate_version() {
+  local crate_name="$1"
+  local error_path="${update_temp_dir}/cargo-search-${crate_name}-error.txt"
+  local search_output
+  local version_value
+
+  if ! search_output="$(
+    cargo search "${crate_name}" --limit 1 2>"${error_path}"
+  )"; then
+    cat "${error_path}" >&2
+    return 69
+  fi
+
+  version_value="$(
+    awk -F '"' -v prefix="${crate_name} = " '
+      $1 == prefix {
+        print $2
+        exit
+      }
+    ' <<<"${search_output}"
+  )"
+  printf '%s\n' "${version_value}"
+}
+
 current_rust_version="$(
   awk -F '"' '/^channel = / { print $2; exit }' rust-toolchain.toml
 )"
@@ -134,17 +159,8 @@ latest_rust_version="$(
   ' "${rust_manifest}"
 )"
 
-cargo_search_error="${update_temp_dir}/cargo-search-error.txt"
-if ! cargo_search_output="$(
-  cargo search cargo-about --limit 1 2>"${cargo_search_error}"
-)"; then
-  cat "${cargo_search_error}" >&2
-  exit 69
-fi
-latest_cargo_about_version="$(
-  awk -F '"' '$1 ~ /^cargo-about = / { print $2; exit }' \
-    <<<"${cargo_search_output}"
-)"
+latest_cargo_about_version="$(latest_registry_crate_version cargo-about)"
+latest_cargo_edit_version="$(latest_registry_crate_version cargo-edit)"
 
 latest_actionlint_tag="$(
   git ls-remote \
@@ -167,9 +183,11 @@ latest_actionlint_tag="$(
 for version_value in \
   "${current_rust_version}" \
   "${CARGO_ABOUT_VERSION}" \
+  "${CARGO_EDIT_VERSION}" \
   "${ACTIONLINT_VERSION}" \
   "${latest_rust_version}" \
   "${latest_cargo_about_version}" \
+  "${latest_cargo_edit_version}" \
   "${latest_actionlint_tag}"; do
   if ! valid_complete_version "${version_value}"; then
     echo "Could not resolve a complete stable version: ${version_value:-<empty>}" >&2
@@ -179,6 +197,7 @@ done
 
 if ! version_not_older_than "${latest_rust_version}" "${current_rust_version}" ||
   ! version_not_older_than "${latest_cargo_about_version}" "${CARGO_ABOUT_VERSION}" ||
+  ! version_not_older_than "${latest_cargo_edit_version}" "${CARGO_EDIT_VERSION}" ||
   ! version_not_older_than "${latest_actionlint_tag}" "${ACTIONLINT_VERSION}"; then
   echo "An authoritative upstream returned a version older than the repository selection." >&2
   exit 69
@@ -187,11 +206,13 @@ fi
 echo "== Dependency update plan =="
 printf 'Rust:        %s -> %s\n' "${current_rust_version}" "${latest_rust_version}"
 printf 'cargo-about: %s -> %s\n' "${CARGO_ABOUT_VERSION}" "${latest_cargo_about_version}"
+printf 'cargo-edit:  %s -> %s\n' "${CARGO_EDIT_VERSION}" "${latest_cargo_edit_version}"
 printf 'actionlint:  %s -> %s\n' "${ACTIONLINT_VERSION}" "${latest_actionlint_tag}"
-echo "Cargo:       update every version allowed by Cargo.toml"
+echo "Cargo:       update every direct requirement and the complete lock graph"
 
 replace_quoted_assignment rust-toolchain.toml channel "${latest_rust_version}"
 replace_env_assignment CARGO_ABOUT_VERSION "${latest_cargo_about_version}"
+replace_env_assignment CARGO_EDIT_VERSION "${latest_cargo_edit_version}"
 replace_env_assignment ACTIONLINT_VERSION "${latest_actionlint_tag}"
 
 installed_cargo_about_version=""
@@ -207,13 +228,46 @@ if [[ "${installed_cargo_about_version}" != "cargo-about ${latest_cargo_about_ve
     --features cli
 fi
 
+installed_cargo_edit_version=""
+if command -v cargo-upgrade >/dev/null 2>&1; then
+  installed_cargo_edit_version="$(cargo upgrade --version)"
+fi
+if [[ "${installed_cargo_edit_version}" != "cargo-edit-upgrade ${latest_cargo_edit_version}" ]]; then
+  cargo install \
+    --locked \
+    --force \
+    cargo-edit \
+    --version "${latest_cargo_edit_version}" \
+    --no-default-features \
+    --features upgrade
+fi
+
+cargo_upgrade_args=(
+  --compatible allow
+  --incompatible allow
+  --pinned allow
+  --recursive false
+)
+readonly -a cargo_upgrade_args
+
+cargo upgrade "${cargo_upgrade_args[@]}"
 cargo update
+
+if ! cargo upgrade \
+  "${cargo_upgrade_args[@]}" \
+  --ignore-rust-version \
+  --dry-run \
+  --locked; then
+  echo "A newer stable direct Cargo dependency remains or the latest-version check failed." >&2
+  exit 65
+fi
 
 scripts/maintenance/check-deps.sh
 cargo fmt --check
 cargo check --all-targets --all-features --locked
 cargo test --all-features --locked
 cargo clippy --all-targets --all-features --locked -- -D warnings
+cargo build --release --locked --target aarch64-apple-darwin
 git diff --check
 
 echo "== Local changes for maintainer review =="

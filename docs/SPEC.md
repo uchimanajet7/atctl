@@ -302,15 +302,19 @@ REQ-DEP-004G: The scheduled dependency-maintenance workflow MUST use a
 non-zero minute value in its cron expression instead of scheduling exactly at
 the start of an hour.
 
-REQ-DEP-004H: Local dependency maintenance MUST use the same project scripts as
-the scheduled dependency-maintenance workflow. Maintainers MUST have one local
-update command that updates the complete selected stable Rust toolchain,
-repository-pinned maintenance tools, and every Cargo.lock dependency allowed by
-Cargo.toml, then runs the dependency checks and normal Rust verification gate.
-Direct dependency baseline changes MUST be represented explicitly in
-`Cargo.toml`; automation MUST NOT hide a direct baseline change as only a
-lockfile refresh. The update command MUST NOT commit, push, merge, tag, publish,
-create a GitHub Release, or make the release decision.
+REQ-DEP-004H: Maintainers MUST have one local dependency-update command. For
+Cargo dependencies, that command MUST update every direct registry dependency
+requirement in `Cargo.toml` to the newest stable release, including
+SemVer-incompatible and pinned requirements, and MUST then refresh the complete
+resolver-selected dependency graph in `Cargo.lock`. The mutating update MUST
+respect the declared `rust-version`, after which a non-mutating latest-version
+check that does not filter candidates by `rust-version` MUST fail the command if
+any newer stable direct dependency remains. The command MUST then run the
+dependency checks, the normal Rust verification gate, and the supported Apple
+Silicon release build. Direct dependency baseline changes MUST be represented
+explicitly in `Cargo.toml`; automation MUST NOT hide a direct baseline change as
+only a lockfile refresh. The update command MUST NOT commit, push, merge, tag,
+publish, create a GitHub Release, or make the release decision.
 
 REQ-DEP-004I: Remote GitHub Actions used by source-repository workflows MUST be
 pinned by full-length commit SHA. The same line SHOULD keep the corresponding

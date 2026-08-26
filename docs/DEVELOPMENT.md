@@ -443,10 +443,11 @@ Dependency updates are a source change. Direct dependency baseline changes
 update `Cargo.toml` and `Cargo.lock` together. Compatible transitive refreshes
 may update only `Cargo.lock`.
 
-Install the maintenance tools separately so local checks match CI:
+Install the maintenance tools separately for the local dependency checks and
+update command:
 
 ```sh
-# Load the repository-owned cargo-about and actionlint pins.
+# Load the repository-owned cargo-about, cargo-edit, and actionlint pins.
 source scripts/maintenance/tool-versions.env
 
 # RustSec advisory scanner.
@@ -454,6 +455,10 @@ cargo install cargo-audit
 
 # Target-specific Rust dependency license report generator.
 cargo install --locked cargo-about --version "${CARGO_ABOUT_VERSION}" --features cli
+
+# Cargo.toml dependency-requirement updater.
+cargo install --locked cargo-edit --version "${CARGO_EDIT_VERSION}" \
+  --no-default-features --features upgrade
 
 # Direct dependency drift report.
 cargo install --locked cargo-outdated
@@ -479,10 +484,15 @@ The command:
 - resolves the latest complete stable Rust release from the official Rust
   channel manifest and updates `rust-toolchain.toml`
 - leaves the minimum supported Rust version in `Cargo.toml` unchanged
-- updates the repository-owned cargo-about and actionlint pins from their
-  authoritative upstreams
-- runs `cargo update` for every direct or transitive version currently allowed
-  by `Cargo.toml`
+- updates the repository-owned cargo-about, cargo-edit, and actionlint pins from
+  their authoritative upstreams
+- updates every direct Cargo dependency requirement in `Cargo.toml` to the
+  latest stable version, including SemVer-incompatible and pinned versions,
+  while respecting the declared minimum supported Rust version
+- runs `cargo update` to refresh the complete resolver-selected dependency
+  graph in `Cargo.lock`
+- fails if a non-mutating check that ignores the MSRV filter finds a newer
+  stable direct dependency that was not selected
 - selected Rust, MSRV, lockfile, fixed-tool, and workflow consistency checks
 - `cargo audit`
 - `cargo outdated --workspace --root-deps-only`
@@ -493,13 +503,16 @@ The command:
 - `cargo check --all-targets --all-features --locked`
 - `cargo test --all-features --locked`
 - `cargo clippy --all-targets --all-features --locked -- -D warnings`
+- `cargo build --release --locked --target aarch64-apple-darwin`
 - `git diff --check`, local status, and a diff summary
 
-`cargo update` updates the lockfile only within the requirements already
-declared by `Cargo.toml`. When a reviewed Dependabot update or another explicit
-compatibility decision changes a direct dependency baseline, make that
-`Cargo.toml` change visible before running the same command. The update command
-does not parse or rewrite direct dependency requirements itself.
+The command uses the repository-pinned cargo-edit `cargo upgrade` subcommand to
+rewrite direct dependency requirements structurally instead of treating a
+SemVer-major update as a lockfile-only refresh. It respects the declared MSRV
+while changing files, then performs a no-write check without the MSRV filter.
+If the absolute latest stable dependency requires a newer Rust version, the
+command fails instead of silently retaining an older dependency or changing the
+declared MSRV automatically.
 
 Dependabot supplies remote GitHub Actions changes. Keep each external Action
 pinned to a full commit SHA with its release tag comment on the same line; the
